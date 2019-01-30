@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2012-2018 the original author or authors.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~       http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  -->
+
+<beans xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:utils="http://www.springframework.org/schema/util"
+       xmlns="http://www.springframework.org/schema/beans"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd http://www.springframework.org/schema/util http://www.springframework.org/schema/util/spring-util.xsd"
+       default-lazy-init="true">
+
+    <utils:list id="sqlCreateStatement" list-class="java.util.ArrayList">
+        <value>CREATE TABLE IF NOT EXISTS Execution (
+            Id varchar(16) NOT NULL CONSTRAINT id PRIMARY KEY,
+            Name varchar(200) NOT NULL,
+            Location varchar(1000) NOT NULL,
+            LogFile varchar(200) NOT NULL,
+            ExecutionLogUrl varchar(200) NOT NULL,
+            ExecutionType varchar(50) NOT NULL,
+            Prefix varchar(100)
+            );
+        </value>
+        <value>CREATE TABLE IF NOT EXISTS TagInfo (
+            Id varchar(16) NOT NULL CONSTRAINT TagInfo_pk PRIMARY KEY,
+            ExecutionId varchar(16) NOT NULL,
+            TagName varchar(100) NOT NULL,
+            CONSTRAINT TagInfo_Execution FOREIGN KEY (ExecutionId)
+            REFERENCES Execution (Id)
+            );
+        </value>
+        <value>CREATE TABLE IF NOT EXISTS ExecutionEnvironment (
+            Id varchar(16) NOT NULL CONSTRAINT ExecutionEnvironment_pk PRIMARY KEY,
+            RunHost varchar(100) NOT NULL,
+            RunUser varchar(100) NOT NULL,
+            RunOs varchar(100) NOT NULL,
+            JavaVersion varchar(100) NOT NULL,
+            NexialVersion varchar(100) NOT NULL,
+            AvailMem integer NOT NULL,
+            CPUCount integer NOT NULL,
+            ExecutionId varchar(16) NOT NULL,
+            CONSTRAINT UniqueExecutionId UNIQUE (ExecutionId),
+            CONSTRAINT ExecutionEnvironment_Execution FOREIGN KEY (ExecutionId)
+            REFERENCES Execution (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS ExecutionData (
+            Id varchar(16) NOT NULL CONSTRAINT ExecutionData_pk PRIMARY KEY,
+            StartTime datetime NOT NULL,
+            EndTime datetime NOT NULL,
+            TotalSteps integer NOT NULL,
+            PassCount integer NOT NULL,
+            FailCount integer NOT NULL,
+            WarnCount integer NOT NULL,
+            ExecutionCount integer NOT NULL,
+            FailFast boolean NOT NULL,
+            ScopeId varchar(16) NOT NULL,
+            ScopeType varchar(100) NOT NULL
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS ExecutionMetaData (
+            Id varchar(16) NOT NULL CONSTRAINT ExecutionMetaData_pk PRIMARY KEY,
+            Key varchar(100) NOT NULL,
+            Value varchar(100) NOT NULL,
+            CreationTime datetime NOT NULL,
+            ScopeId varchar(16) NOT NULL,
+            ScopeType varchar(100) NOT NULL
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS Plan (
+            Id varchar(16) NOT NULL CONSTRAINT Plan_pk PRIMARY KEY,
+            ExecutionId varchar(16) NOT NULL,
+            Name varchar(200) NOT NULL,
+            SequenceId integer NOT NULL,
+            PlanUrl varchar(200) NOT NULL,
+            CONSTRAINT Plan_Execution FOREIGN KEY (ExecutionId)
+            REFERENCES Execution (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS Script (
+            Id varchar(16) NOT NULL CONSTRAINT id PRIMARY KEY,
+            Name varchar(200) NOT NULL,
+            SequenceId integer NOT NULL,
+            PlanId varchar(16) NULL,
+            ExecutionId varchar(16) NOT NULL,
+            ScriptUrl varchar(200),
+            CONSTRAINT ExecutionId FOREIGN KEY (ExecutionId)
+            REFERENCES Execution (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS Iteration (
+            Id varchar(16) NOT NULL CONSTRAINT id PRIMARY KEY,
+            Name varchar(200) NOT NULL,
+            ScriptId varchar(16) NOT NULL,
+            TestScriptUrl varchar(200) NOT NULL,
+            SequenceId integer NOT NULL,
+            CONSTRAINT Iteration_Script FOREIGN KEY (ScriptId)
+            REFERENCES Script (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS IterationData (
+            Id varchar(16) NOT NULL CONSTRAINT IterationData_pk PRIMARY KEY,
+            Key varchar(200) NOT NULL,
+            Value varchar(2000) NOT NULL,
+            IterationId varchar(16) NOT NULL,
+            CONSTRAINT IterationData_Iteration FOREIGN KEY (IterationId)
+            REFERENCES Iteration (Id)
+            );
+        </value>
+        <value>CREATE TABLE IF NOT EXISTS Scenario (
+            Id varchar(16) NOT NULL CONSTRAINT id PRIMARY KEY,
+            Name varchar(200) NOT NULL,
+            IterationId varchar(16) NOT NULL,
+            SequenceId integer NOT NULL,
+            ScenarioUrl varchar(200) NOT NULL,
+            CONSTRAINT Scenario_Iteration FOREIGN KEY (IterationId)
+            REFERENCES Iteration (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS Logs (
+            Id varchar(16) NOT NULL CONSTRAINT Logs_pk PRIMARY KEY,
+            StepId varchar(16) NOT NULL,
+            LogInfo varchar(10000) NOT NULL,
+            CONSTRAINT Logs_Step FOREIGN KEY (StepId)
+            REFERENCES Step (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS Activity (
+            Id varchar(16) NOT NULL CONSTRAINT id PRIMARY KEY,
+            Name varchar(200) NOT NULL,
+            ScenarioId varchar(16) NOT NULL,
+            SequenceId integer NOT NULL,
+            CONSTRAINT Activity_Scenario FOREIGN KEY (ScenarioId)
+            REFERENCES Scenario (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS Step (
+            Id varchar(16) NOT NULL CONSTRAINT Step_pk PRIMARY KEY,
+            ActivityId varchar(16) NOT NULL,
+            Description varchar(2000),
+            CommandType varchar(100) NOT NULL,
+            Command varchar(100) NOT NULL,
+            Param1 varchar(2000),
+            Param2 varchar(2000),
+            Param3 varchar(2000),
+            Param4 varchar(2000),
+            Param5 varchar(2000),
+            Param1Output varchar(2000),
+            Parma2Output varchar(2000),
+            Param3Output varchar(2000),
+            Parma4Output varchar(2000),
+            Param5Output varchar(2000),
+            FlowControls varchar(1000),
+            Result varchar(200) NOT NULL,
+            Reason varchar(2000),
+            RowNo integer NOT NULL,
+            ElapsedTime varchar(30),
+            CONSTRAINT Command_Activity FOREIGN KEY (ActivityId)
+            REFERENCES Activity (Id)
+            );
+        </value>
+
+        <value>CREATE TABLE IF NOT EXISTS StepLinks (
+            Id varchar(16) NOT NULL CONSTRAINT StepLinks_pk PRIMARY KEY,
+            StepId varchar(16) NOT NULL,
+            LinkLabel varchar(200) NOT NULL,
+            LinkDescription varchar(2000) NOT NULL,
+            LinkUrl varchar(400) NOT NULL,
+            CONSTRAINT Table_18_Step FOREIGN KEY (StepId)
+            REFERENCES Step (Id)
+            );
+        </value>
+    </utils:list>
+
+    <utils:map id="sqlInsertStatements" key-type="java.lang.String" value-type="java.lang.String">
+        <entry key="SQL_INSERT_EXECUTION" value="INSERT INTO `Execution`(`Id`,`Name`,`Location`,`LogFile`,`ExecutionLogUrl`,
+            `ExecutionType`,`Prefix`) VALUES (?, ?, ?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_TAG_INFO" value="INSERT INTO `TagInfo`(`Id`,`ExecutionId`,`TagName`) VALUES (?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_EXECUTION_ENVIRONMENT" value="INSERT INTO `ExecutionEnvironment`(`Id`,`RunHost`,`RunUser`,`RunOs`,`JavaVersion`,
+            `NexialVersion`,`AvailMem`,`CPUCount`,`ExecutionId`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_EXECUTION_DATA" value="INSERT INTO `ExecutionData`(`Id`,`StartTime`,`EndTime`,`TotalSteps`,`PassCount`,
+            `FailCount`,`WarnCount`,`ExecutionCount`,`FailFast`,`ScopeId`,`ScopeType`)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)">
+        </entry>
+        <entry key="SQL_INSERT_EXECUTION_META_DATA" value="INSERT INTO `ExecutionMetaData`(`Id`,`Key`,`Value`,`CreationTime`,`ScopeId`,`ScopeType`)
+             VALUES (?, ?, ?, ?, ?, ?)">
+        </entry>
+        <entry key="SQL_INSERT_PLAN" value="INSERT INTO `Plan`(`Id`,`ExecutionId`,`Name`,`SequenceId`,`PlanUrl`)
+             VALUES (?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_SCRIPT" value="INSERT INTO `Script`(`Id`,`Name`,`SequenceId`,`PlanId`,`ExecutionId`,`ScriptUrl`)
+             VALUES (?, ?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_ITERATION" value="INSERT INTO `Iteration`(`Id`,`Name`,`ScriptId`,`TestScriptUrl`,`SequenceId`)
+             VALUES (?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_ITERATION_DATA" value="INSERT INTO `IterationData`(`Id`,`Key`,`Value`,`IterationId`) VALUES (?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_SCENARIO" value="INSERT INTO `Scenario`(`Id`,`Name`,`IterationId`,`SequenceId`,`ScenarioUrl`)
+             VALUES (?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_LOGS" value="INSERT INTO `Logs`(`Id`,`StepId`,`LogInfo`) VALUES (?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_ACTIVITY" value="INSERT INTO `Activity`(`Id`,`Name`,`ScenarioId`,`SequenceId`)
+             VALUES (?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_STEPS" value="INSERT INTO `Step`(`Id`,`ActivityId`,`Description`,`CommandType`,
+            `Command`,`Param1`,`Param2`,`Param3`,`Param4`,`Param5`,`Param1Output`,`Parma2Output`,`Param3Output`,
+            `Parma4Output`,`Param5Output`,`FlowControls`,`Result`,`Reason`,`RowNo`, `ElapsedTime`)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);">
+        </entry>
+        <entry key="SQL_INSERT_STEP_LINKS" value="INSERT INTO `StepLinks`(`Id`,`StepId`,`LinkLabel`,`LinkDescription`,`LinkUrl`)
+             VALUES (?, ?, ?, ?, ?);">
+        </entry>
+    </utils:map>
+    <bean id="sqliteConfig" class="org.nexial.core.service.SQLiteConfig">
+        <property name="sqlCreateStatements" ref="sqlCreateStatement"></property>
+        <property name="sqlInsertStatements" ref="sqlInsertStatements"></property>
+        <property name="dataSource" ref="dataSource"></property>
+    </bean>
+
+    <bean id="dataSource" class="org.sqlite.javax.SQLiteConnectionPoolDataSource">
+        <property name="url" value="jdbc:sqlite:%s"></property>
+        <property name="config" ref="sqliteConfig1"></property>
+    </bean>
+
+    <bean id="sqliteConfig1" class="org.sqlite.SQLiteConfig">
+    </bean>
+
+</beans>

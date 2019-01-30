@@ -19,54 +19,91 @@ package org.nexial.core.plugins.io;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StrTokenizer;
+import org.apache.poi.poifs.filesystem.FileMagic;
 import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.apache.poi.xssf.usermodel.XSSFRow;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
-
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.excel.Excel;
-import org.nexial.core.excel.Excel.Worksheet;
+import org.nexial.core.excel.Excel.*;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.plugins.base.BaseCommand;
 
-import static org.nexial.core.utils.CheckUtils.*;
+import com.univocity.parsers.common.record.Record;
+import com.univocity.parsers.csv.CsvParser;
+import com.univocity.parsers.csv.CsvParserSettings;
+
+import static org.apache.poi.poifs.filesystem.FileMagic.OLE2;
+import static org.apache.poi.poifs.filesystem.FileMagic.OOXML;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.excel.Excel.*;
+import static org.nexial.core.utils.CheckUtils.*;
 
 public class ExcelCommand extends BaseCommand {
     @Override
     public String getTarget() { return "excel"; }
 
     public StepResult clear(String file, String worksheet, String range) throws IOException {
+        if (!FileUtil.isFileReadable(file, MIN_EXCEL_FILE_SIZE)) {
+            return StepResult.success("Excel file " + file + " not found; not need to clear worksheet");
+        }
+
         Excel excel = deriveExcel(file);
 
-        requires(StringUtils.isNotBlank(range) && StringUtils.contains(range, ":"), "invalid Excel range", range);
-        ExcelAddress addr = new ExcelAddress(range);
+        requiresNotBlank(worksheet, "invalid worksheet name", worksheet);
+        requiresNotBlank(range, "invalid Excel range", range);
 
-        excel.requireWorksheet(worksheet, true).clearCells(addr);
+        String message;
+        boolean clearAll = StringUtils.equals(range, "*");
+        if (clearAll) {
+            XSSFWorkbook workbook = excel.getWorkbook();
+            XSSFSheet sheet = workbook.getSheet(worksheet);
+            // worksheet doesn't exist... this is the same as it's already "cleared". so we are done here.
+            if (sheet == null) { return StepResult.success("worksheet '" + worksheet + "' not found for " + file); }
+
+            requiresNotNull(sheet, "invalid worksheet", worksheet);
+
+            int sheetIndex = workbook.getSheetIndex(worksheet);
+            workbook.removeSheetAt(sheetIndex);
+
+            workbook.createSheet(worksheet);
+            workbook.setSheetOrder(worksheet, sheetIndex);
+
+            message = "worksheet '" + worksheet + "' clear for " + file;
+        } else {
+            requires(StringUtils.contains(range, ":"), "invalid Excel range", range);
+
+            ExcelAddress addr = new ExcelAddress(range);
+            excel.requireWorksheet(worksheet, true).clearCells(addr);
+
+            message = "Data at " + range + " cleared for " + file + "#" + worksheet;
+        }
+
         excel.save();
 
-        return StepResult.success("Data at " + range + " cleared for " + file + "#" + worksheet);
+        return StepResult.success(message);
     }
 
     public StepResult saveRange(String var, String file, String worksheet, String range) throws IOException {
         requiresValidVariableName(var);
 
-        Excel excel = deriveExcel(file);
-        Worksheet sheet = excel.worksheet(worksheet);
-        requires(sheet != null && sheet.getSheet() != null, "invalid worksheet", worksheet);
-
-        requires(StringUtils.isNotBlank(range), "invalid cell range", range);
-        ExcelAddress addr = new ExcelAddress(range);
-        List<List<XSSFCell>> rows = sheet.cells(addr);
+        List<List<XSSFCell>> rows = fetchRows(file, worksheet, range);
         Map<String, String> data = new LinkedHashMap<>();
         for (List<XSSFCell> row : rows) {
             for (XSSFCell cell : row) { data.put(cell.getReference(), Excel.getCellValue(cell)); }
@@ -84,13 +121,7 @@ public class ExcelCommand extends BaseCommand {
     public StepResult saveData(String var, String file, String worksheet, String range) throws IOException {
         requiresValidVariableName(var);
 
-        Excel excel = deriveExcel(file);
-        Worksheet sheet = excel.worksheet(worksheet);
-        requires(sheet != null && sheet.getSheet() != null, "invalid worksheet", worksheet);
-
-        requires(StringUtils.isNotBlank(range), "invalid cell range", range);
-        ExcelAddress addr = new ExcelAddress(range);
-        List<List<XSSFCell>> rows = sheet.cells(addr);
+        List<List<XSSFCell>> rows = fetchRows(file, worksheet, range);
         List<List<String>> data = new ArrayList<>();
         for (List<XSSFCell> row : rows) {
             List<String> rowData = new ArrayList<>();
@@ -107,14 +138,47 @@ public class ExcelCommand extends BaseCommand {
         return StepResult.success(data.size() + " cells read and stored to '" + var + "'");
     }
 
+    public StepResult setPassword(String file, String password) {
+        requiresNotBlank(password, "password can't be blank.");
+        File excelFile = deriveReadableFile(file);
+        FileMagic fileFormat = deriveFileFormat(excelFile);
+
+        if (fileFormat == OOXML) {
+            Excel.setExcelPassword(excelFile, password);
+            return StepResult.success("Password set to " + file);
+        }
+
+        if (fileFormat == OLE2) { return StepResult.fail("A password is already set to " + file); }
+
+        return StepResult.fail("Unable to set password: wrong file format " + fileFormat + " on " + file);
+    }
+
+    public StepResult clearPassword(String file, String password) {
+        requiresNotBlank(password, "password can't be blank.");
+        File excelFile = deriveReadableFile(file);
+        if (deriveFileFormat(excelFile) == OLE2 && clearExcelPassword(excelFile, password)) {
+            return StepResult.success("Password cleared for " + file);
+        }
+        return StepResult.fail("Incorrect or no password was set to " + file);
+    }
+
+    public StepResult assertPassword(String file) {
+        File excelFile = deriveReadableFile(file);
+        if (Excel.isPasswordSet(excelFile)) { return StepResult.success("Password set to " + file); }
+        return StepResult.fail("Password NOT set to " + file);
+    }
+
     public StepResult writeVar(String var, String file, String worksheet, String startCell) throws IOException {
         requiresValidVariableName(var);
         requiresNotBlank(startCell, "invalid cell address", startCell);
 
-        Excel excel = deriveExcel(file);
+        Excel excel = deriveExcel(file, true);
         XSSFSheet sheet = excel.requireWorksheet(worksheet, true).getSheet();
         addData(sheet, new ExcelAddress(startCell), to2dStringList(var));
         excel.save();
+
+        // (2018/12/16,automike): memory consumption precaution
+        excel.close();
 
         return StepResult.success("Data saved to " + file + "#" + worksheet);
     }
@@ -132,10 +196,13 @@ public class ExcelCommand extends BaseCommand {
             }
         }
 
-        Excel excel = deriveExcel(file);
+        Excel excel = deriveExcel(file, true);
         XSSFSheet sheet = excel.requireWorksheet(worksheet, true).getSheet();
         addData(sheet, new ExcelAddress(startCell), data2d);
         excel.save();
+
+        // (2018/12/16,automike): memory consumption precaution
+        excel.close();
 
         return StepResult.success("Data saved to " + file + "#" + worksheet);
     }
@@ -145,11 +212,16 @@ public class ExcelCommand extends BaseCommand {
         requiresNotBlank(worksheet, "invalid worksheet name", worksheet);
         requiresNotBlank(array, "Invalid array to write", array);
 
-        deriveExcel(file).requireWorksheet(worksheet, true)
-                         .writeAcross(new ExcelAddress(startCell),
-                                      TextUtils.toList(array, context.getTextDelim(), false));
+        List<List<String>> rows = new ArrayList<>();
+        rows.add(TextUtils.toList(array, context.getTextDelim(), false));
 
-        return StepResult.success("Data saved to " + file + "#" + worksheet);
+        Excel excel = deriveExcel(file, true);
+        excel.requireWorksheet(worksheet, true).writeAcross(new ExcelAddress(startCell), rows);
+
+        // (2018/12/16,automike): memory consumption precaution
+        excel.close();
+
+        return StepResult.success("Data (" + array + ") saved to " + file + "#" + worksheet);
     }
 
     public StepResult writeDown(String file, String worksheet, String startCell, String array) throws IOException {
@@ -157,22 +229,130 @@ public class ExcelCommand extends BaseCommand {
         requiresNotBlank(worksheet, "invalid worksheet name", worksheet);
         requiresNotBlank(array, "Invalid array to write", array);
 
-        deriveExcel(file).requireWorksheet(worksheet, true)
-                         .writeDown(new ExcelAddress(startCell),
-                                    TextUtils.toList(array, context.getTextDelim(), false));
+        List<List<String>> columns = new ArrayList<>();
+        columns.add(TextUtils.toList(array, context.getTextDelim(), false));
 
-        return StepResult.success("Data saved to " + file + "#" + worksheet);
+        Excel excel = deriveExcel(file, true);
+        excel.requireWorksheet(worksheet, true).writeDown(new ExcelAddress(startCell), columns);
+
+        // (2018/12/16,automike): memory consumption precaution
+        excel.close();
+
+        return StepResult.success("Data (" + array + ") saved to " + file + "#" + worksheet);
     }
 
-    protected Excel deriveExcel(String file) throws IOException { return new Excel(deriveReadableFile(file)); }
+    public StepResult csv(String file, String worksheet, String range, String output) {
+        // requiresReadableFile(file);
+        requiresNotBlank(file, "Invalid file", file);
+        requiresNotBlank(worksheet, "Invalid worksheet", worksheet);
+        requiresNotBlank(range, "Invalid range", range);
+        requiresNotBlank(output, "Invalid CSV output", output);
 
-    protected File deriveReadableFile(String file) {
-        // sanity check
-        requires(StringUtils.isNotBlank(file), "invalid file", file);
+        String[] ranges = StringUtils.split(range, context.getTextDelim());
+        FileUtils.deleteQuietly(new File(output));
+        Arrays.stream(ranges).forEach(r -> context.replaceTokens("[EXCEL(" + file + ") => " +
+                                                                 " read(" + worksheet + "," + r + ")" +
+                                                                 " csv" +
+                                                                 " save(" + output + ",true)" +
+                                                                 "]"));
 
-        File excelFile = new File(file);
-        requires(excelFile.isFile() && excelFile.canRead() && excelFile.length() > 100, "unreadable file", file);
-        return excelFile;
+        return StepResult.success("Excel content from " + worksheet + "," + range + " saved to " + output);
+    }
+
+    public StepResult columnarCsv(String file, String worksheet, String ranges, String output) throws IOException {
+        requiresReadableFile(file);
+        requiresNotBlank(worksheet, "Invalid worksheet", worksheet);
+        requiresNotBlank(ranges, "Invalid range", ranges);
+        requiresNotBlank(output, "Invalid CSV output", output);
+
+        File outputFile = new File(output);
+        FileUtils.deleteQuietly(outputFile);
+
+        Excel excel = new Excel(new File(file), false, false);
+        Worksheet ws = excel.requireWorksheet(worksheet, false);
+
+        String delim = context.getTextDelim();
+
+        List<List<String>> data = new ArrayList<>();
+        final Integer[] maxColumns = {0};
+
+        String[] cellRanges = StringUtils.split(ranges, delim);
+        Arrays.stream(cellRanges).forEach(r -> {
+            List<List<String>> rows = ws.readRange(new ExcelAddress(r));
+            if (CollectionUtils.isNotEmpty(rows)) {
+                // ensure proper allocation
+                int columnCount = rows.get(0).size();
+                while (data.size() < rows.size()) { data.add(new ArrayList<>(columnCount)); }
+
+                for (int i = 0; i < rows.size(); i++) {
+                    List<String> newRow = data.get(i);
+                    while (newRow.size() < maxColumns[0]) { newRow.add(""); }
+                    // add all cells to the end of `newRow`
+                    newRow.addAll(rows.get(i));
+                }
+
+                maxColumns[0] += columnCount;
+            }
+        });
+
+        String recordDelim = "\r\n";
+        String csvContent = StringUtils.removeEnd(TextUtils.toCsvContent(data, delim, recordDelim), recordDelim);
+
+        CsvParserSettings settings = CsvCommand.newCsvParserSettings(delim, recordDelim, false, 0);
+        settings.setQuoteDetectionEnabled(true);
+        settings.getFormat().setQuote('"');
+        settings.setKeepQuotes(true);
+
+        CsvParser parser = new CsvParser(settings);
+        List<Record> value = parser.parseAllRecords(new StringReader(csvContent));
+
+        csvContent = StringUtils.removeEnd(value.stream()
+                                                .map(row -> TextUtils.toCsvLine(row.getValues(), delim, recordDelim))
+                                                .collect(Collectors.joining()),
+                                           recordDelim);
+
+        outputFile.getParentFile().mkdirs();
+        FileUtils.writeStringToFile(outputFile, csvContent, DEF_FILE_ENCODING);
+
+        return StepResult.success("Excel content from " + worksheet + "," + ranges + " saved (columnar) to " + output);
+    }
+
+    public StepResult json(String file, String worksheet, String range, String header, String output) {
+        requiresReadableFile(file);
+        requiresNotBlank(worksheet, "Invalid worksheet", worksheet);
+        requiresNotBlank(range, "Invalid range", range);
+        requiresNotBlank(output, "Invalid CSV output", output);
+
+        context.replaceTokens("[EXCEL(" + file + ") => " +
+                              " read(" + worksheet + "," + range + ")" +
+                              " json(" + BooleanUtils.toBoolean(header) + ")" +
+                              " save(" + output + ")" +
+                              "]");
+        return StepResult.success("Excel content from " + worksheet + "," + range + " saved to " + output);
+    }
+
+    protected List<List<XSSFCell>> fetchRows(String file, String worksheet, String range) throws IOException {
+        Excel excel = deriveExcel(file);
+        Worksheet sheet = excel.worksheet(worksheet);
+        requires(sheet != null && sheet.getSheet() != null, "invalid worksheet", worksheet);
+
+        requires(StringUtils.isNotBlank(range), "invalid cell range", range);
+        ExcelAddress addr = new ExcelAddress(range);
+        return sheet.cells(addr);
+    }
+
+    protected Excel deriveExcel(String file) throws IOException {
+        return new Excel(deriveReadableFile(file), false, false);
+    }
+
+    protected Excel deriveExcel(String file, boolean create) throws IOException {
+        if (!FileUtil.isFileReadable(file, MIN_EXCEL_FILE_SIZE) && create) { return Excel.newExcel(new File(file)); }
+        return new Excel(deriveReadableFile(file), false, false);
+    }
+
+    protected static File deriveReadableFile(String file) {
+        requiresReadableFile(file);
+        return new File(file);
     }
 
     protected void addData(XSSFSheet sheet, ExcelAddress addr, List<List<String>> dataRows) {

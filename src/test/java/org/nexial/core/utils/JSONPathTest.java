@@ -25,6 +25,7 @@ import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.nexial.commons.utils.ResourceUtils;
 
 /**
  *
@@ -136,6 +137,21 @@ public class JSONPathTest {
 
         testPathValue(fixture1, "response[0].erFein", "391127174");
         testPathValue(fixture1, "response[1].erFein", "363871028");
+    }
+
+    @Test
+    public void testArray2() throws Exception {
+        JSONArray fixture = new JSONArray(ResourceUtils.loadResource("org/nexial/core/utils/JSONPathTest1.json"));
+
+        testPathValue(fixture,
+                      "tag_name",
+                      "[\"v0.21.0\",\"v0.20.1\",\"v0.20.0\",\"v0.19.1\",\"v0.19.0\",\"v0.18.0\",\"v0.17.0\"," +
+                      "\"v0.16.1\",\"v0.16.0\",\"v0.15.0\",\"v0.14.0\",\"v0.13.0\",\"v0.12.0\",\"v0.11.1\"," +
+                      "\"v0.11.0\",\"v0.10.0\",\"v0.9.0\",\"v0.8.0\",\"v0.7.1\",\"v0.6.2\",\"v0.6.0\",\"v0.5.0\"," +
+                      "\"v0.4.2\",\"v0.4.1\",\"v0.4.0\",\"0.3.0\",\"v0.2.0\",\"v0.1.0\"]");
+        testPathValue(fixture,
+                      "[tag_name=v0.21.0].assets[name=REGEX:.+win64.+].browser_download_url",
+                      "https://github.com/mozilla/geckodriver/releases/download/v0.21.0/geckodriver-v0.21.0-win64.zip");
     }
 
     @Test
@@ -770,6 +786,36 @@ public class JSONPathTest {
         result = JSONPath.overwriteOrAdd(new JSONArray(fixture), "Tracy", "Kerry", false);
         Assert.assertNotNull(result);
         Assert.assertEquals("[\"Johnny\",\"Sammy\",\"Kerry\",\"Alex\"]", JSONPath.find(result, "[REGEX:\\.+]"));
+    }
+
+    @Test
+    public void jsonPathFunctions() {
+        String fixture = "{\n" +
+                         "    \"books\": [\n" +
+                         "        { \"title\": \"Introduction to Programming\", \"price\": 13.95, \"category\": \"Technology\" },\n" +
+                         "        { \"title\": \"How to Cook Good Food Cheap\", \"price\": 15.60, \"category\": \"Home Improvement\" },\n" +
+                         "        { \"title\": \"Furniture for Harmony\", \"price\": 32.50, \"category\": \"Home Improvement\" }\n" +
+                         "    ],\n" +
+                         "    \"published date\": \"2019-01-14\"\n" +
+                         "}";
+        Assert.assertEquals("1", JSONPath.find(new JSONObject(fixture), "published date => count"));
+        Assert.assertEquals("2", JSONPath.find(new JSONObject(fixture), "books[category=Home Improvement] => count"));
+        Assert.assertEquals("3", JSONPath.find(new JSONObject(fixture), "books.title => count"));
+        Assert.assertEquals("3", JSONPath.find(new JSONObject(fixture), "books => count"));
+        Assert.assertEquals(
+            "[\"Furniture for Harmony\",\"How to Cook Good Food Cheap\",\"Introduction to Programming\"]",
+            JSONPath.find(new JSONObject(fixture), "books.title => ascending"));
+        Assert.assertEquals("[\"Technology\",\"Home Improvement\",\"Home Improvement\"]",
+                            JSONPath.find(new JSONObject(fixture), "books.category => descending"));
+        Assert.assertEquals("62.05", JSONPath.find(new JSONObject(fixture), "books.price => sum"));
+        Assert.assertEquals("20.683333333333334", JSONPath.find(new JSONObject(fixture), "books.price => average"));
+        Assert.assertEquals("13.95", JSONPath.find(new JSONObject(fixture), "books.price => min"));
+        Assert.assertEquals("32.50", JSONPath.find(new JSONObject(fixture), "books.price => max"));
+        Assert.assertEquals("13.95", JSONPath.find(new JSONObject(fixture), "books.price => first"));
+        Assert.assertEquals("32.50", JSONPath.find(new JSONObject(fixture), "books.price => last"));
+        Assert.assertEquals("[\"Home Improvement\",\"Technology\"]",
+                            JSONPath.find(new JSONObject(fixture), "books.category => distinct"));
+
     }
 
     private void testPathValue(JSONObject fixture, String path, String expected) {

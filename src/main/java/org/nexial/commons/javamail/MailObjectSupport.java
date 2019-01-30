@@ -17,10 +17,10 @@
 
 package org.nexial.commons.javamail;
 
-import java.net.UnknownHostException;
+import java.util.Arrays;
 import java.util.Hashtable;
+import java.util.List;
 import java.util.Properties;
-
 import javax.mail.Authenticator;
 import javax.mail.MessagingException;
 import javax.mail.NoSuchProviderException;
@@ -32,153 +32,188 @@ import javax.naming.NamingException;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.nexial.commons.utils.EnvUtils;
+import org.nexial.core.plugins.aws.AwsSesSettings;
+import org.nexial.core.reports.ExecutionMailConfig;
+import org.nexial.core.utils.ConsoleUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.sun.mail.smtp.SMTPTransport;
 
-import static javax.naming.Context.*;
+import static javax.naming.Context.INITIAL_CONTEXT_FACTORY;
+import static org.nexial.core.NexialConst.Mailer.*;
+import static org.nexial.core.NexialConst.NAMESPACE;
 
 /**
  * @author Mike Liu
  */
 public final class MailObjectSupport {
-	public static final String[] JNDI_KEYS = new String[]{
-		INITIAL_CONTEXT_FACTORY, OBJECT_FACTORIES, STATE_FACTORIES, URL_PKG_PREFIXES, PROVIDER_URL, DNS_URL,
-		AUTHORITATIVE, BATCHSIZE, REFERRAL, SECURITY_PROTOCOL, SECURITY_AUTHENTICATION, SECURITY_PRINCIPAL,
-		SECURITY_CREDENTIALS, LANGUAGE
-	};
+    private static final Logger LOGGER = LoggerFactory.getLogger(MailObjectSupport.class);
 
-	private static final Logger LOGGER = LoggerFactory.getLogger(MailObjectSupport.class);
+    private ExecutionMailConfig mailConfig;
+    private Properties mailProps;
+    private Hashtable jndiEnv;
+    private AwsSesSettings sesSettings;
 
-	private static final String KEY_AUTH = "mail.smtp.auth";
-	private static final String KEY_USERNAME = "mail.smtp.username";
-	private static final String KEY_PASSWORD = "mail.smtp.password";
-	private static final String KEY_DEBUG = "mail.smtp.debug";
-	private static final String KEY_MAIL_HOST = "mail.smtp.host";
-	private static final String KEY_MAIL_PORT = "mail.smtp.port";
-	private static final String KEY_PROTOCOL = "mail.transport.protocol";
-	private static final String KEY_SMTP_LOCALHOST = "mail.smtp.localhost";
-	private static final String KEY_MAIL_JNDI_URL = "mail.jndi.url";
-	private static final String KEY_BUFF_SIZE = "mail.smtp.bufferSize";
-	private static final String KEY_TLS_ENABLE = "mail.smtp.starttls.enable";
-	private static final String KEY_CONTENT_TYPE = "mail.smtp.contentType";
-	public static final String[] MAIL_PROP_KEYS = new String[]{
-		KEY_BUFF_SIZE, KEY_PROTOCOL, KEY_MAIL_HOST, KEY_MAIL_PORT, KEY_TLS_ENABLE, KEY_AUTH, KEY_DEBUG,
-		KEY_CONTENT_TYPE, KEY_USERNAME, KEY_PASSWORD, KEY_MAIL_JNDI_URL
-	};
+    private Session session;
+    private SMTPTransport transport;
 
-	private Properties mailProps;
-	private Hashtable jndiEnv;
-	private Session session;
-	private SMTPTransport transport;
+    public void setMailProps(Properties mailProps) { this.mailProps = mailProps; }
 
-	public Properties getMailProps() { return mailProps; }
+    public void setJndiEnv(Hashtable jndiEnv) { this.jndiEnv = jndiEnv; }
 
-	public void setMailProps(Properties mailProps) { this.mailProps = mailProps; }
+    /** configure this instance with currently configured {@link ExecutionMailConfig}.  Also create mail session */
+    public static MailObjectSupport configure(ExecutionMailConfig mailConfig) {
+        MailObjectSupport instance = new MailObjectSupport();
+        instance.mailConfig = mailConfig;
 
-	public void setJndiEnv(Hashtable jndiEnv) { this.jndiEnv = jndiEnv; }
+        Properties mailProps = mailConfig.toSmtpConfigs();
+        if (MapUtils.isNotEmpty(mailProps)) {
+            instance.mailProps = mailProps;
+            if (instance.hasSmtpConfigs()) {
+                instance.createSession();
+                return instance;
+            }
+        }
 
-	public void init() {
-		try {
-			mailProps.setProperty(KEY_SMTP_LOCALHOST, EnvUtils.getHostName());
-		} catch (UnknownHostException e) {
-			LOGGER.warn("Unable to query localhost's hostname, setting '" + KEY_SMTP_LOCALHOST +
-			            "' to 'localhost', but it probably won't work. " + e.getMessage());
-			mailProps.setProperty(KEY_SMTP_LOCALHOST, "localhost");
-		}
+        Hashtable jndiEnv = mailConfig.toJndiEnv();
+        if (MapUtils.isNotEmpty(jndiEnv)) {
+            instance.jndiEnv = jndiEnv;
+            if (instance.hasJndiConfigs()) {
+                instance.createSession();
+                return instance;
+            }
+        }
 
-		createSession();
-		//createTransport();
-	}
+        AwsSesSettings sesSettings = mailConfig.toSesConfigs();
+        if (sesSettings != null) {
+            instance.sesSettings = sesSettings;
+            if (instance.hasSesSettings()) { return instance; }
+        }
 
-	public SMTPTransport getTransport() {
-		if (transport == null || !transport.isConnected()) { createTransport(); }
-		return transport;
-	}
+        ConsoleUtils.error("Nexial mailer not properly configured for use");
+        return null;
+    }
 
-	public Session getSession() {
-		if (session == null) { createSession(); }
-		return session;
-	}
+    public SMTPTransport getTransport() {
+        if (transport == null || !transport.isConnected()) { createTransport(); }
+        return transport;
+    }
 
-	public String getConfiguredProperty(String property) { return mailProps.getProperty(property); }
+    public Session getSession() {
+        if (session == null) { createSession(); }
+        return session;
+    }
 
-	public SMTPTransport createTransport(Session session) throws MessagingException {
-		if (session == null) { throw new IllegalArgumentException("session is null"); }
-		return newTransport(session);
-	}
+    public AwsSesSettings getSesSettings() { return sesSettings; }
 
-	public Session createJndiSession(String jndiName) throws NamingException {
-		if (StringUtils.isBlank(jndiName)) { throw new IllegalArgumentException("jndiName is null or blank."); }
-		InitialContext ctx = new InitialContext();
-		return (Session) ctx.lookup(jndiName);
-	}
+    public String getConfiguredProperty(String property) { return mailProps.getProperty(property); }
 
-	private void createSession() {
-		// is javamail session configured in JNDI?
-		String jndiName = mailProps.getProperty(KEY_MAIL_JNDI_URL);
-		if (StringUtils.isNotBlank(jndiName)) {
-			try {
-				InitialContext ctx = MapUtils.isEmpty(jndiEnv) ? new InitialContext() : new InitialContext(jndiEnv);
-				session = (Session) ctx.lookup(jndiName);
-				if (LOGGER.isInfoEnabled()) { LOGGER.info("JNDI resource '" + jndiName + "' for sending email..."); }
-			} catch (NamingException e) {
-				// javamail session IS configured in JNDI, but unable to get session resource...
-				String error = "Unable to fetch JNDI resource '" + jndiName + "': " + e.getMessage();
-				LOGGER.error(error, e);
-				throw new RuntimeException(error, e);
-			}
-		} else {
-			// javamail session is NOT configured in JNDI... continue on to use std mail config.
-			if (LOGGER.isInfoEnabled()) { LOGGER.info("Standalone config. for sending email..."); }
-			createStandAloneSession();
-		}
-	}
+    public SMTPTransport createTransport(Session session) throws MessagingException {
+        if (session == null) { throw new IllegalArgumentException("session is null"); }
+        return newTransport(session);
+    }
 
-	private void createStandAloneSession() {
-		Authenticator auth = null;
+    public Session createJndiSession(String jndiName) throws NamingException {
+        if (StringUtils.isBlank(jndiName)) { throw new IllegalArgumentException("jndiName is null or blank."); }
+        InitialContext ctx = new InitialContext();
+        return (Session) ctx.lookup(jndiName);
+    }
 
-		String userName = mailProps.getProperty(KEY_USERNAME);
-		if (BooleanUtils.toBoolean(mailProps.getProperty(KEY_AUTH)) && StringUtils.isNotBlank(userName)) {
-			final String smtpUsername = userName;
-			final String smtpPassword = mailProps.getProperty(KEY_PASSWORD);
-			auth = new Authenticator() {
-				protected PasswordAuthentication getPasswordAuthentication() {
-					return new PasswordAuthentication(smtpUsername, smtpPassword);
-				}
-			};
-		}
+    public boolean hasSmtpConfigs() {
+        return MapUtils.isNotEmpty(mailProps) &&
+               StringUtils.isNotBlank(mailProps.getProperty(MAIL_KEY_MAIL_HOST)) &&
+               StringUtils.isNotBlank(mailProps.getProperty(MAIL_KEY_PROTOCOL)) &&
+               StringUtils.isNotBlank(mailProps.getProperty(MAIL_KEY_MAIL_PORT));
+    }
 
-		session = Session.getInstance(mailProps, auth);
-		if (BooleanUtils.toBoolean(mailProps.getProperty(KEY_DEBUG))) { session.setDebug(true); }
-	}
+    public boolean hasJndiConfigs() {
+        return MapUtils.isNotEmpty(jndiEnv) &&
+               jndiEnv.get(MAIL_KEY_MAIL_JNDI_URL) != null &&
+               jndiEnv.get(INITIAL_CONTEXT_FACTORY) != null;
+    }
 
-	private void createTransport() {
-		String mailHost = session.getProperty(KEY_MAIL_HOST);
-		try {
-			transport = newTransport(session);
-		} catch (NoSuchProviderException e) {
-			LOGGER.error("Mail provider not found for mail host " + mailHost, e);
-		} catch (MessagingException e) {
-			LOGGER.error("Error occured while setting transport on mail host " + mailHost, e);
-		}
-	}
+    public boolean hasSesSettings() { return sesSettings != null; }
 
-	private SMTPTransport newTransport(Session session) throws MessagingException {
-		SMTPTransport transport = (SMTPTransport) session.getTransport(session.getProperty(KEY_PROTOCOL));
+    public List<String> getRecipients() { return mailConfig == null ? null : mailConfig.getRecipients(); }
 
-		if (BooleanUtils.toBoolean(session.getProperty(KEY_AUTH))) {
-			String mailHost = session.getProperty(KEY_MAIL_HOST);
-			String mailPort = session.getProperty(KEY_MAIL_PORT);
-			String smtpUsername = session.getProperty(KEY_USERNAME);
-			String smtpPassword = session.getProperty(KEY_PASSWORD);
-			transport.connect(mailHost, Integer.parseInt(mailPort), smtpUsername, smtpPassword);
-		} else {
-			transport.connect();
-		}
+    private void createSession() {
+        // is javamail session configured in JNDI?
+        String jndiName = mailProps.getProperty(MAIL_KEY_MAIL_JNDI_URL);
+        if (StringUtils.isNotBlank(jndiName)) {
+            try {
+                InitialContext ctx = MapUtils.isEmpty(jndiEnv) ?
+                                     new InitialContext() : new InitialContext(cleanMailProp(jndiEnv));
+                session = (Session) ctx.lookup(jndiName);
+                if (LOGGER.isInfoEnabled()) { LOGGER.info("JNDI resource '" + jndiName + "' for sending email..."); }
+            } catch (NamingException e) {
+                // javamail session IS configured in JNDI, but unable to get session resource...
+                String error = "Unable to fetch JNDI resource '" + jndiName + "': " + e.getMessage();
+                LOGGER.error(error, e);
+                throw new RuntimeException(error, e);
+            }
+        } else {
+            // javamail session is NOT configured in JNDI... continue on to use std mail config.
+            if (LOGGER.isInfoEnabled()) { LOGGER.info("Standalone config. for sending email..."); }
+            createStandAloneSession();
+        }
+    }
 
-		return transport;
-	}
+    private void createStandAloneSession() {
+        Authenticator auth = null;
+
+        boolean debug = BooleanUtils.toBoolean(mailProps.getProperty(MAIL_KEY_DEBUG));
+
+        String userName = mailProps.getProperty(MAIL_KEY_USERNAME);
+        if (BooleanUtils.toBoolean(mailProps.getProperty(MAIL_KEY_AUTH)) && StringUtils.isNotBlank(userName)) {
+            final String smtpUsername = userName;
+            final String smtpPassword = mailProps.getProperty(MAIL_KEY_PASSWORD);
+            auth = new Authenticator() {
+                protected PasswordAuthentication getPasswordAuthentication() {
+                    return new PasswordAuthentication(smtpUsername, smtpPassword);
+                }
+            };
+        }
+
+        session = Session.getInstance(cleanMailProp(mailProps), auth);
+        if (debug) { session.setDebug(true); }
+    }
+
+    private <T extends Hashtable<Object, Object>> T cleanMailProp(T props) {
+        if (MapUtils.isEmpty(props)) { return props; }
+
+        Object[] propKeys = props.keySet().toArray();
+        Arrays.stream(propKeys).forEach(key -> {
+            if (key != null) { props.put(StringUtils.removeStart(key.toString(), NAMESPACE), props.get(key)); }
+        });
+
+        return props;
+    }
+
+    private void createTransport() {
+        String mailHost = session.getProperty(MAIL_KEY_MAIL_HOST);
+        try {
+            transport = newTransport(session);
+        } catch (NoSuchProviderException e) {
+            LOGGER.error("Mail provider not found for mail host " + mailHost, e);
+        } catch (MessagingException e) {
+            LOGGER.error("Error occurred while setting transport on mail host " + mailHost, e);
+        }
+    }
+
+    private SMTPTransport newTransport(Session session) throws MessagingException {
+        SMTPTransport transport = (SMTPTransport) session.getTransport(session.getProperty(MAIL_KEY_PROTOCOL));
+
+        if (BooleanUtils.toBoolean(session.getProperty(MAIL_KEY_AUTH))) {
+            String mailHost = session.getProperty(MAIL_KEY_MAIL_HOST);
+            String mailPort = session.getProperty(MAIL_KEY_MAIL_PORT);
+            String smtpUsername = session.getProperty(MAIL_KEY_USERNAME);
+            String smtpPassword = session.getProperty(MAIL_KEY_PASSWORD);
+            transport.connect(mailHost, Integer.parseInt(mailPort), smtpUsername, smtpPassword);
+        } else {
+            transport.connect();
+        }
+
+        return transport;
+    }
 }

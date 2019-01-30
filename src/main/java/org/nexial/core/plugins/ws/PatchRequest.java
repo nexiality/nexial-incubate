@@ -22,24 +22,20 @@ import java.io.UnsupportedEncodingException;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpPatch;
 import org.apache.http.client.methods.HttpUriRequest;
-
 import org.nexial.core.model.ExecutionContext;
 
-/**
- *
- */
 public class PatchRequest extends PostRequest {
 
-	PatchRequest(ExecutionContext context) {
-		super(context);
-		method = "PATCH";
-		contentType = "application/json-patch";
-	}
+    PatchRequest(ExecutionContext context) {
+        super(context);
+        method = "PATCH";
+        contentType = "application/json-patch";
+    }
 
-	@Override
-	protected HttpUriRequest prepRequest(RequestConfig requestConfig) throws UnsupportedEncodingException {
-		HttpPatch http = new HttpPatch(url);
-		prepPostRequest(requestConfig, http);
-		return http;
-	}
+    @Override
+    protected HttpUriRequest prepRequest(RequestConfig requestConfig) throws UnsupportedEncodingException {
+        HttpPatch http = new HttpPatch(url);
+        prepPostRequest(requestConfig, http);
+        return http;
+    }
 }

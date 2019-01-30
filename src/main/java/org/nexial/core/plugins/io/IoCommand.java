@@ -25,9 +25,13 @@ import java.text.NumberFormat;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+import javax.annotation.Nullable;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.LineIterator;
 import org.apache.commons.lang3.BooleanUtils;
@@ -39,12 +43,12 @@ import org.apache.commons.lang3.time.StopWatch;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.text.similarity.LevenshteinDetailedDistance;
-
 import org.nexial.commons.utils.DateUtility;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.IOFilePathFilter;
 import org.nexial.commons.utils.ResourceUtils;
 import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.plugins.base.BaseCommand;
 import org.nexial.core.plugins.filevalidation.RecordData;
@@ -53,8 +57,10 @@ import org.nexial.core.plugins.filevalidation.validators.ErrorReport;
 import org.nexial.core.plugins.filevalidation.validators.MasterFileValidator;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.OutputFileUtils;
-import org.nexial.core.variable.Syspath;
 
+import static java.io.File.separator;
+import static java.io.File.separatorChar;
+import static java.lang.System.lineSeparator;
 import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.NexialConst.Data.*;
 import static org.nexial.core.plugins.io.ComparisonResult.*;
@@ -63,16 +69,12 @@ import static org.nexial.core.plugins.io.IoAction.move;
 import static org.nexial.core.plugins.io.IoCommand.CompareMode.*;
 import static org.nexial.core.plugins.io.IoCommand.CompareMode.FAIL_FAST;
 import static org.nexial.core.utils.CheckUtils.*;
-import static java.io.File.separator;
-import static java.io.File.separatorChar;
-import static java.lang.System.lineSeparator;
 
 public class IoCommand extends BaseCommand {
     protected static final LevenshteinDetailedDistance levenshtein = LevenshteinDetailedDistance.getDefaultInstance();
     private static final String TMP_EOL = "~~~5EntrY.w4z.hErE~~~";
     private static final List<String> MS_OFFICE_FILE_EXT = Arrays.asList("xlsx", "xls", "doc", "docx", "ppt", "pptx");
     private static final NumberFormat PERCENT_FORMAT = NumberFormat.getPercentInstance();
-    private Syspath syspath = new Syspath();
 
     enum CompareMode {FAIL_FAST, THOROUGH, DIFF}
 
@@ -104,6 +106,39 @@ public class IoCommand extends BaseCommand {
     }
 
     /**
+     * search-and-replace routine on the content of {@code file} via the name/value pairs found in {@code config}. The
+     * {@code name} will be the search string, and the {@code value} the replacement string. Each name/value pairs will
+     * be first scanned for data variable substitution (based on {@code ${...}} syntax) before performing the
+     * search-and-replace routine. In order to circumvent the {@code ${...}} substitution - e.g. perhaps one desires
+     * to search for {@code ${data}} with {@code data} - one can escape the {@code ${...}} syntax. For example,
+     * {@code \$\{data\}}.
+     */
+    public StepResult searchAndReplace(String file, String config, String saveAs) throws IOException {
+        requiresReadableFile(file);
+        requiresReadableFile(config);
+        requiresNotBlank(saveAs, "invalid saveAs", saveAs);
+
+        Map<String, String> configMap = TextUtils.loadProperties(config);
+        if (MapUtils.isEmpty(configMap)) {
+            FileUtils.copyFile(new File(file), new File(saveAs));
+            return StepResult.success("Config '" + config + "' does not contain any search-and-replace configuration");
+        }
+
+        // treat escaped ${...} sequence
+        Map<String, String> configMap2 = new HashMap<>();
+        configMap.forEach((name, value) ->
+                              configMap2.put(ExecutionContext.unescapeToken(context.replaceTokens(name)),
+                                             ExecutionContext.unescapeToken(context.replaceTokens(value))));
+
+        AtomicReference<String> content =
+            new AtomicReference<>(FileUtils.readFileToString(new File(file), DEF_FILE_ENCODING));
+        configMap2.forEach((name, value) -> content.set(StringUtils.replace(content.get(), name, value)));
+        FileUtils.writeStringToFile(new File(saveAs), content.get(), DEF_FILE_ENCODING);
+
+        return StepResult.success("search-and-replace completed and saved to '" + saveAs + "'");
+    }
+
+    /**
      * "fast" compare between {@code file1} and {@code file2}.
      * </p>
      * The "fast" comparision includes file size and fail-fast byte-by-byte comparison without detailed
@@ -111,7 +146,7 @@ public class IoCommand extends BaseCommand {
      * </p>
      * This method is different than {@link #compare(String, String, String)} in that
      * {@link #compare(String, String, String)} includes the same "fast" compare, plus: <ol>
-     * <li><code>compare()</code> inclludes line-by-line comparison and differential report</li>
+     * <li><code>compare()</code> includes line-by-line comparison and differential report</li>
      * </ol>
      *
      * @see #compare(String, String, String)
@@ -216,27 +251,11 @@ public class IoCommand extends BaseCommand {
     }
 
     public StepResult writeFile(String file, String content, String append) {
-        requires(StringUtils.isNotBlank(file), "invalid file", file);
-        // allow user to write empty content to file (instead of throwing error)
-        // requires(StringUtils.isNotBlank(content), "invalid content", content);
-        requires(StringUtils.isNotBlank(append), "invalid value for append", append);
+        return writeFile(file, content, append, true);
+    }
 
-        boolean isAppend = BooleanUtils.toBoolean(append);
-        File output = new File(file);
-        if (output.isDirectory()) {
-            return StepResult.fail("'" + file + "' is EXPECTED as file, but found directory instead.");
-        }
-
-        content = StringUtils.replace(content, "\r\n", TMP_EOL);
-        content = StringUtils.replace(content, "\n", TMP_EOL);
-        content = StringUtils.replace(content, TMP_EOL, lineSeparator());
-
-        try {
-            FileUtils.writeStringToFile(output, StringUtils.defaultString(content), DEF_CHARSET, isAppend);
-            return StepResult.success("Content " + (isAppend ? " appended" : " written") + " to " + file);
-        } catch (IOException e) {
-            return StepResult.fail("Error occurred when writing to " + file + ": " + e.getMessage());
-        }
+    public StepResult writeFileAsIs(String file, String content, String append) {
+        return writeFile(file, content, append, false);
     }
 
     public StepResult writeProperty(String file, String property, String value) {
@@ -259,15 +278,11 @@ public class IoCommand extends BaseCommand {
             props.setProperty(property, value);
         }
 
-        FileWriter writer = null;
-        try {
-            writer = new FileWriter(input);
+        try (FileWriter writer = new FileWriter(input)) {
             props.store(writer, "updated on " + DateUtility.getCurrentDateTime());
             return StepResult.success("Property '" + property + "' updated to " + file);
         } catch (IOException e) {
             return StepResult.fail("Error occurred when writing to " + file + ": " + e.getMessage());
-        } finally {
-            if (writer != null) { try { writer.close(); } catch (IOException e) { } }
         }
     }
 
@@ -298,11 +313,11 @@ public class IoCommand extends BaseCommand {
         }
 
         return new StepResult(passed,
-                                "File (" + file + ") is " +
-                                (passed ?
-                                 "readable and meet size requirement" :
-                                 "NOT readable or less than specified size"
-                                ),
+                              "File (" + file + ") is " +
+                              (passed ?
+                               "readable and meet size requirement" :
+                               "NOT readable or less than specified size"
+                              ),
                               null);
     }
 
@@ -368,15 +383,18 @@ public class IoCommand extends BaseCommand {
         requiresValidVariableName(var);
         requiresNotBlank(profile, "Invalid 'profile',", profile);
         requiresReadableFile(inputFile);
-        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("MM/dd/yyyy HH:mm:ss");
+
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern(STD_DATE_FORMAT);
         String startTime = dtf.format(LocalDateTime.now());
+
         Map<String, String> configs = context.getDataByPrefix(profile);
         String jsonConfigFilePath;
         if (configs.containsKey(CONFIG_JSON)) {
             jsonConfigFilePath = configs.get(CONFIG_JSON);
             requiresReadableFile(jsonConfigFilePath);
         } else {
-            return StepResult.fail("Invalid profile name. Profile keyword 'CONFIG_JSON' not found");
+            return StepResult.fail("Invalid profile name '" + profile +
+                                   "' or associated variable '.configJson' not found");
         }
 
         String excelMappingFilePath = null;
@@ -389,11 +407,11 @@ public class IoCommand extends BaseCommand {
 
         RecordData recordData;
         MasterFileValidator fileParser = FileParserFactory.getFileParser(jsonConfigFilePath, excelMappingFilePath);
-        if (fileParser != null) {
-            stopWatch.start();
-            recordData = fileParser.parseAndValidate(inputFile);
-            stopWatch.stop();
-        } else { return StepResult.fail("Unable to parse input file '" + inputFile + "'"); }
+        requiresNotNull(fileParser, "Failed to provide suitable file parser");
+
+        stopWatch.start();
+        recordData = fileParser.parseAndValidate(inputFile);
+        stopWatch.stop();
 
         recordData.setStartTime(startTime);
         recordData.setProcessTime(DateFormatUtils.format(stopWatch.getTime(), "mm:ss:SSS"));
@@ -401,19 +419,25 @@ public class IoCommand extends BaseCommand {
         recordData.setExcelFile(excelMappingFilePath);
         context.setData(var, recordData);
 
-        String caption = "Total " +
-                         recordData.totalRecordsFailed() +
-                         " records failed out of " +
-                         recordData.getTotalRecordsProcessed();
-        caption.concat(" (click link on the right for details)");
+        String caption = "Total " + recordData.getTotalRecordsFailed() +
+                         " records failed out of " + recordData.getTotalRecordsProcessed() +
+                         " (click link on the right for details)";
 
-        String type = context.getStringData(profile + REPORT_TYPE);
+        File results = null;
+        String reportType = context.getStringData(profile + REPORT_TYPE);
+        if (!StringUtils.equalsAnyIgnoreCase(reportType, "Excel", "JSON")) {
+            ConsoleUtils.log("validation report can't be generated for invalid report type '" + reportType +
+                             "'. Valid reportType can be Excel or JSON");
+        }
 
-        File results = ErrorReport.create(type, recordData);
-        addLinkToOutputFile(results, type, caption);
+        if (reportType.equalsIgnoreCase("Excel")) { results = ErrorReport.createExcel(recordData); }
+        if (reportType.equalsIgnoreCase("JSON")) { results = ErrorReport.createJSON(recordData); }
+        if (results != null) { addLinkRef(caption, reportType + " report", results.getAbsolutePath()); }
         if (recordData.isHasError()) {
-            return StepResult.fail("Error in file validation ");
-        } else { return StepResult.success(); }
+            return StepResult.fail("Error in file validation. Refer error report.");
+        } else {
+            return StepResult.success();
+        }
 
     }
 
@@ -468,7 +492,72 @@ public class IoCommand extends BaseCommand {
         }
     }
 
+    /**
+     * rename a file or directory to the new name. {@code newName} is expected to be just the new file name or new
+     * directory name ONLY. This command is not a means to move a file or directory to another directory.
+     */
+    public StepResult rename(String target, String newName) {
+        requiresNotBlank(target, "Invalid target", target);
+        requiresNotBlank(newName, "Invalid new name", newName);
+
+        // is target a file or directory
+        String msgPrefix = "Unable to rename '" + target + "' to '" + newName + "' ";
+        if (!FileUtil.isFileReadable(target) && !FileUtil.isDirectoryReadable(target)) {
+            return StepResult.fail(msgPrefix + "because it cannot be resolved either as a file or a directory");
+        }
+
+        File targetFile = new File(target);
+
+        File newTarget = new File(targetFile.getParent(), newName);
+        if (newTarget.exists() && newTarget.canRead()) {
+            return StepResult.fail(msgPrefix + "because '" + newTarget + "' already exists.");
+        }
+
+        if (!targetFile.renameTo(newTarget)) {
+            return StepResult.fail("Unable to rename '" + target + "' to '" + newTarget + "': " +
+                                   "check on access and the feasibility of the new name '" + newName + "'");
+        }
+
+        return StepResult.success("'" + target + "' renamed to '" + newTarget + "'");
+    }
+
+    /**
+     * read binary content of {@code file} as base64 string and story it to {@code var}.
+     */
+    public StepResult base64(String var, String file) throws IOException {
+        requiresValidVariableName(var);
+        requiresReadableFile(file);
+
+        byte[] content = FileUtils.readFileToByteArray(new File(file));
+        context.setData(var, Base64.getEncoder().encodeToString(content));
+
+        return StepResult.success("File content converted to BASE64 and saved to '" + var + "'");
+    }
+
     public static String formatPercent(double number) { return PERCENT_FORMAT.format(number); }
+
+    @NotNull
+    protected StepResult writeFile(String file, String content, String append, boolean replaceTokens) {
+        requires(StringUtils.isNotBlank(file), "invalid file", file);
+        // allow user to write empty content to file (instead of throwing error)
+        // requires(StringUtils.isNotBlank(content), "invalid content", content);
+        requires(StringUtils.isNotBlank(append), "invalid value for append", append);
+
+        boolean isAppend = BooleanUtils.toBoolean(append);
+        File output = new File(file);
+        if (output.isDirectory()) {
+            return StepResult.fail("'" + file + "' is EXPECTED as file, but found directory instead.");
+        }
+
+        try {
+            content = OutputFileUtils.resolveContent(content, context, false, replaceTokens);
+            content = adjustEol(content);
+            FileUtils.writeStringToFile(output, StringUtils.defaultString(content), DEF_CHARSET, isAppend);
+            return StepResult.success("Content " + (isAppend ? "appended" : "written") + " to " + file);
+        } catch (IOException e) {
+            return StepResult.fail("Error occurred when writing to " + file + ": " + e.getMessage());
+        }
+    }
 
     protected StepResult doAction(IoAction action, String source, String target) {
         // sanity check
@@ -568,7 +657,7 @@ public class IoCommand extends BaseCommand {
             error(error);
 
             report.addFileMismatch(file(error));
-            // keep goinging
+            // keep going
         }
 
         return null;
@@ -783,34 +872,15 @@ public class IoCommand extends BaseCommand {
                     "Match percentage: " + IoCommand.formatPercent(report.getMatchPercent());
         }
 
-        String outFile = syspath.out("fullpath") + separator +
-                         OutputFileUtils.generateOutputFilename(context.getCurrentTestStep(), type);
         String output = null;
         if (StringUtils.equals(type, COMPARE_LOG_PLAIN)) { output = report.toPlainTextReport(); }
         if (StringUtils.equals(type, COMPARE_LOG_JSON)) { output = report.toJsonReport(); }
+        if (StringUtils.isEmpty(output)) { ConsoleUtils.error("logComparisonReport(): INVALID REPORT TYPE " + type); }
 
-        if (StringUtils.isEmpty(output)) {
-            ConsoleUtils.error("logComparisonReport(): INVALID REPORT TYPE " + type);
-        }
+        if (stats != null) { caption += lineSeparator() + stats; }
+        caption += " (click link on the right for details)";
 
-        File outputFile = new File(outFile);
-
-        try {
-            FileUtils.writeStringToFile(outputFile, output, DEF_FILE_ENCODING);
-            if (context.isOutputToCloud()) {
-                try {
-                    outFile = context.getS3Helper().importMedia(outputFile);
-                } catch (IOException e) {
-                    log("Unable to save " + outFile + " to cloud storage due to " + e.getMessage());
-                }
-            }
-
-            if (stats != null) { caption += lineSeparator() + stats; }
-            caption += " (click link on the right for details)";
-            addLinkRef(caption, type + " report", outFile);
-        } catch (IOException e) {
-            error("Unable to write log file to '" + outFile + "': " + e.getMessage(), e);
-        }
+        addOutputAsLink(caption, output, type);
     }
 
     protected int scanForMatchingRow(String matchTo, List<String> matchFrom, int startFrom) {
@@ -858,6 +928,49 @@ public class IoCommand extends BaseCommand {
         if (report == null || !report.hasMismatch()) { return StepResult.success("No diff found"); }
         context.setData(var, report.showDiffs());
         return StepResult.success("File diffs are saved to '" + var + "'");
+    }
+
+    @Nullable
+    private String adjustEol(String content) {
+        if (StringUtils.isEmpty(content)) { return content; }
+
+        String eol;
+        String eolConfig = context.getStringData(OPT_IO_EOL_CONFIG, EOL_CONFIG_DEF);
+        switch (eolConfig) {
+            case EOL_CONFIG_AS_IS: {
+                eol = "";
+                break;
+            }
+            case EOL_CONFIG_PLATFORM: {
+                eol = lineSeparator();
+                break;
+            }
+            case EOL_CONFIG_UNIX: {
+                eol = "\n";
+                break;
+            }
+            case EOL_CONFIG_WINDOWS: {
+                eol = "\r\n";
+                break;
+            }
+            default: {
+                eol = "";
+                break;
+            }
+        }
+
+        ConsoleUtils.log("setting end-of-line character as " +
+                         (StringUtils.isEmpty(eol) ?
+                          "is" :
+                          StringUtils.replace(StringUtils.replace(eol, "\n", "\\n"), "\r", "\\r")));
+
+        if (StringUtils.isNotEmpty(eol)) {
+            content = StringUtils.replace(content, "\r\n", TMP_EOL);
+            content = StringUtils.replace(content, "\n", TMP_EOL);
+            content = StringUtils.replace(content, TMP_EOL, eol);
+        }
+
+        return content;
     }
 
     private boolean isMSOfficeTempFile(String filepath) {

@@ -17,6 +17,7 @@
 
 package org.nexial.core.plugins.base;
 
+import java.awt.image.*;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -29,17 +30,18 @@ import java.lang.reflect.Parameter;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import javax.imageio.ImageIO;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-
 import org.nexial.commons.utils.JRegexUtils;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
-import org.nexial.core.NexialConst.Data;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.excel.ext.CellTextReader;
 import org.nexial.core.model.CommandRepeater;
@@ -51,31 +53,37 @@ import org.nexial.core.plugins.NexialCommand;
 import org.nexial.core.tools.CommandDiscovery;
 import org.nexial.core.utils.CheckUtils;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.variable.Syspath;
 
-import static org.nexial.core.NexialConst.MSG_FAIL;
-import static org.nexial.core.NexialConst.OPT_EASY_STRING_COMPARE;
+import static java.lang.Boolean.FALSE;
+import static java.lang.Boolean.TRUE;
+import static java.lang.System.lineSeparator;
+import static java.util.regex.Pattern.CASE_INSENSITIVE;
+import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.NULL;
+import static org.nexial.core.NexialConst.Data.toCloudIntegrationNotReadyMessage;
 import static org.nexial.core.excel.ExcelConfig.MSG_PASS;
 import static org.nexial.core.excel.ext.CipherHelper.CRYPT_IND;
 import static org.nexial.core.plugins.base.IncrementStrategy.ALPHANUM;
 import static org.nexial.core.utils.CheckUtils.*;
 import static org.nexial.core.utils.OutputFileUtils.CASE_INSENSIVE_SORT;
-import static java.lang.Boolean.FALSE;
-import static java.lang.Boolean.TRUE;
-import static java.lang.System.lineSeparator;
-import static java.util.regex.Pattern.CASE_INSENSITIVE;
 
 public class BaseCommand implements NexialCommand {
     public static final List<String> PARAM_AUTO_FILL_COMMANDS = Arrays.asList("desktop.typeTextBox",
                                                                               "desktop.typeAppendTextBox",
                                                                               "desktop.typeAppendTextArea",
-                                                                              "desktop.typeTextArea");
+                                                                              "desktop.typeTextArea",
+                                                                              "desktop.sendKeysToTextBox");
+    // "self-derived" means that the command will figure out the appropriate param values for display
+    public static final List<String> PARAM_DERIVED_COMMANDS = Collections.singletonList("step.observe");
+
     protected static final IncrementStrategy STRATEGY_DEFAULT = ALPHANUM;
 
     protected transient Map<String, Method> commandMethods = new HashMap<>();
     protected transient ExecutionContext context;
-    protected long pollWaitMs;
     protected long pauseMs;
     protected transient ContextScreenRecorder screenRecorder;
+    protected Syspath syspath = new Syspath();
 
     public BaseCommand() {
         collectCommandMethods();
@@ -84,7 +92,6 @@ public class BaseCommand implements NexialCommand {
     @Override
     public void init(ExecutionContext context) {
         this.context = context;
-        pollWaitMs = context.getPollWaitMs();
         pauseMs = context.getDelayBetweenStep();
     }
 
@@ -118,14 +125,15 @@ public class BaseCommand implements NexialCommand {
         if (context.isVerbose() && (this instanceof CanLogExternally)) {
             String displayValues = "";
             for (Object value : values) {
-                displayValues += (value == null ? Data.NULL : CellTextReader.readValue(value.toString())) + ",";
+                displayValues += (value == null ? NULL : CellTextReader.readValue(value.toString())) + ",";
             }
             displayValues = StringUtils.removeEnd(displayValues, ",");
             ((CanLogExternally) this).logExternally(context.getCurrentTestStep(), command + " (" + displayValues + ")");
         }
 
         StepResult result = (StepResult) m.invoke(this, values);
-        result.setParamValues(values);
+        String methodName = StringUtils.substringBefore(StringUtils.substringBefore(command, "("), ".");
+        if (!PARAM_DERIVED_COMMANDS.contains(getTarget() + "." + methodName)) { result.setParamValues(values); }
         return result;
     }
 
@@ -156,11 +164,18 @@ public class BaseCommand implements NexialCommand {
             return StepResult.success("video recording already stopped (or never ran)");
         }
 
+        ConsoleUtils.log("stopping currently in-progress video recording...");
         try {
             screenRecorder.setContext(context);
             screenRecorder.stop();
             screenRecorder = null;
             return StepResult.success("previous recording stopped");
+        } catch (IOException e) {
+            String error = "Unable to stop and/or save screen recording" +
+                           (context.isOutputToCloud() ? ", possible due to cloud integration" : "") +
+                           ": " + e.getMessage();
+            log(error);
+            return StepResult.fail(error);
         } catch (Throwable e) {
             return StepResult.fail("Unable to stop previous recording: " + e.getMessage());
         }
@@ -168,7 +183,7 @@ public class BaseCommand implements NexialCommand {
 
     // todo: reconsider command name.  this is not intuitive
     public StepResult incrementChar(String var, String amount, String config) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid variable", var);
+        requiresValidVariableName(var);
         int amountInt = toInt(amount, "amount");
 
         String current = StringUtils.defaultString(context.getStringData(var));
@@ -178,14 +193,12 @@ public class BaseCommand implements NexialCommand {
         if (StringUtils.isNotBlank(config)) {
             try {
                 strategy = IncrementStrategy.valueOf(config);
-                if (strategy == null) { strategy = STRATEGY_DEFAULT; }
             } catch (IllegalArgumentException e) {
-                strategy = STRATEGY_DEFAULT;
+                // don't worry.. we'll just ue default strategy
             }
         }
 
         String newVal = strategy.increment(current, amountInt);
-
         context.setData(var, newVal);
 
         return StepResult.success("incremented ${" + var + "} by " + amountInt + " to " + newVal);
@@ -195,6 +208,39 @@ public class BaseCommand implements NexialCommand {
         requiresValidVariableName(var);
         context.setData(var, value);
         return StepResult.success("stored '" + CellTextReader.readValue(value) + "' as ${" + var + "}");
+    }
+
+    /**
+     * clear data variables by name
+     */
+    public StepResult clear(String vars) {
+        requiresNotBlank(vars, "invalid variable(s)", vars);
+
+        List<String> ignoredVars = new ArrayList<>();
+        List<String> removedVars = new ArrayList<>();
+
+        TextUtils.toList(vars, context.getTextDelim(), true).forEach(var -> {
+            if (context.isReadOnlyData(var)) {
+                ignoredVars.add(var);
+            } else if (StringUtils.isNotEmpty(context.removeData(var))) {
+                removedVars.add(var);
+            }
+        });
+
+        StringBuilder message = new StringBuilder();
+        if (CollectionUtils.isNotEmpty(ignoredVars)) {
+            message.append("The following data variable(s) are READ ONLY and ignored: ")
+                   .append(TextUtils.toString(ignoredVars, ",")).append(" ");
+        }
+        if (CollectionUtils.isNotEmpty(removedVars)) {
+            message.append("The following data variable(s) are removed from execution: ")
+                   .append(TextUtils.toString(removedVars, ",")).append(" ");
+        }
+        if (CollectionUtils.isEmpty(ignoredVars) && CollectionUtils.isEmpty(removedVars)) {
+            message.append("None of the specified variables are removed since they either are READ-ONLY or not exist");
+        }
+
+        return StepResult.success(message.toString());
     }
 
     public StepResult substringAfter(String text, String delim, String saveVar) {
@@ -237,37 +283,46 @@ public class BaseCommand implements NexialCommand {
         return StepResult.success("prepend '" + prependWith + " to ${" + var + "}");
     }
 
-    public StepResult saveMatches(String text, String regex, String saveVar) {
-        requires(StringUtils.isNotBlank(text), "invalid text", text);
+    public StepResult saveCount(String text, String regex, String saveVar) {
         requiresValidVariableName(saveVar);
-        context.setData(saveVar, findTextMatches(text, regex));
-        return StepResult.success("matches stored to variable " + saveVar);
+        List<String> groups = findTextMatches(text, regex);
+        int count = CollectionUtils.size(groups);
+        context.setData(saveVar, count);
+        return StepResult.success("match count (" + count + ") stored to variable ${" + saveVar + "}");
+    }
+
+    public StepResult saveMatches(String text, String regex, String saveVar) {
+        requiresValidVariableName(saveVar);
+        List<String> groups = findTextMatches(text, regex);
+        if (CollectionUtils.isEmpty(groups)) {
+            context.removeData(saveVar);
+            return StepResult.success("No matches found on text '" + text + "'");
+        } else {
+            context.setData(saveVar, groups);
+            return StepResult.success("matches stored to variable ${" + saveVar + "}");
+        }
     }
 
     public StepResult saveReplace(String text, String regex, String replace, String saveVar) {
-        requiresNotBlank(text, "invalid text", text);
-        requires(StringUtils.isNotBlank(regex), "invalid regular expression", regex);
+        requiresValidVariableName(saveVar);
         if (replace == null || context.isNullValue(replace)) { replace = ""; }
 
         // run regex routine
         List<String> groups = findTextMatches(text, regex);
         if (CollectionUtils.isEmpty(groups)) {
             context.removeData(saveVar);
-            return StepResult.success("No matches found on variable " + text);
+            return StepResult.success("No matches found on text '" + text + "'");
+        } else {
+            context.setData(saveVar, JRegexUtils.replace(text, regex, replace));
+            return StepResult.success("matches replaced and stored to variable " + saveVar);
         }
-
-        context.setData(saveVar, JRegexUtils.replace(text, regex, replace));
-        return StepResult.success("matches replaced and stored to variable " + saveVar);
     }
 
     public StepResult assertCount(String text, String regex, String expects) {
-        requires(StringUtils.isNotBlank(text), "invalid text", text);
-        requires(StringUtils.isNotBlank(expects) && NumberUtils.isDigits(expects), "invalid expects", expects);
-
-        List<String> groups = findTextMatches(text, regex);
-
-        // final assertion
-        return assertEqual(expects, CollectionUtils.size(groups) + "");
+        requiresPositiveNumber(expects, "invalid numeric value as 'expects'", expects);
+        return toInt(expects, "expects") == CollectionUtils.size(findTextMatches(text, regex)) ?
+               StepResult.success("expected number of matches found") :
+               StepResult.fail("expected number of matches was NOT found");
     }
 
     public StepResult assertTextOrder(String var, String descending) {
@@ -302,7 +357,7 @@ public class BaseCommand implements NexialCommand {
         }
 
         if (CollectionUtils.isEmpty(expected) && CollectionUtils.isEmpty(actual)) {
-            return StepResult.fail("No data for cmparison, hence no order can be asserted");
+            return StepResult.fail("No data for comparison, hence no order can be asserted");
         }
 
         // now make 'expected' organized as expected - but applying case insensitive sort
@@ -325,13 +380,11 @@ public class BaseCommand implements NexialCommand {
     }
 
     public StepResult assertEqual(String expected, String actual) {
+        assertEquals(context.isNullValue(expected) ? null : expected, context.isNullValue(actual) ? null : actual);
+
         String nullValue = context.getNullValueToken();
-
-        assertEquals(StringUtils.equals(expected, nullValue) ? null : expected,
-                     StringUtils.equals(actual, nullValue) ? null : actual);
-
-        return StepResult.success("validated " + StringUtils.defaultString(expected, nullValue) +
-                                  "=" + StringUtils.defaultString(actual, nullValue));
+        return StepResult.success("validated EXPECTED = ACTUAL; '" + StringUtils.defaultString(expected, nullValue) +
+                                  "' = '" + StringUtils.defaultString(actual, nullValue) + "'");
     }
 
     public StepResult assertNotEqual(String expected, String actual) {
@@ -340,8 +393,9 @@ public class BaseCommand implements NexialCommand {
         assertNotEquals(StringUtils.equals(expected, nullValue) ? null : expected,
                         StringUtils.equals(actual, nullValue) ? null : actual);
 
-        return StepResult.success("validated " + StringUtils.defaultString(expected, nullValue) +
-                                  " not equals to " + StringUtils.defaultString(actual, nullValue));
+        return StepResult.success("validated EXPECTED not equal to ACTUAL; '" +
+                                  StringUtils.defaultString(expected, nullValue) + "' not equals to '" +
+                                  StringUtils.defaultString(actual, nullValue) + "'");
     }
 
     public StepResult assertContains(String text, String substring) {
@@ -379,7 +433,7 @@ public class BaseCommand implements NexialCommand {
 
     public StepResult assertEndsWith(String text, String suffix) {
         boolean contains = StringUtils.endsWith(text, suffix);
-        // not so fast.. could be one of those quarky IE issues..
+        // not so fast.. could be one of those quirky IE issues..
         if (!contains && context.isLenientStringCompare()) {
             String lenientSuffix = StringUtils.replaceEach(StringUtils.trim(suffix),
                                                            new String[]{"\r", "\n"},
@@ -398,18 +452,15 @@ public class BaseCommand implements NexialCommand {
     }
 
     public StepResult assertArrayEqual(String array1, String array2, String exactOrder) {
-        requires(StringUtils.isNotEmpty(array1), "first array is empty", array1);
-        requires(StringUtils.isNotEmpty(array2), "second array is empty", array2);
+        // requires(StringUtils.isNotEmpty(array1), "first array is empty", array1);
+        // requires(StringUtils.isNotEmpty(array2), "second array is empty", array2);
         requires(StringUtils.isNotEmpty(exactOrder), "invalid value for exactOrder", exactOrder);
 
-        String nullValue = context.getNullValueToken();
-
         // null corner case
-        if (StringUtils.equals(array1, nullValue)) {
-            if (StringUtils.equals(array2, nullValue)) {
-                return StepResult.success("validated " + StringUtils.defaultString(array1, nullValue) +
-                                          "=" + StringUtils.defaultString(array2, nullValue));
-            }
+        if (areBothEmpty(array1, array2)) {
+            String nullValue = context.getNullValueToken();
+            return StepResult.success("validated " + StringUtils.defaultString(array1, nullValue) + "=" +
+                                      StringUtils.defaultString(array2, nullValue));
         }
 
         String delim = context.getTextDelim();
@@ -428,6 +479,65 @@ public class BaseCommand implements NexialCommand {
         return StepResult.success("validated " + array1 + "=" + array2 + " as EXPECTED");
     }
 
+    /** assert that {@code array} contains all items in {@code expected}. */
+    public StepResult assertArrayContain(String array, String expected) {
+        requiresNotBlank(array, "array is blank", array);
+        requiresNotBlank(expected, "expected is blank", expected);
+
+        // null corner case
+        if (areBothEmpty(array, expected)) {
+            String nullValue = context.getNullValueToken();
+            return StepResult.success("validated " + StringUtils.defaultString(array, nullValue) +
+                                      " contain " + StringUtils.defaultString(expected, nullValue));
+        }
+
+        String delim = context.getTextDelim();
+
+        List<String> list = TextUtils.toList(array, delim, false);
+        if (CollectionUtils.isEmpty(list)) { CheckUtils.fail("'array' cannot be parsed: " + array); }
+
+        List<String> expectedList = TextUtils.toList(expected, delim, false)
+                                             .stream()
+                                             .distinct()
+                                             .collect(Collectors.toList());
+
+        if (CollectionUtils.isEmpty(expectedList)) { CheckUtils.fail("'expected' cannot be parsed: " + expected); }
+
+        // all all items in `expectedList` is removed due to match against `list`, then all items in `expected` matched
+        if (expectedList.removeIf(list::contains) && expectedList.isEmpty()) {
+            return StepResult.success("All items in 'expected' are found in 'array'");
+        }
+
+        return StepResult.fail("Not all items in 'expected' are found in 'array': " + expectedList);
+    }
+
+    /** assert that {@code array} DOES NOT contains any items in {@code expected}. */
+    public StepResult assertArrayNotContain(String array, String unexpected) {
+        requiresNotBlank(array, "array is blank", array);
+        requiresNotBlank(unexpected, "unexpected is blank", unexpected);
+
+        // null corner case
+        if (areBothEmpty(array, unexpected)) { return StepResult.fail("Both 'array' and 'unexpected' are NULL"); }
+
+        String delim = context.getTextDelim();
+
+        List<String> list = TextUtils.toList(array, delim, false);
+        if (CollectionUtils.isEmpty(list)) { CheckUtils.fail("'array' cannot be parsed: " + array); }
+
+        List<String> unexpectedList = TextUtils.toList(unexpected, delim, false)
+                                               .stream()
+                                               .distinct()
+                                               .collect(Collectors.toList());
+        if (CollectionUtils.isEmpty(unexpectedList)) { CheckUtils.fail("'unexpected' cannot be parsed: " + unexpected);}
+
+        // all all items in `expectedList` is removed due to match against `list`, then all items in `expected` matched
+        if (unexpectedList.removeIf(item -> !list.contains(item)) && unexpectedList.isEmpty()) {
+            return StepResult.success("All items in 'unexpected' are NOT found in 'array'");
+        }
+
+        return StepResult.fail("One or more items in 'unexpected' are found in 'array': " + unexpectedList);
+    }
+
     public StepResult assertVarPresent(String var) {
         requiresValidVariableName(var);
         boolean found = context.hasData(var);
@@ -438,6 +548,18 @@ public class BaseCommand implements NexialCommand {
         requiresValidVariableName(var);
         boolean found = context.hasData(var);
         return new StepResult(!found, "Variable '" + var + "' " + (found ? "INDEED" : "does not") + " exist", null);
+    }
+
+    public StepResult saveVariablesByRegex(String var, String regex) {
+        requiresValidVariableName(var);
+        requiresNotBlank(regex, "invalid regex", regex);
+        return saveMatchedVariables(var, regex, context.getDataNamesByRegex(regex));
+    }
+
+    public StepResult saveVariablesByPrefix(String var, String prefix) {
+        requiresValidVariableName(var);
+        requiresNotBlank(prefix, "invalid prefix", prefix);
+        return saveMatchedVariables(var, prefix, context.getDataNames(prefix));
     }
 
     public StepResult failImmediate(String text) {
@@ -472,7 +594,7 @@ public class BaseCommand implements NexialCommand {
         if (StringUtils.isNotBlank(maxWaitMs) && !StringUtils.equals(StringUtils.trim(maxWaitMs), "-1")) {
             requiresPositiveNumber(maxWaitMs, "maxWaitMs must be a positive number", maxWait);
             maxWait = NumberUtils.toLong(maxWaitMs);
-            requires(maxWait > 1000, "mininium maxWaitMs is 1 second", maxWaitMs);
+            requires(maxWait > 1000, "minimum maxWaitMs is 1 second", maxWaitMs);
         }
 
         TestStep currentTestStep = context.getCurrentTestStep();
@@ -488,13 +610,26 @@ public class BaseCommand implements NexialCommand {
      * invoke a set of test steps stored in {@code file}, referenced by {@code name}.  {@code file} must be
      * fully qualified, whilst Nexial function may be used (e.g. {@code $(syspath)}).
      *
-     * @param file the fullpath of the macro library.
+     * @param file the full path of the macro library.
      * @param name the name of the macro to invoke
      * @return pass/fail based on the validity of the referenced macro/file.  If macro {@code name} or library
      * ({@code file}) is not found, a failure is returned with fail-immediate in effect.
      */
     public StepResult macro(String file, String sheet, String name) {
         return failImmediate("Runtime error: Macro reference (" + file + "," + sheet + "," + name + ") not expanded");
+    }
+
+    /**
+     * identify a set of test steps considered as section which includes number of test steps {@code steps}
+     *
+     * @param steps the number test steps to be included in the section
+     * @return pass
+     */
+    public StepResult section(String steps) {
+        requiresPositiveNumber(steps, "Invalid step count", steps);
+        int stepCount = NumberUtils.toInt(steps);
+        requires(stepCount > 0, "At least 1 step is required", steps);
+        return StepResult.success();
     }
 
     /** Like JUnit's Assert.assertEquals, but handles "regexp:" strings like HTML Selenese */
@@ -568,6 +703,45 @@ public class BaseCommand implements NexialCommand {
         return NumberUtils.toDouble((isNegative ? "-" : "") + something);
     }
 
+    public void addLinkRef(String message, String label, String link) {
+        if (StringUtils.isBlank(link)) { return; }
+
+        if (context.isOutputToCloud()) {
+            try {
+                link = context.getOtc().importMedia(new File(link));
+            } catch (IOException e) {
+                log(toCloudIntegrationNotReadyMessage(link) + ": " + e.getMessage());
+            }
+        }
+
+        if (context != null && context.getLogger() != null) {
+            TestStep testStep = context.getCurrentTestStep();
+            if (testStep != null && testStep.getWorksheet() != null) {
+                // test step undefined could mean that we are in interactive mode, or we are running unit testing
+                context.setData(OPT_LAST_OUTPUT_LINK, link);
+                testStep.addNestedScreenCapture(link, message, label);
+            }
+        }
+    }
+
+    @NotNull
+    protected StepResult saveMatchedVariables(String var, String regex, Collection<String> matched) {
+        int matchCount = CollectionUtils.size(matched);
+        if (matchCount < 1) {
+            ConsoleUtils.log("No data variable matching to " + regex);
+            context.removeData(var);
+        } else {
+            context.setData(var, TextUtils.toString(matched, context.getTextDelim()));
+        }
+
+        return StepResult.success(matchCount + " matched variable(s) saved to data variable '" + var + "'");
+    }
+
+    protected boolean areBothEmpty(String value1, String value2) {
+        return (StringUtils.isEmpty(value1) || context.isNullValue(value1) || context.isEmptyValue(value1)) &&
+               (StringUtils.isEmpty(value2) || context.isNullValue(value2) || context.isEmptyValue(value2));
+    }
+
     /**
      * Compares two strings, but handles "regexp:" strings like HTML Selenese
      *
@@ -611,8 +785,8 @@ public class BaseCommand implements NexialCommand {
         expectedGlob = expectedGlob.replaceAll("\\*", ".*");
         expectedGlob = expectedGlob.replaceAll("\\?", ".");
         if (!Pattern.compile(expectedGlob, Pattern.DOTALL).matcher(actual).matches()) {
-            ConsoleUtils.log("expected \"" + actual + "\" to match glob \"" + expectedPattern
-                             + "\" (had transformed the glob into regexp \"" + expectedGlob + "\"");
+            // ConsoleUtils.log("expected \"" + actual + "\" to match glob \"" + expectedPattern
+            //                  + "\" (had transformed the glob into regexp \"" + expectedGlob + "\"");
             return false;
         }
         return true;
@@ -701,8 +875,8 @@ public class BaseCommand implements NexialCommand {
     protected void assertTrue(String message, boolean condition) {
         if (!condition) {
             CheckUtils.fail(message);
-        } else {
-            log(MSG_PASS + message);
+            // } else {
+            //     log(MSG_PASS + message);
         }
     }
 
@@ -732,9 +906,12 @@ public class BaseCommand implements NexialCommand {
     }
 
     protected void verifyFalse(String description, boolean b) {
-        String result = !b ? MSG_PASS : MSG_FAIL;
-        log(result + (StringUtils.isNotBlank(description) ? description : ""));
-        //if (b) { verificationErrors.append(description); }
+        description = StringUtils.isNotBlank(description) ? description : "";
+        if (!b) {
+            log(MSG_PASS + description);
+        } else {
+            error(MSG_FAIL + description);
+        }
         verifyFalse(b);
     }
 
@@ -756,8 +933,12 @@ public class BaseCommand implements NexialCommand {
     }
 
     protected void verifyTrue(String description, boolean b) {
-        String result = b ? MSG_PASS : MSG_FAIL;
-        log(result + (StringUtils.isNotBlank(description) ? description : ""));
+        description = StringUtils.isNotBlank(description) ? description : "";
+        if (b) {
+            log(MSG_PASS + description);
+        } else {
+            error(MSG_FAIL + description);
+        }
         verifyTrue(b);
     }
 
@@ -802,7 +983,6 @@ public class BaseCommand implements NexialCommand {
     protected List<String> findTextMatches(String text, String regex) {
         requiresNotBlank(text, "invalid text", text);
         requires(StringUtils.isNotBlank(regex), "invalid regular expression", regex);
-        // return JRegexUtils.collectGroups(text, regex);
         return RegexUtils.eagerCollectGroups(text, regex, true, true);
     }
 
@@ -813,21 +993,19 @@ public class BaseCommand implements NexialCommand {
         Object value = context.getObjectData(var);
         if (value == null) { return null; }
 
-        String text = "";
         if (value.getClass().isArray()) {
             int length = ArrayUtils.getLength(value);
+            String text = "";
             for (int i = 0; i < length; i++) {
                 text += Objects.toString(Array.get(value, i));
                 if (i < length - 1) { text += lineSeparator(); }
             }
-        } else if (value instanceof List) {
-            text = TextUtils.toString((List) value, lineSeparator());
-        } else if (value instanceof Map) {
-            text = TextUtils.toString((Map) value, lineSeparator(), "=");
-        } else {
-            text = Objects.toString(value);
+            return text;
         }
-        return text;
+
+        if (value instanceof List) { return TextUtils.toString((List) value, lineSeparator()); }
+        if (value instanceof Map) { return TextUtils.toString((Map) value, lineSeparator(), "="); }
+        return Objects.toString(value);
     }
 
     protected StepResult saveSubstring(List<String> textArray, String delimStart, String delimEnd, String var) {
@@ -868,9 +1046,10 @@ public class BaseCommand implements NexialCommand {
 
         Method[] allMethods = this.getClass().getDeclaredMethods();
         Arrays.stream(allMethods).forEach(m -> {
-            if (Modifier.isPublic(m.getModifiers())
-                && StepResult.class.isAssignableFrom(m.getReturnType())
-                && !StringUtils.equals(m.getName(), "execute")) {
+            if (Modifier.isPublic(m.getModifiers()) &&
+                !Modifier.isStatic(m.getModifiers()) &&
+                StepResult.class.isAssignableFrom(m.getReturnType()) &&
+                !StringUtils.equals(m.getName(), "execute")) {
 
                 commandMethods.put(m.getName(), m);
 
@@ -878,27 +1057,27 @@ public class BaseCommand implements NexialCommand {
                     String command = m.getName() + "(";
 
                     Parameter[] parameters = m.getParameters();
-                    for (Parameter param : parameters) { command += param.getName() + ","; }
+                    for (Parameter param : parameters) {
+                        // workaround for kotlin (var is reserved in kotlin)
+                        String paramName = StringUtils.equals(param.getName(), "Var") ? "var" : param.getName();
+                        command += paramName + ",";
+                    }
 
-                    command = StringUtils.removeEnd(command, ",") + ")";
-                    String target = getTarget();
-                    discovery.addCommand(target, command);
+                    discovery.addCommand(getTarget(), StringUtils.removeEnd(command, ",") + ")");
                 }
             }
         });
     }
 
     protected static Boolean handleRegex(String prefix, String expectedPattern, String actual, int flags) {
-        if (expectedPattern.startsWith(prefix)) {
-            String expectedRegEx = expectedPattern.replaceFirst(prefix, ".*") + ".*";
-            Pattern p = Pattern.compile(expectedRegEx, flags);
-            if (!p.matcher(actual).matches()) {
-                ConsoleUtils.log("expected " + actual + " to match regexp " + expectedPattern);
-                return FALSE;
-            }
-            return TRUE;
-        }
-        return null;
+        if (!expectedPattern.startsWith(prefix)) { return null; }
+
+        String expectedRegEx = expectedPattern.replaceFirst(prefix, ".*") + ".*";
+        Pattern p = Pattern.compile(expectedRegEx, flags);
+        if (p.matcher(actual).matches()) { return TRUE; }
+
+        ConsoleUtils.log("expected " + actual + " to match regexp " + expectedPattern);
+        return FALSE;
     }
 
     protected static boolean assertEqualsInternal(String expected, String actual) {
@@ -946,52 +1125,54 @@ public class BaseCommand implements NexialCommand {
     }
 
     protected void log(String message) {
-        if (StringUtils.isBlank(message)) { return; }
-        if (context != null && context.getLogger() != null) { context.getLogger().log(this, message); }
-    }
-
-    protected void addLinkRef(String message, String label, String link) {
-        if (StringUtils.isBlank(link)) { return; }
-
-        if (context != null && context.getLogger() != null) {
-            TestStep testStep = context.getCurrentTestStep();
-            if (testStep != null && testStep.getWorksheet() != null) {
-                // test step undefined could mean that we are in interactive mode, or we are running unit testing
-                testStep.addNestedScreenCapture(link, message, label);
-            }
+        if (StringUtils.isNotBlank(message) && context != null && context.getLogger() != null) {
+            context.getLogger().log(this, message);
         }
-    }
-
-    protected void addLinkToOutputFile(File outputFile, String type, String linkCaption) {
-        String outFile = outputFile.getPath();
-        if (context.isOutputToCloud()) {
-
-            try {
-                outFile = context.getS3Helper().importMedia(outputFile);
-            } catch (IOException e) {
-                log("Unable to save " + outFile + " to cloud storage due to " + e.getMessage());
-            }
-        }
-        addLinkRef(linkCaption, type + " report", outFile);
-
     }
 
     protected void error(String message) { error(message, null); }
 
     protected void error(String message, Throwable e) {
-        if (StringUtils.isBlank(message)) { return; }
-        context.getLogger().error(this, message, e);
+        if (StringUtils.isNotBlank(message) && context != null && context.getLogger() != null) {
+            context.getLogger().error(this, message, e);
+        }
     }
 
-    private Object[] resolveParamValues(Method m, String... params) {
+    /**
+     * create a file with {@code output} as its text content and its name based on current step and {@code extension}.
+     *
+     * to improve readability and user experience, use {@code caption} to describe such file on the execution output.
+     */
+    protected void addOutputAsLink(String caption, String output, String extension) {
+        String outFile = context.generateTestStepOutput(extension);
+
+        try {
+            FileUtils.writeStringToFile(new File(outFile), output, DEF_FILE_ENCODING);
+            addLinkRef(caption, extension + " report", outFile);
+        } catch (IOException e) {
+            error("Unable to write log file to '" + outFile + "': " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * create a file with {@code output} as its content and its name based on current step and {@code extension}.
+     *
+     * to improve readability and user experience, use {@code caption} to describe such file on the execution output.
+     */
+    protected void addOutputAsLink(String caption, BufferedImage output, String extension) {
+        String outFile = context.generateTestStepOutput(extension);
+
+        try {
+            ImageIO.write(output, extension, new File(outFile));
+            addLinkRef(caption, "comparison", outFile);
+        } catch (IOException e) {
+            error("Unable to create image file '" + outFile + "': " + e.getMessage(), e);
+        }
+    }
+
+    protected Object[] resolveParamValues(Method m, String... params) {
         int numOfParamSpecified = ArrayUtils.getLength(params);
         int numOfParamExpected = ArrayUtils.getLength(m.getParameterTypes());
-
-        // if (numOfParamExpected != numOfParamSpecified) {
-        // 	ConsoleUtils.log(context.getCurrentTestStep().showPosition(),
-        // 	                 "WARNING: EXPECTS " + numOfParamExpected + " parameters but received " +
-        // 	                 numOfParamSpecified + ". Missing parameters will be filled with empty string.");
-        // }
 
         Object[] args = new Object[numOfParamExpected];
         for (int i = 0; i < args.length; i++) {

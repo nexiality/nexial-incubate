@@ -17,55 +17,69 @@
 
 package org.nexial.core.excel;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
 import java.math.BigInteger;
+import java.security.GeneralSecurityException;
 import java.util.*;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
+import org.apache.poi.openxml4j.exceptions.OLE2NotOfficeXmlFileException;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.poifs.crypt.Decryptor;
+import org.apache.poi.poifs.crypt.EncryptionInfo;
+import org.apache.poi.poifs.crypt.EncryptionMode;
+import org.apache.poi.poifs.crypt.Encryptor;
+import org.apache.poi.poifs.filesystem.FileMagic;
+import org.apache.poi.poifs.filesystem.NPOIFSFileSystem;
+import org.apache.poi.ss.formula.eval.NotImplementedException;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.ss.util.WorkbookUtil;
 import org.apache.poi.xssf.usermodel.*;
-
 import org.nexial.commons.proc.ProcessInvoker;
 import org.nexial.commons.proc.ProcessOutcome;
 import org.nexial.commons.utils.FileUtil;
+import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.ExecutionThread;
 import org.nexial.core.excel.ExcelConfig.*;
 import org.nexial.core.excel.ext.CellTextReader;
+import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.utils.ConsoleUtils;
 
+import static java.io.File.separator;
+import static org.apache.commons.lang3.SystemUtils.*;
+import static org.apache.poi.poifs.filesystem.FileMagic.OLE2;
+import static org.apache.poi.ss.SpreadsheetVersion.EXCEL2007;
+import static org.apache.poi.ss.usermodel.CellType.BLANK;
+import static org.apache.poi.ss.usermodel.CellType.*;
+import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
+import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.RETURN_BLANK_AS_NULL;
 import static org.nexial.core.NexialConst.Data.*;
 import static org.nexial.core.excel.ExcelConfig.*;
 import static org.nexial.core.excel.ExcelConfig.StyleConfig.*;
-import static java.io.File.separator;
-import static org.apache.commons.lang3.SystemUtils.*;
-import static org.apache.poi.ss.SpreadsheetVersion.EXCEL2007;
-import static org.apache.poi.ss.usermodel.Cell.CELL_TYPE_BLANK;
-import static org.apache.poi.ss.usermodel.CellType.ERROR;
-import static org.apache.poi.ss.usermodel.CellType.STRING;
-import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
-import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.RETURN_BLANK_AS_NULL;
 
 /**
  * Wrapper for managing Excel documents.
  */
 public class Excel {
-    private static final int MIN_EXCEL_FILE_SIZE = 5 * 1024;
+    public static final int MIN_EXCEL_FILE_SIZE = 5 * 1024;
+    private static boolean verboseInstantiation = false;
+
     // var to support spring-injected value
-    float _cellSpacing = 4.8f;
+    float _cellSpacing = 5.2f;
 
     private File file;
     private XSSFWorkbook workbook;
@@ -74,6 +88,8 @@ public class Excel {
     /** list all existing cell styles in the excel file */
     private Set<XSSFCellStyle> workbookStyles;
     private Map<String, XSSFCellStyle> commonStyles;
+    // in case of `dupThenOpen` it's a good idea to track the actual target file
+    private File originalFile;
 
     public class Worksheet {
         private XSSFSheet sheet;
@@ -165,8 +181,8 @@ public class Excel {
             assert style != null;
 
             XSSFCell cell = firstCell(addr);
-            int cellType = cell.getCellType();
-            if (cellType == CELL_TYPE_BLANK) {
+            CellType cellType = cell.getCellTypeEnum();
+            if (cellType == BLANK) {
                 setValue(cell, appendWith, style);
                 return cell;
             }
@@ -179,34 +195,72 @@ public class Excel {
             return cell;
         }
 
-        public Worksheet writeAcross(ExcelAddress startCell, List<String> data) throws IOException {
-            int startRowIndex = startCell.getRowStartIndex();
+        /**
+         * write across (horizontally) an Excel spreadsheet, starting from {@code startCell}.  The {@code data} is
+         * represented as "list of list of string", where the outer list represents "rows" and inner list represents
+         * "columns".
+         *
+         * Excel rows are automatically created as needed.
+         *
+         * If {@code data} is a list of list of 1 item, it would essentially function as
+         * {@link #writeDown(ExcelAddress, List)}.
+         */
+        @NotNull
+        public Worksheet writeAcross(ExcelAddress startCell, List<List<String>> rows) throws IOException {
+            if (startCell == null) { return this; }
+            if (CollectionUtils.isEmpty(rows)) { return this; }
+
+            final int[] startRowIndex = {startCell.getRowStartIndex()};
             int startColIndex = startCell.getColumnStartIndex();
-            int endColIndex = startColIndex + CollectionUtils.size(data);
 
-            XSSFRow row = sheet.getRow(startRowIndex);
-            if (row == null) { row = sheet.createRow(startRowIndex); }
+            rows.forEach(data -> {
+                int endColIndex = startColIndex + CollectionUtils.size(data);
 
-            for (int i = startColIndex; i < endColIndex; i++) {
-                row.getCell(i, CREATE_NULL_AS_BLANK).setCellValue(IterableUtils.get(data, i - startColIndex));
-            }
+                XSSFRow row = sheet.getRow(startRowIndex[0]);
+                if (row == null) { row = sheet.createRow(startRowIndex[0]); }
+
+                for (int i = startColIndex; i < endColIndex; i++) {
+                    row.getCell(i, CREATE_NULL_AS_BLANK).setCellValue(IterableUtils.get(data, i - startColIndex));
+                }
+
+                startRowIndex[0]++;
+            });
 
             save();
             return this;
         }
 
-        public Worksheet writeDown(ExcelAddress startCell, List<String> data) throws IOException {
+        /**
+         * write down (vertically) an Excel spreadsheet, starting from {@code startCell}.  The {@code data} is
+         * represented as "list of list of string", where the outer list represents "columns" and inner list represents
+         * "rows".
+         *
+         * Excel rows are automatically created as needed.
+         *
+         * If {@code data} is a list of list of 1 item, it would essentially function as
+         * {@link #writeAcross(ExcelAddress, List)}.
+         */
+        @NotNull
+        public Worksheet writeDown(ExcelAddress startCell, List<List<String>> columns) throws IOException {
+            if (startCell == null) { return this; }
+            if (CollectionUtils.isEmpty(columns)) { return this; }
+
             int startRowIndex = startCell.getRowStartIndex();
-            int endRowIndex = startRowIndex + CollectionUtils.size(data);
-            int startColIndex = startCell.getColumnStartIndex();
+            final int[] startColIndex = {startCell.getColumnStartIndex()};
 
-            for (int i = startRowIndex; i < endRowIndex; i++) {
-                XSSFRow row = sheet.getRow(i);
-                if (row == null) { row = sheet.createRow(i); }
+            columns.forEach(data -> {
+                int endRowIndex = startRowIndex + CollectionUtils.size(data);
 
-                row.getCell(startColIndex, CREATE_NULL_AS_BLANK)
-                   .setCellValue(IterableUtils.get(data, i - startRowIndex));
-            }
+                for (int i = startRowIndex; i < endRowIndex; i++) {
+                    XSSFRow row = sheet.getRow(i);
+                    if (row == null) { row = sheet.createRow(i); }
+
+                    row.getCell(startColIndex[0], CREATE_NULL_AS_BLANK)
+                       .setCellValue(IterableUtils.get(data, i - startRowIndex));
+                }
+
+                startColIndex[0]++;
+            });
 
             save();
             return this;
@@ -218,9 +272,7 @@ public class Excel {
         }
 
         public Style style(XSSFCell cell) {
-            return new Style(copyFont(cell != null ?
-                                      cell.getCellStyle().getFont() :
-                                      workbook.getFontAt((short) 0)));
+            return new Style(copyFont(cell != null ? cell.getCellStyle().getFont() : workbook.getFontAt((short) 0)));
         }
 
         public XSSFRichTextString setValue(ExcelAddress addr, RichTextString value) {
@@ -228,12 +280,10 @@ public class Excel {
             assert value != null;
 
             XSSFCell cell = firstCell(addr);
-            if (cell != null) {
-                cell.setCellValue(value);
-                return cell.getRichStringCellValue();
-            }
+            if (cell == null) { return null; }
 
-            return null;
+            cell.setCellValue(value);
+            return cell.getRichStringCellValue();
         }
 
         public void setRowValues(ExcelAddress addr, List<String> values) {
@@ -248,6 +298,55 @@ public class Excel {
             for (int i = startRow; i < endRow; i++) {
                 if (sheet.getRow(i) == null) { sheet.createRow(i); }
                 sheet.getRow(i).getCell(columnIndex).setCellValue(values.get(i - startRow));
+            }
+        }
+
+        /**
+         * optimized version of {@link #setRowValues(ExcelAddress, List)}. This one is faster
+         */
+        public void setRowValues(ExcelAddress addr, List<String> values, String styleName, float rowHeight) {
+            assert addr != null;
+            assert CollectionUtils.isNotEmpty(values);
+            // assert styleConfig != null;
+
+            workbook.setMissingCellPolicy(CREATE_NULL_AS_BLANK);
+            // XSSFCellStyle cellStyle = StyleDecorator.decorate(newCellStyle(), createFont(), styleConfig);
+            XSSFCellStyle cellStyle = commonStyles.get(styleName);
+
+            int columnIndex = addr.getColumnStartIndex();
+            int startRow = addr.getRowStartIndex();
+            int endRow = values.size() + startRow;
+            for (int i = startRow; i < endRow; i++) {
+                if (sheet.getRow(i) == null) { sheet.createRow(i); }
+                XSSFRow row = sheet.getRow(i);
+                XSSFCell cell = row.getCell(columnIndex);
+                cell.setCellValue(values.get(i - startRow));
+                cell.setCellStyle(cellStyle);
+                row.setHeightInPoints(rowHeight);
+            }
+        }
+
+        public void setLinkCell(ExcelAddress addr, String link, String text, String styleName, float rowHeight) {
+            assert addr != null;
+            assert text != null;
+            // assert styleConfig != null;
+
+            workbook.setMissingCellPolicy(CREATE_NULL_AS_BLANK);
+            // XSSFCellStyle cellStyle = StyleDecorator.decorate(newCellStyle(), createFont(), styleConfig);
+            XSSFCellStyle cellStyle = commonStyles.get(styleName);
+
+            int startRow = addr.getRowStartIndex();
+            if (sheet.getRow(startRow) == null) { sheet.createRow(startRow); }
+            XSSFRow row = sheet.getRow(startRow);
+
+            XSSFCell cell = row.getCell(addr.getColumnStartIndex());
+            cell.setCellStyle(cellStyle);
+            row.setHeightInPoints(rowHeight);
+
+            if (StringUtils.isNotBlank(link)) {
+                Excel.setHyperlink(cell, link, text);
+            } else {
+                cell.setCellValue(text);
             }
         }
 
@@ -274,6 +373,23 @@ public class Excel {
             XSSFRichTextString richText = new XSSFRichTextString(text);
             richText.applyFont(style.font);
             cell.setCellValue(richText);
+            return cell;
+        }
+
+        /**
+         * ensure the parent row of {@code cell} has enough height to display the number of lines as denoted by
+         * {@code linesToShow}.  If the row in question already does, then its height will not be modified.
+         */
+        public XSSFCell setMinHeight(XSSFCell cell, int linesToShow) {
+            if (cell != null) {
+                float newHeight = linesToShow == 1 ?
+                                  21 :
+                                  (cell.getCellStyle().getFont().getFontHeightInPoints() + _cellSpacing) * linesToShow;
+
+                XSSFRow row = cell.getRow();
+                float actualHeight = row.getHeightInPoints();
+                if (actualHeight < newHeight) { row.setHeightInPoints(newHeight); }
+            }
             return cell;
         }
 
@@ -313,6 +429,8 @@ public class Excel {
 
         public File getFile() { return file; }
 
+        public Excel excel() { return Excel.this; }
+
         /** find the last row in a contiguous column block */
         public int findLastDataRow(ExcelAddress startCellAddr) {
             assert startCellAddr != null;
@@ -350,8 +468,8 @@ public class Excel {
         }
 
         /**
-         * find the next empty row immediately after the specified {@code startCellAddr}.  The scope of a row is defined by
-         * the {@code startCellAddr}.
+         * find the next empty row immediately after the specified {@code startCellAddr}.  The scope of a row is
+         * defined by the {@code startCellAddr}.
          */
         public int findNextEntirelyEmptyRow(ExcelAddress startCellAddr) {
             assert startCellAddr != null;
@@ -394,7 +512,7 @@ public class Excel {
                 XSSFRow row = sheet.getRow(i);
                 if (row == null) { continue; }
 
-                for (int j = startColIndex; j < endColIndex; j++) {
+                for (int j = startColIndex; j <= endColIndex; j++) {
                     XSSFCell cell = row.getCell(j, RETURN_BLANK_AS_NULL);
                     if (cell != null) { row.removeCell(cell); }
                 }
@@ -436,25 +554,100 @@ public class Excel {
         }
 
         public void shiftRows(int startRow, int endRow, int shiftBy) {
-            if (startRow < 0 || endRow < 0 || shiftBy < 0) { return; }
+            if (startRow < 0 || endRow < 0 || shiftBy == 0) { return; }
 
-            sheet.shiftRows(startRow, endRow, shiftBy);
+            // due to https://bz.apache.org/bugzilla/show_bug.cgi?id=57423
+            // we currently CANNOT directly shift rows via 1 method call.  POI 3.17 can only
+            // shift rows with increment equal or less than the number of rows being shifted.
 
-            List<CellRangeAddress> mergedRegions = sheet.getMergedRegions();
-            if (CollectionUtils.isNotEmpty(mergedRegions)) {
-                for (CellRangeAddress merged : mergedRegions) {
-                    int initialMergedRow = merged.getFirstRow();
-                    if (initialMergedRow >= startRow) {
-                        int newMergedRow = initialMergedRow + shiftBy;
-                        sheet.addMergedRegion(
-                            new CellRangeAddress(newMergedRow, newMergedRow,
-                                                 COL_IDX_MERGE_RESULT_START, COL_IDX_PARAMS_END));
+            // sheet.shiftRows(startRow, endRow, shiftBy);
+
+            int shiftInterval = endRow - startRow + 1;
+            int rowsToShift = shiftBy;
+            int currentStartRow = startRow;
+            int currentEndRow = endRow;
+
+            if (shiftBy > 0) {
+                while (rowsToShift > 0) {
+                    int shifts = rowsToShift < shiftInterval ? rowsToShift : shiftInterval;
+                    rowsToShift -= shiftInterval;
+
+                    sheet.shiftRows(currentStartRow, currentEndRow, shifts);
+
+                    currentStartRow += rowsToShift;
+                    currentEndRow += rowsToShift;
+                }
+
+                List<CellRangeAddress> mergedRegions = sheet.getMergedRegions();
+                if (CollectionUtils.isNotEmpty(mergedRegions)) {
+                    for (CellRangeAddress merged : mergedRegions) {
+                        int initialMergedRow = merged.getFirstRow();
+                        if (initialMergedRow >= startRow) {
+                            int newMergedRow = initialMergedRow + shiftBy;
+                            sheet.addMergedRegion(
+                                new CellRangeAddress(newMergedRow, newMergedRow,
+                                                     COL_IDX_MERGE_RESULT_START, COL_IDX_PARAMS_END));
+                        }
+                    }
+                }
+            }
+
+            if (shiftBy < 0) {
+                while (rowsToShift < 0) {
+                    int shifts = rowsToShift > shiftInterval ? rowsToShift : shiftInterval;
+                    rowsToShift += shiftInterval;
+
+                    sheet.shiftRows(currentStartRow, currentEndRow, shifts);
+
+                    currentStartRow -= rowsToShift;
+                    currentEndRow -= rowsToShift;
+                }
+
+                List<CellRangeAddress> mergedRegions = sheet.getMergedRegions();
+                if (CollectionUtils.isNotEmpty(mergedRegions)) {
+                    for (CellRangeAddress merged : mergedRegions) {
+                        int initialMergedRow = merged.getFirstRow();
+                        if (initialMergedRow < startRow) {
+                            int newMergedRow = initialMergedRow - shiftBy;
+                            sheet.addMergedRegion(
+                                new CellRangeAddress(newMergedRow, newMergedRow,
+                                                     COL_IDX_MERGE_RESULT_START, COL_IDX_PARAMS_END));
+                        }
                     }
                 }
             }
         }
 
         public void save() throws IOException { Excel.save(getFile(), sheet.getWorkbook()); }
+
+        @NotNull
+        public List<List<String>> readRange(ExcelAddress range) {
+            List<List<String>> values = new ArrayList<>();
+            if (range == null) { return values; }
+
+            List<List<XSSFCell>> wholeArea = cells(range, false);
+            if (CollectionUtils.isEmpty(wholeArea)) { return values; }
+
+            wholeArea.forEach(row -> {
+                List<String> rowValues = new ArrayList<>();
+                row.forEach(cell -> rowValues.add(prepCellData(Excel.getCellValue(cell))));
+                values.add(rowValues);
+            });
+
+            return values;
+        }
+
+        protected String prepCellData(String cellValue) {
+            if (StringUtils.isEmpty(cellValue)) { return cellValue; }
+
+            cellValue = StringUtils.replace(cellValue, "\"", "\"\"");
+
+            if (StringUtils.containsAny(cellValue, ",", "\r", "\n")) {
+                return TextUtils.wrapIfMissing(cellValue, "\"", "\"");
+            }
+
+            return cellValue;
+        }
 
         /** set a worksheet as readonly -- mainly so that user won't accidentally modify test result */
         protected void setAsReadOnly() {
@@ -588,7 +781,22 @@ public class Excel {
 
     public Excel(File file, boolean dupThenOpen, boolean initCommonStyles) throws IOException {
         assert file != null && file.canRead();
-        if (dupThenOpen) { file = duplicateInTemp(file); }
+
+        if (verboseInstantiation) {
+            // SimpleBenchmarker.start();
+            StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+            System.out.println(">>>>> new Excel(" + file + "," + dupThenOpen + "," + initCommonStyles + ") from");
+            int max = NumberUtils.min(5, stackTrace.length - 1);
+            for (int i = 1; i <= max; i++) {
+                StackTraceElement st = stackTrace[i];
+                System.out.println("\t\t" + st.getClassName() + "." + st.getMethodName() + ":" + st.getLineNumber());
+            }
+        }
+
+        if (dupThenOpen) {
+            this.originalFile = file;
+            file = duplicateInTemp(file);
+        }
 
         this.file = file;
         // DO NOT USE - open excel via File object will cause JVM crash during save!
@@ -602,6 +810,10 @@ public class Excel {
         workbookStyles = gatherCellStyles();
 
         if (initCommonStyles) { initCommonStyles(); }
+
+        // SimpleBenchmarker.logEnd(logger, "new Excel(file=" + file +
+        //                                  ",dupThenOpen=" + dupThenOpen +
+        //                                  ",initCommonStyles=" + initCommonStyles);
     }
 
     public Worksheet worksheet(String name) { return worksheet(name, false); }
@@ -631,6 +843,8 @@ public class Excel {
 
     public File getFile() { return file; }
 
+    public File getOriginalFile() { return ObjectUtils.defaultIfNull(originalFile, file); }
+
     public XSSFWorkbook getWorkbook() { return workbook; }
 
     public Set<XSSFCellStyle> getWorkbookStyles() { return workbookStyles; }
@@ -645,25 +859,29 @@ public class Excel {
     public static String getCellValue(XSSFCell cell) {
         if (cell == null) { return null; }
 
-        XSSFWorkbook workbook = cell.getRow().getSheet().getWorkbook();
-        FormulaEvaluator evaluator = workbook != null ? workbook.getCreationHelper().createFormulaEvaluator() : null;
-
         CellType cellType = cell.getCellTypeEnum();
         switch (cellType) {
             case BLANK:
             case NUMERIC:
             case BOOLEAN:
+                FormulaEvaluator evaluator = deriveFormulaEvaluator(cell);
                 return new DataFormatter().formatCellValue(cell, evaluator);
             case FORMULA:
-                if (evaluator == null) { return new DataFormatter().formatCellValue(cell); }
+                FormulaEvaluator evaluator1 = deriveFormulaEvaluator(cell);
+                if (evaluator1 == null) { return new DataFormatter().formatCellValue(cell); }
 
-                CellValue cellValue = evaluator.evaluate(cell);
+                // evaluation might fail since not all formulae are implemented by POI
+                try {
+                    CellValue cellValue = evaluator1.evaluate(cell);
 
-                // special handling for error after formula is evaluated
-                if (cellValue == null) { return ""; }
-                if (cellValue.getCellTypeEnum() == ERROR) { return cellValue.formatAsString(); }
+                    // special handling for error after formula is evaluated
+                    if (cellValue == null) { return ""; }
+                    if (cellValue.getCellTypeEnum() == ERROR) { return cellValue.formatAsString(); }
 
-                return new DataFormatter().formatCellValue(cell, evaluator);
+                    return new DataFormatter().formatCellValue(cell, evaluator1);
+                } catch (NotImplementedException e) {
+                    return new DataFormatter().formatCellValue(cell);
+                }
             case ERROR:
                 return cell.getErrorCellString();
             default:
@@ -704,7 +922,8 @@ public class Excel {
         }
 
         XSSFSheet sheet = cell.getSheet();
-        //sheet.setForceFormulaRecalculation(true);
+        // forces recalculation will help the hyperlink cell to format properly
+        sheet.setForceFormulaRecalculation(true);
         cell.setCellStyle(StyleDecorator.generate(sheet.getWorkbook(), LINK));
         return cell;
     }
@@ -723,9 +942,44 @@ public class Excel {
         return new Excel(file);
     }
 
+    public void initResultCommonStyles() {
+        if (commonStyles == null) { commonStyles = new HashMap<>(); }
+        commonStyles.put(STYLE_EXEC_SUMM_TITLE, StyleDecorator.generate(workbook, EXEC_SUMM_TITLE));
+        commonStyles.put(STYLE_EXEC_SUMM_DATA_HEADER, StyleDecorator.generate(workbook, EXEC_SUMM_DATA_HEADER));
+        commonStyles.put(STYLE_EXEC_SUMM_DATA_NAME, StyleDecorator.generate(workbook, EXEC_SUMM_DATA_NAME));
+        commonStyles.put(STYLE_EXEC_SUMM_DATA_VALUE, StyleDecorator.generate(workbook, EXEC_SUMM_DATA_VALUE));
+        commonStyles.put(STYLE_EXEC_SUMM_EXCEPTION, StyleDecorator.generate(workbook, EXEC_SUMM_EXCEPTION));
+        commonStyles.put(STYLE_EXEC_SUMM_HEADER, StyleDecorator.generate(workbook, EXEC_SUMM_HEADER));
+        commonStyles.put(STYLE_EXEC_SUMM_SCENARIO, StyleDecorator.generate(workbook, EXEC_SUMM_SCENARIO));
+        commonStyles.put(STYLE_EXEC_SUMM_ACTIVITY, StyleDecorator.generate(workbook, EXEC_SUMM_ACTIVITY));
+        commonStyles.put(STYLE_EXEC_SUMM_TIMESPAN, StyleDecorator.generate(workbook, EXEC_SUMM_TIMESPAN));
+        commonStyles.put(STYLE_EXEC_SUMM_DURATION, StyleDecorator.generate(workbook, EXEC_SUMM_DURATION));
+        commonStyles.put(STYLE_EXEC_SUMM_TOTAL, StyleDecorator.generate(workbook, EXEC_SUMM_TOTAL));
+        commonStyles.put(STYLE_EXEC_SUMM_PASS, StyleDecorator.generate(workbook, EXEC_SUMM_PASS));
+        commonStyles.put(STYLE_EXEC_SUMM_FAIL, StyleDecorator.generate(workbook, EXEC_SUMM_FAIL));
+        commonStyles.put(STYLE_EXEC_SUMM_SUCCESS, StyleDecorator.generate(workbook, EXEC_SUMM_SUCCESS));
+        commonStyles.put(STYLE_EXEC_SUMM_NOT_SUCCESS, StyleDecorator.generate(workbook, EXEC_SUMM_NOT_SUCCESS));
+        commonStyles.put(STYLE_EXEC_SUMM_FINAL_SUCCESS, StyleDecorator.generate(workbook, EXEC_SUMM_FINAL_SUCCESS));
+        commonStyles.put(STYLE_EXEC_SUMM_FINAL_NOT_SUCCESS,
+                         StyleDecorator.generate(workbook, EXEC_SUMM_FINAL_NOT_SUCCESS));
+        commonStyles.put(STYLE_EXEC_SUMM_FINAL_TOTAL, StyleDecorator.generate(workbook, EXEC_SUMM_FINAL_TOTAL));
+    }
+
+    public void close() throws IOException {
+        file = null;
+        originalFile = null;
+        allsheets = null;
+        workbookStyles = null;
+        commonStyles = null;
+
+        if (workbook != null) { workbook.close(); }
+    }
+
     public void save() throws IOException { save(file, workbook); }
 
     public static void save(File excelFile, XSSFWorkbook excelWorkbook) throws IOException {
+        // SimpleBenchmarker.start();
+
         OutputStream out = null;
         try {
             out = FileUtils.openOutputStream(excelFile);
@@ -734,6 +988,47 @@ public class Excel {
             if (out != null) {
                 out.flush();
                 out.close();
+            }
+
+            // SimpleBenchmarker.logEnd(logger, "Excel.save(excelFile=" + excelFile);
+        }
+    }
+
+    public static Excel asXlsxExcel(String file, boolean dupThenOpen, boolean initCommonStyles) throws IOException {
+        if (StringUtils.isBlank(file) || !FileUtil.isFileReadable(file, MIN_EXCEL_FILE_SIZE)) { return null; }
+
+        Workbook workbook = null;
+        try {
+            File excelFile = new File(file);
+            Excel excel = new Excel(new File(file), dupThenOpen, initCommonStyles);
+            if (excel.workbook.getSpreadsheetVersion() == EXCEL2007) {
+                return excel;
+            }
+
+            workbook = WorkbookFactory.create(excelFile);
+            if (workbook != null && workbook.getSpreadsheetVersion() == EXCEL2007) {
+                return new Excel(new File(file), dupThenOpen);
+            }
+
+            // not excel-2007 or above
+            ConsoleUtils.error("\n\n\n" +
+                               StringUtils.repeat("!", 80) + "\n" +
+                               "File (" + excelFile + ")\n" +
+                               "is either unreadable, not of version Excel 2007 or above, or is currently open.\n" +
+                               "If this file is currently open, please close it before retrying again.\n" +
+                               StringUtils.repeat("!", 80) + "\n" +
+                               "\n\n");
+            return null;
+        } catch (InvalidFormatException | OLE2NotOfficeXmlFileException e) {
+            ConsoleUtils.error("Unable to open workbook (" + file + "): " + e.getMessage());
+            return null;
+        } finally {
+            if (workbook != null) {
+                try {
+                    workbook.close();
+                } catch (IOException e) {
+                    ConsoleUtils.error("Unable to close workbook (" + file + "): " + e.getMessage());
+                }
             }
         }
     }
@@ -763,6 +1058,8 @@ public class Excel {
                     ConsoleUtils.error("Unable to close workbook (" + file + "): " + e.getMessage());
                 }
             }
+
+            if (DEF_OPEN_EXCEL_AS_DUP && excelFile != null) { FileUtils.deleteQuietly(excelFile.getParentFile()); }
         }
     }
 
@@ -773,24 +1070,38 @@ public class Excel {
         return style;
     }
 
+    /**
+     * create or append to existing comment for {@code cell}.
+     */
     public static Comment createComment(XSSFCell cell, String comment, String author) {
-        XSSFSheet sheet = cell.getSheet();
-        XSSFWorkbook workbook = sheet.getWorkbook();
-        CreationHelper factory = workbook.getCreationHelper();
-        XSSFRow row = cell.getRow();
+        RichTextString str;
 
-        Drawing drawing = sheet.createDrawingPatriarch();
+        // append to existing comment (if exist)
+        XSSFComment commentCell = cell.getCellComment();
+        if (commentCell != null) {
+            str = commentCell.getString();
+            ((XSSFRichTextString) str).append("\n" + comment);
+        } else {
+            XSSFSheet sheet = cell.getSheet();
+            XSSFWorkbook workbook = sheet.getWorkbook();
 
-        // When the comment box is visible, have it show in a 1x3 space
-        ClientAnchor anchor = factory.createClientAnchor();
-        anchor.setCol1(cell.getColumnIndex());
-        anchor.setCol2(cell.getColumnIndex() + 1);
-        anchor.setRow1(row.getRowNum());
-        anchor.setRow2(row.getRowNum() + 3);
+            int column = cell.getColumnIndex();
+            int rowNum = cell.getRow().getRowNum();
 
-        // Create the comment and set the text+author
-        Comment commentCell = drawing.createCellComment(anchor);
-        RichTextString str = factory.createRichTextString(comment);
+            // When the comment box is visible, have it show in a 1x3 space
+            CreationHelper factory = workbook.getCreationHelper();
+            ClientAnchor anchor = factory.createClientAnchor();
+            anchor.setCol1(column);
+            anchor.setCol2(column + 1);
+            anchor.setRow1(rowNum);
+            anchor.setRow2(rowNum + 3);
+
+            XSSFDrawing drawing = sheet.createDrawingPatriarch();
+            commentCell = drawing.createCellComment(anchor);
+            str = factory.createRichTextString(comment);
+        }
+
+        // Create/append the comment and set the text+author
         commentCell.setString(str);
         commentCell.setAuthor(author);
 
@@ -825,56 +1136,147 @@ public class Excel {
         if (CollectionUtils.isEmpty(cells)) { return false; }
 
         // now compare the gathered cell values against the expected values
-        List<String> headers = new ArrayList<>();
-        cells.forEach(cell -> headers.add(cell.getStringCellValue()));
-        return CollectionUtils.isEqualCollection(expectRowText, headers);
+        List<String> actual = new ArrayList<>();
+        cells.forEach(cell -> actual.add(Excel.getCellValue(cell)));
+        return CollectionUtils.isEqualCollection(expectRowText, actual);
     }
 
     public static void openExcel(File testScript) {
+        String file = testScript.getAbsolutePath();
+
         try {
-            String file = testScript.getAbsolutePath();
-            if (IS_OS_MAC) { ProcessInvoker.invoke("open", Collections.singletonList(file), null); }
+            if (IS_OS_MAC) {
+                ProcessInvoker.invoke("open", Collections.singletonList(file), null);
+                return;
+            }
+
             if (IS_OS_WINDOWS) {
-                String spreadsheetProgram = System.getProperty(SPREADSHEET_PROGRAM, DEF_SPREADSHEET);
-                ProcessInvoker.invoke(WIN32_CMD, Arrays.asList("/C", "start", "\"\"", spreadsheetProgram, file), null);
+                ExecutionContext context = ExecutionThread.get();
+                String spreadsheetExe = context == null ?
+                                        System.getProperty(SPREADSHEET_PROGRAM, DEF_SPREADSHEET) :
+                                        context.getStringData(SPREADSHEET_PROGRAM);
+                if (StringUtils.equals(spreadsheetExe, SPREADSHEET_PROGRAM_WPS)) {
+                    spreadsheetExe = context == null ? System.getProperty(WPS_EXE_LOCATION) :
+                                     context.getStringData(WPS_EXE_LOCATION);
+                }
+
+                // https://superuser.com/questions/198525/how-can-i-execute-a-windows-command-line-in-background
+                // start "" [program]... will cause CMD to exit before program executes.. sorta like running program in background
+                ProcessInvoker.invoke(WIN32_CMD, Arrays.asList("/C", "start", "\"\"", spreadsheetExe, file), null);
             }
         } catch (IOException | InterruptedException e) {
-            System.err.println("ERROR!!! Can't open " + testScript + ": " + e.getMessage());
+            ConsoleUtils.error("ERROR!!! Can't open " + testScript + ": " + e.getMessage());
         }
     }
 
     public static String resolveWpsExecutablePath() {
-        if (IS_OS_WINDOWS) {
-            try {
-                ProcessOutcome outcome = ProcessInvoker.invoke(WIN32_CMD,
-                                                               Arrays.asList("/C",
-                                                                             "%windir%\\System32\\where.exe",
-                                                                             "/R",
-                                                                             "\"%LOCALAPPDATA%\\Kingsoft\\WPS Office\"",
-                                                                             "et.exe"), null);
-                int exitStatus = outcome.getExitStatus();
-                if (exitStatus != 0) {
-                    System.err.println("ERROR!!! Unable to determine WPS spreadsheet program location: " + exitStatus);
-                    return null;
-                }
-
-                String[] output = StringUtils.split(outcome.getStdout(), "\r\n");
-                if (ArrayUtils.isEmpty(output)) {
-                    System.err.println("ERROR!!! Unable to determine WPS spreadsheet program location: NO OUTPUT");
-                    return null;
-                }
-
-                Arrays.sort(output);
-                ArrayUtils.reverse(output);
-                return output[0];
-            } catch (IOException | InterruptedException e) {
-                System.err.println("ERROR!!! Unable to determine WPS spreadsheet program location: " + e.getMessage());
-                return null;
-            }
+        if (!IS_OS_WINDOWS) {
+            ConsoleUtils.error("WPS is not supported on " + OS_NAME);
+            return null;
         }
 
-        System.err.println("WPS is not supported on " + SystemUtils.OS_NAME);
-        return null;
+        try {
+            ProcessOutcome outcome = ProcessInvoker.invoke(WIN32_CMD,
+                                                           Arrays.asList("/C",
+                                                                         "%windir%\\System32\\where.exe",
+                                                                         "/R",
+                                                                         "\"%LOCALAPPDATA%\\Kingsoft\\WPS Office\"",
+                                                                         "et.exe"), null);
+            int exitStatus = outcome.getExitStatus();
+            if (exitStatus != 0) {
+                ConsoleUtils.error("ERROR!!! Unable to determine WPS spreadsheet program location: " + exitStatus);
+                return null;
+            }
+
+            String[] output = StringUtils.split(outcome.getStdout(), "\r\n");
+            if (ArrayUtils.isEmpty(output)) {
+                ConsoleUtils.error("ERROR!!! Unable to determine WPS spreadsheet program location: NO OUTPUT");
+                return null;
+            }
+
+            Arrays.sort(output);
+            ArrayUtils.reverse(output);
+            ConsoleUtils.log("resolving WPS Spreadsheet as '" + output[0]);
+            return output[0];
+        } catch (IOException | InterruptedException e) {
+            ConsoleUtils.error("ERROR!!! Unable to determine WPS spreadsheet program location: " + e.getMessage());
+            return null;
+        }
+    }
+
+    public static void setExcelPassword(File excelFile, String password) {
+
+        EncryptionInfo encInfo = new EncryptionInfo(EncryptionMode.agile);
+        Encryptor enc = encInfo.getEncryptor();
+        enc.confirmPassword(password);
+        NPOIFSFileSystem npoifs = new NPOIFSFileSystem();
+
+        try (OutputStream os = enc.getDataStream(npoifs)) {
+            OPCPackage opc = OPCPackage.open(excelFile);
+
+            opc.save(os);
+            opc.close();
+
+            if (!npoifs.isInPlaceWriteable()) {
+                try (FileOutputStream fos = new FileOutputStream(excelFile)) { npoifs.writeFilesystem(fos); }
+            } else {
+                npoifs.writeFilesystem();
+            }
+
+        } catch (IOException | InvalidFormatException | GeneralSecurityException e) {
+            throw new IllegalArgumentException("Unable to set password to excel file " + e.getMessage(), e);
+        }
+    }
+
+    public static FileMagic deriveFileFormat(File excelFile) {
+        try {
+            return FileMagic.valueOf(FileUtils.readFileToByteArray(excelFile));
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Unable to derive file type for " + e.getMessage());
+        }
+    }
+
+    public static boolean clearExcelPassword(File excelFile, String password) {
+
+        try (FileInputStream fis = new FileInputStream(excelFile);
+             NPOIFSFileSystem npoifs = new NPOIFSFileSystem(fis)) {
+
+            EncryptionInfo encInfo = new EncryptionInfo(npoifs);
+            Decryptor decryptor = Decryptor.getInstance(encInfo);
+            if (!decryptor.verifyPassword(password)) { return false; }
+
+            try (InputStream dataStream = decryptor.getDataStream(npoifs);
+                 XSSFWorkbook workbook = new XSSFWorkbook(dataStream);
+                 FileOutputStream fos = new FileOutputStream(excelFile)) {
+                workbook.write(fos);
+                return true;
+            }
+        } catch (IOException | GeneralSecurityException e) {
+            throw new IllegalArgumentException("Unable to read excel file " + excelFile.getAbsolutePath(), e);
+        }
+    }
+
+    public static boolean isPasswordSet(File excelFile) { return deriveFileFormat(excelFile) == OLE2; }
+
+    /**
+     * adjust cell height to fit (visibly) its content. {@literal charPerLine} indicates the number of characters each
+     * line should have within said cell.
+     */
+    public static void adjustCellHeight(Worksheet worksheet, XSSFCell cell, int charPerLine) {
+        if (worksheet == null) { return; }
+
+        String content = Excel.getCellValue(cell);
+        if (StringUtils.isBlank(content)) { return; }
+
+        int lineCount = StringUtils.countMatches(content, "\n") + 1;
+        String[] lines = StringUtils.split(content, "\n");
+        if (ArrayUtils.isEmpty(lines)) { lines = new String[]{content}; }
+        for (String line : lines) { lineCount += Math.ceil((double) StringUtils.length(line) / charPerLine) - 1; }
+
+        // lineCount should always be at least 1. otherwise this row will not be rendered with height 0
+        if (lineCount < 1) { lineCount = 1; }
+
+        worksheet.setMinHeight(cell, lineCount);
     }
 
     /**
@@ -907,6 +1309,12 @@ public class Excel {
         return newFont;
     }
 
+    @Nullable
+    protected static FormulaEvaluator deriveFormulaEvaluator(XSSFCell cell) {
+        XSSFWorkbook workbook = cell.getRow().getSheet().getWorkbook();
+        return workbook != null ? workbook.getCreationHelper().createFormulaEvaluator() : null;
+    }
+
     private static void createWorkbook(File file) throws IOException {
         Workbook wb = new XSSFWorkbook();
         try (FileOutputStream fileOut = FileUtils.openOutputStream(file)) { wb.write(fileOut); }
@@ -916,7 +1324,7 @@ public class Excel {
         if (file == null || !file.exists() || !file.canRead()) { return null; }
 
         File tmpDir = SystemUtils.getJavaIoTmpDir();
-        // use random alphanum to avoid collision in parallel processing
+        // use random alphabetic to avoid collision in parallel processing
         File tmpFile = new File((tmpDir.getAbsolutePath() + separator +
                                  RandomStringUtils.randomAlphabetic(5)) + separator +
                                 file.getName());
@@ -932,19 +1340,27 @@ public class Excel {
         //commonStyles.put(STYLE_JENKINS_REF_LABEL, StyleDecorator.generate(workbook, JENKINS_REF_LABEL));
         //commonStyles.put(STYLE_JENKINS_REF_LINK, StyleDecorator.generate(workbook, JENKINS_REF_LINK));
         //commonStyles.put(STYLE_JENKINS_REF_PARAM, StyleDecorator.generate(workbook, JENKINS_REF_PARAM));
+        // commonStyles.put(STYLE_LINK, StyleDecorator.generate(workbook, LINK));
         commonStyles.put(STYLE_TEST_CASE, StyleDecorator.generate(workbook, TESTCASE));
         commonStyles.put(STYLE_DESCRIPTION, StyleDecorator.generate(workbook, DESCRIPTION));
+        commonStyles.put(STYLE_SECTION_DESCRIPTION, StyleDecorator.generate(workbook, SECTION_DESCRIPTION));
+        commonStyles.put(STYLE_REPEAT_UNTIL_DESCRIPTION, StyleDecorator.generate(workbook, REPEAT_UNTIL_DESCRIPTION));
+        commonStyles.put(STYLE_FAILED_STEP_DESCRIPTION, StyleDecorator.generate(workbook, FAILED_STEP_DESCRIPTION));
+        // commonStyles.put(STYLE_SKIPPED_STEP_DESCRIPTION, StyleDecorator.generate(workbook, SKIPPED_STEP_DESCRIPTION));
+        commonStyles.put(STYLE_TARGET, StyleDecorator.generate(workbook, TARGET));
         commonStyles.put(STYLE_MESSAGE, StyleDecorator.generate(workbook, MSG));
         commonStyles.put(STYLE_COMMAND, StyleDecorator.generate(workbook, COMMAND));
         commonStyles.put(STYLE_PARAM, StyleDecorator.generate(workbook, PARAM));
         commonStyles.put(STYLE_TAINTED_PARAM, StyleDecorator.generate(workbook, TAINTED_PARAM));
         commonStyles.put(STYLE_SCREENSHOT, StyleDecorator.generate(workbook, SCREENSHOT));
-        // commonStyles.put(STYLE_LINK, StyleDecorator.generate(workbook, LINK));
         commonStyles.put(STYLE_ELAPSED_MS, StyleDecorator.generate(workbook, ELAPSED_MS));
         commonStyles.put(STYLE_ELAPSED_MS_BAD_SLA, StyleDecorator.generate(workbook, ELAPSED_MS_BAD_SLA));
         commonStyles.put(STYLE_SUCCESS_RESULT, StyleDecorator.generate(workbook, SUCCESS));
         commonStyles.put(STYLE_FAILED_RESULT, StyleDecorator.generate(workbook, FAILED));
         commonStyles.put(STYLE_SKIPPED_RESULT, StyleDecorator.generate(workbook, SKIPPED));
+
+        // use only once... so maybe don't add to common styles (aka template)
+        // initResultCommonStyles();
     }
 
     private List<XSSFSheet> gatherWorksheets() {

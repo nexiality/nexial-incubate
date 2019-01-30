@@ -29,7 +29,15 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nexial.commons.utils.CollectionUtil;
+import org.nexial.commons.utils.RegexUtils;
+import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.ExecutionThread;
+import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
+import org.nexial.core.utils.CheckUtils;
+import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.seeknow.SeeknowData;
 import org.openqa.selenium.By;
 import org.openqa.selenium.InvalidElementStateException;
 import org.openqa.selenium.WebDriverException;
@@ -37,15 +45,7 @@ import org.openqa.selenium.WebElement;
 import org.openqa.selenium.interactions.Actions;
 import org.openqa.selenium.remote.RemoteWebElement;
 import org.openqa.selenium.winium.WiniumDriver;
-import org.uptospeed.seeknow.SeeknowData;
 
-import org.nexial.commons.utils.CollectionUtil;
-import org.nexial.commons.utils.RegexUtils;
-import org.nexial.commons.utils.TextUtils;
-import org.nexial.core.ExecutionThread;
-import org.nexial.core.model.ExecutionContext;
-import org.nexial.core.utils.CheckUtils;
-import org.nexial.core.utils.ConsoleUtils;
 import winium.elements.desktop.ComboBox;
 
 import static org.nexial.core.plugins.desktop.DesktopConst.*;
@@ -463,6 +463,9 @@ public class DesktopElement {
 
         if (elementType == SingleSelectComboNotEditable) { resolveRuntimeComboType(); }
 
+        // if combo box is disabled
+        if (!element.isEnabled()) {return StepResult.fail("Text cannot be selected since '" + label + "' is disabled");}
+
         List<String> list = parseTextInputWithShortcuts(text);
 
         StepResult result = null;
@@ -494,7 +497,9 @@ public class DesktopElement {
 
     public String getText() {
 
-        if (!element.isEnabled()) { return getValue(element); }
+        if (!element.isEnabled() && elementType.isTextPatternAvailable()) {
+            return getValue(element);
+        }
 
         if (elementType == SingleSelectList) {
             ComboBox winiumComboBox = new ComboBox(element);
@@ -504,23 +509,21 @@ public class DesktopElement {
                    selected.getAttribute("Name") : selected.getText();
         }
 
-        WebElement targetElement = element;
-        WebElement element;
+        WebElement targetElement;
         if (elementType.isCombo()) {
-            element = resolveComboContentElement(targetElement);
+            targetElement = resolveComboContentElement(element);
         } else if (elementType == TextArea) {
-            targetElement.click();
-            element = targetElement.findElement(By.xpath(LOCATOR_DOCUMENT));
+            element.click();
+            targetElement = element.findElement(By.xpath(LOCATOR_DOCUMENT));
         } else {
-            element = targetElement;
+            targetElement = element;
         }
 
-        if (element == null) {
-            ConsoleUtils.error("Cannot resolve target content element for '" + getLabel() + "'");
-            return null;
+        if (targetElement == null) {
+            throw new IllegalArgumentException("Cannot resolve target element for '" + getLabel() + "'");
         }
 
-        return getValue(element);
+        return getValue(targetElement);
     }
 
     public WebElement findModalDialog() {
@@ -1598,10 +1601,14 @@ public class DesktopElement {
         setElement(driver.findElement(By.xpath(xpath)));
     }
 
+    protected StepResult typeTextComponent(boolean append, String... text) {
+        return typeTextComponent(false, append, text);
+    }
+
     /**
      * meant for TextBox or TextArea
      */
-    protected StepResult typeTextComponent(boolean append, String... text) {
+    protected StepResult typeTextComponent(boolean useSendKeys, boolean append, String... text) {
         requires(ArrayUtils.isNotEmpty(text), "at least one text parameter is required");
 
         if (append) {
@@ -1616,7 +1623,7 @@ public class DesktopElement {
             }
         } else {
             // join text into 1 string, parse the entire combined string and loop through each token to type
-            parseTextInputWithShortcuts(TextUtils.toString(text, "", "", "")).forEach(this::type);
+            parseTextInputWithShortcuts(TextUtils.toString(text, "", "", "")).forEach(txt -> type(txt, useSendKeys));
         }
 
         autoClearModalDialog();
@@ -1653,6 +1660,10 @@ public class DesktopElement {
     }
 
     protected void type(String text) {
+        type(text, false);
+    }
+
+    protected void type(String text, boolean useSendKeys) {
         if (StringUtils.isEmpty(text)) { return; }
 
         if (!element.isEnabled()) { CheckUtils.fail("Text cannot be entered as it is disabled for input"); }
@@ -1689,7 +1700,7 @@ public class DesktopElement {
             return;
         }
 
-        if (setValue(element, text)) { return; }
+        if (setValue(useSendKeys, element, text)) { return; }
 
         element.clear();
         element.sendKeys(text);
@@ -1728,8 +1739,12 @@ public class DesktopElement {
         return StringUtils.equals(text, actual.trim());
     }
 
-    /** This Method will set the value for TextBox Element **/
     protected boolean setValue(WebElement element, String text) {
+        return setValue(false, element, text);
+    }
+
+    /** This Method will set the value for TextBox Element **/
+    protected boolean setValue(boolean useSendKeys, WebElement element, String text) {
         if (!isValuePatternAvailable(element)) {
             element.sendKeys(text);
             return isActualAndTextMatched(element, getText(), text);
@@ -1737,7 +1752,13 @@ public class DesktopElement {
 
         String errPrefix = "Failed to execute ValuePattern.SetValue on '" + label + "': ";
         try {
-            driver.executeScript("automation: ValuePattern.SetValue", element, text);
+            if (useSendKeys) {
+                // for text fields where ctrl+A doesn't work, element.sendKeys becomes ineffective
+                // good to use shortcut script with <[{text}]>, which gives the effect of element.sendKeys and also sets cursor to beginning of text
+                driver.executeScript(SCRIPT_PREFIX_SHORTCUT + TEXT_INPUT_PREFIX + text + TEXT_INPUT_POSTFIX, element);
+            } else {
+                driver.executeScript("automation: ValuePattern.SetValue", element, text);
+            }
             String actual = element.getText();
             boolean matched = isActualAndTextMatched(element, actual, text);
 
@@ -1992,6 +2013,8 @@ public class DesktopElement {
     }
 
     protected StepResult selectSingleSelectCombo(String text) {
+        element.click();
+
         text = normalizeUiText(text);
         String firstChar = text.charAt(0) + "";
 
@@ -2084,8 +2107,8 @@ public class DesktopElement {
                 } else {
                     Long actualValue = NumberUtils.createLong(currentValue);
                     Long expectedValue = NumberUtils.createLong(text);
-                return actualValue.equals(expectedValue);
-            }
+                    return actualValue.equals(expectedValue);
+                }
             }
         } catch (NumberFormatException e) {
             ConsoleUtils.log("Invalid number format.. trying other way");

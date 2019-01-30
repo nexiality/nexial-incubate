@@ -24,14 +24,18 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 
+import static java.lang.Integer.MIN_VALUE;
+import static org.nexial.core.NexialConst.TOKEN_END;
+import static org.nexial.core.NexialConst.TOKEN_START;
+
 public class CheckUtils {
+
     public static boolean isValidVariable(String var) {
         return !StringUtils.isBlank(var) &&
-               !TextUtils.isBetween(var, "${", "}") &&
+               !TextUtils.isBetween(var, TOKEN_START, TOKEN_END) &&
                !StringUtils.containsAny(var, "$", "{", "}", "[", "]");
     }
 
@@ -109,6 +113,27 @@ public class CheckUtils {
     public static boolean requiresPositiveNumber(String number, String message, Object... params) {
         requiresNotBlank(number, message, params);
         if (!NumberUtils.isDigits(number)) { fail(message + ": " + ArrayUtils.toString(params)); }
+        return true;
+    }
+
+    public static boolean requiresInteger(String number, String message, Object... params) {
+        requiresNotBlank(number, message, params);
+
+        int integer = NumberUtils.toInt(number, MIN_VALUE);
+        if (integer == MIN_VALUE) { fail(message + ": " + ArrayUtils.toString(params)); }
+        return true;
+    }
+
+    public static boolean isInRange(double num, double lowerRange, double upperRange) {
+        return lowerRange < upperRange ?
+               (num >= lowerRange && num <= upperRange) :
+               (num >= upperRange && num <= lowerRange);
+    }
+
+    public static boolean isSameType(Class[] types, Class required) {
+        if (ArrayUtils.isEmpty(types)) { return false; }
+
+        for (Class type : types) { if (type != required) { return false;} }
         return true;
     }
 }

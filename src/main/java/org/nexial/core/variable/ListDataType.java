@@ -17,51 +17,60 @@
 
 package org.nexial.core.variable;
 
+import javax.validation.constraints.NotNull;
+
 import org.apache.commons.lang3.StringUtils;
+import org.nexial.core.ExecutionThread;
+import org.nexial.core.model.ExecutionContext;
 
 import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
 
 public class ListDataType extends ExpressionDataType<String[]> {
-	private ListTransformer transformer = new ListTransformer();
-	private String delim;
+    private ListTransformer transformer = new ListTransformer();
+    private String delim;
 
-	public ListDataType(String textValue) throws TypeConversionException { super(textValue); }
+    public ListDataType(String textValue) throws TypeConversionException { super(textValue); }
 
-	protected ListDataType() { super(); }
+    protected ListDataType() { super(); }
 
-	public ListDataType(String textValue, String delim) {
-		super();
-		this.delim = delim;
-		this.textValue = textValue;
-		init();
-	}
+    public ListDataType(String textValue, String delim) {
+        super();
+        this.delim = delim;
+        this.textValue = textValue;
+        init();
+    }
 
-	@Override
-	public String getName() { return "LIST"; }
+    @NotNull
+    @Override
+    public String getName() { return "LIST"; }
 
-	@Override
-	Transformer getTransformer() { return transformer; }
+    @NotNull
+    public String getDelim() { return delim; }
 
-	public String getDelim() { return delim; }
+    @NotNull
+    @Override
+    Transformer getTransformer() { return transformer; }
 
-	public void setDelim(String delim) { this.delim = delim; }
+    @NotNull
+    @Override
+    ListDataType snapshot() {
+        ListDataType snapshot = new ListDataType();
+        snapshot.transformer = transformer;
+        snapshot.value = value;
+        snapshot.textValue = textValue;
+        snapshot.delim = delim;
+        return snapshot;
+    }
 
-	@Override
-	ListDataType snapshot() {
-		ListDataType snapshot = new ListDataType();
-		snapshot.transformer = transformer;
-		snapshot.value = value;
-		snapshot.textValue = textValue;
-		snapshot.delim = delim;
-		return snapshot;
-	}
+    @Override
+    protected void init() { parse(); }
 
-	@Override
-	protected void init() { parse(); }
-
-	protected void parse() {
-		if (StringUtils.isEmpty(delim)) { delim = DEF_TEXT_DELIM; }
-		value = Array.toArray(textValue, delim);
-		textValue = Array.toString(value);
-	}
+    protected void parse() {
+        if (StringUtils.isEmpty(delim)) {
+            ExecutionContext context = ExecutionThread.get();
+            delim = context == null ? DEF_TEXT_DELIM : context.getTextDelim();
+        }
+        value = Array.toArray(textValue, delim);
+        textValue = Array.toString(value);
+    }
 }

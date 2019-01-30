@@ -24,30 +24,8 @@ public class RecordConfig {
     private List<FieldConfig> fieldConfigList;
     private List<MapFunctionConfig> mapFunctionConfigs;
     private String fieldSeparator;
-    private String recordIdFiled;
+    private String recordIdField;
     private String recordId;
-
-    private RecordConfig() {}
-
-    public List<FieldConfig> getFieldConfigList() {
-        return fieldConfigList;
-    }
-
-    public List<MapFunctionConfig> getMapFunctionConfigs() {
-        return mapFunctionConfigs;
-    }
-
-    public String getFieldSeparator() {
-        return fieldSeparator;
-    }
-
-    public String getRecordIdFiled() {
-        return recordIdFiled;
-    }
-
-    public String getRecordId() {
-        return recordId;
-    }
 
     public static class RecordConfigBuilder {
         private List<FieldConfig> fieldConfigList;
@@ -86,13 +64,37 @@ public class RecordConfig {
             recordConfig.fieldConfigList = this.fieldConfigList;
             recordConfig.mapFunctionConfigs = this.mapFunctionConfigs;
             recordConfig.fieldSeparator = this.fieldSeparator;
-            recordConfig.recordIdFiled = this.recordIdField;
+            recordConfig.recordIdField = this.recordIdField;
             recordConfig.recordId = this.recordId;
 
             return recordConfig;
         }
+    }
 
+    private RecordConfig() {}
 
+    public boolean isValid() {
+        return this.fieldConfigList.stream().map(FieldConfig::getFieldname).anyMatch(this.recordIdField::equals);
+    }
+
+    public List<FieldConfig> getFieldConfigList() {
+        return fieldConfigList;
+    }
+
+    public List<MapFunctionConfig> getMapFunctionConfigs() {
+        return mapFunctionConfigs;
+    }
+
+    public String getFieldSeparator() {
+        return fieldSeparator;
+    }
+
+    public String getRecordIdField() {
+        return recordIdField;
+    }
+
+    public String getRecordId() {
+        return recordId;
     }
 
     @Override
@@ -100,7 +102,7 @@ public class RecordConfig {
         return "RecordConfig{fieldConfigList=" + fieldConfigList +
                ", mapFunctionConfigs=" + mapFunctionConfigs +
                ", fieldSeparator='" + fieldSeparator + '\'' +
-               ", recordIdFiled='" + recordIdFiled + '\'' +
+               ", recordIdField='" + recordIdField + '\'' +
                ", recordId='" + recordId + '\'' +
                '}';
     }

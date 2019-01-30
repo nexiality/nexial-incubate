@@ -24,7 +24,6 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-
 import javax.xml.transform.Source;
 import javax.xml.transform.stream.StreamSource;
 
@@ -39,6 +38,7 @@ import org.jdom2.JDOMException;
 import org.jdom2.input.SAXBuilder;
 import org.jdom2.input.sax.XMLReaderJDOMFactory;
 import org.jdom2.input.sax.XMLReaderXSDFactory;
+import org.jdom2.output.XMLOutputter;
 import org.nexial.commons.utils.CollectionUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.commons.utils.XmlUtils;
@@ -46,19 +46,17 @@ import org.nexial.core.model.StepResult;
 import org.nexial.core.plugins.base.BaseCommand;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.OutputFileUtils;
-import org.nexial.core.variable.Syspath;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXParseException;
 
-import static java.io.File.separator;
 import static org.jdom2.input.sax.XMLReaders.XSDVALIDATING;
-import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
-import static org.nexial.core.utils.CheckUtils.requires;
-import static org.nexial.core.utils.CheckUtils.requiresNotBlank;
+import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.toCloudIntegrationNotReadyMessage;
+import static org.nexial.core.utils.CheckUtils.*;
 
 public class XmlCommand extends BaseCommand {
-    public static final String PROLOG_START = "<?xml version=\"";
-    public static final String DEFAULT_PROLOG = PROLOG_START + "1.0\" encoding=\"utf-8\"?>";
+    public static final String PROLOG_START = "<?xml version=";
+    public static final String DEFAULT_PROLOG = PROLOG_START + "\"1.0\" encoding=\"utf-8\"?>";
 
     private static class SchemaError implements Serializable {
         String severity;
@@ -281,14 +279,9 @@ public class XmlCommand extends BaseCommand {
                StepResult.success("xml validated as well-formed");
     }
 
-    public String getValuesByXPath(String xml, String xpath) {
-        List<String> buffer = getValuesListByXPath(xml, xpath);
-        if (buffer == null) { return null; }
+    public StepResult beautify(String xml, String var) { return format(xml, var, PRETTY_XML_OUTPUTTER); }
 
-        // support junit
-        String delim = context == null ? "|" : context.getTextDelim();
-        return CollectionUtil.toString(buffer, delim);
-    }
+    public StepResult minify(String xml, String var) { return format(xml, var, COMPRESSED_XML_OUTPUTTER); }
 
     public List<String> getValuesListByXPath(String xml, String xpath) {
         Document doc = resolveDoc(xml, xpath);
@@ -301,12 +294,57 @@ public class XmlCommand extends BaseCommand {
                 buffer.add(StringUtils.trim(((Element) match).getTextNormalize()));
             } else if (match instanceof Content) {
                 buffer.add(StringUtils.trim(((Content) match).getValue()));
+            } else if (match instanceof Attribute) {
+                buffer.add(StringUtils.defaultIfEmpty(((Attribute) match).getValue(), ""));
             } else {
                 buffer.add(StringUtils.trim(match.toString()));
             }
         }
 
         return buffer;
+    }
+
+    public String getValuesByXPath(String xml, String xpath) {
+        List<String> buffer = getValuesListByXPath(xml, xpath);
+        if (buffer == null) { return null; }
+
+        // support junit
+        String delim = context == null ? "|" : context.getTextDelim();
+        return CollectionUtil.toString(buffer, delim);
+    }
+
+    protected void generateErrorLogs(SchemaErrorCollector errorHandler) {
+        String outFile = context.generateTestStepOutput("log");
+
+        String output = TextUtils.createAsciiTable(Arrays.asList("severity", "line", "column", "message"),
+                                                   errorHandler.getErrors(),
+                                                   (row, position) -> {
+                                                       if (position == 0) { return row.severity; }
+                                                       if (position == 1) { return row.line + ""; }
+                                                       if (position == 2) { return row.column + ""; }
+                                                       if (position == 3) { return row.message; }
+                                                       return "";
+                                                   });
+        if (StringUtils.isBlank(output)) {
+            ConsoleUtils.error("Unable to generate schema validation log");
+        } else {
+            File outputFile = new File(outFile);
+            try {
+                FileUtils.writeStringToFile(outputFile, output, DEF_FILE_ENCODING);
+                if (context.isOutputToCloud()) {
+                    try {
+                        outFile = context.getOtc().importMedia(outputFile);
+                    } catch (IOException e) {
+                        log(toCloudIntegrationNotReadyMessage(outFile) + ": " + e.getMessage());
+                    }
+                }
+
+                String caption = "Validation error(s) found (click link on the right for details)";
+                addLinkRef(caption, "errors", outFile);
+            } catch (IOException e) {
+                error("Unable to write log file to '" + outFile + "': " + e.getMessage(), e);
+            }
+        }
     }
 
     public String getValueByXPath(String xml, String xpath) {
@@ -339,39 +377,20 @@ public class XmlCommand extends BaseCommand {
         return xml;
     }
 
-    protected void generateErrorLogs(XmlCommand.SchemaErrorCollector errorHandler) {
-        String outFile = new Syspath().out("fullpath") + separator +
-                         OutputFileUtils.generateOutputFilename(context.getCurrentTestStep(), "log");
+    private StepResult format(String xml, String var, XMLOutputter outputter) {
+        requiresValidVariableName(var);
+        requiresNotBlank(xml, "invalid xml", xml);
 
-        String output = TextUtils.createAsciiTable(Arrays.asList("severity", "line", "column", "message"),
-                                                   errorHandler.getErrors(),
-                                                   (row, position) -> {
-                                                       if (position == 0) { return row.severity; }
-                                                       if (position == 1) { return row.line + ""; }
-                                                       if (position == 2) { return row.column + ""; }
-                                                       if (position == 3) { return row.message; }
-                                                       return "";
-                                                   });
-        if (StringUtils.isBlank(output)) {
-            ConsoleUtils.error("Unable to generate schema validation log");
-        } else {
-            File outputFile = new File(outFile);
-            try {
-                FileUtils.writeStringToFile(outputFile, output, DEF_FILE_ENCODING);
-                if (context.isOutputToCloud()) {
-                    try {
-                        outFile = context.getS3Helper().importMedia(outputFile);
-                    } catch (IOException e) {
-                        log("Unable to save " + outFile + " to cloud storage due to " + e.getMessage());
-                    }
-                }
+        Document doc = deriveWellformXml(xml);
+        if (doc == null) { return StepResult.fail("invalid xml: " + xml); }
 
-                String caption = "Validation error(s) found (click link on the right for details)";
-                addLinkRef(caption, "errors", outFile);
-            } catch (IOException e) {
-                error("Unable to write log file to '" + outFile + "': " + e.getMessage(), e);
-            }
-        }
+        String action = "XML " + (outputter == COMPRESSED_XML_OUTPUTTER ? "minification" : "beautification");
+
+        String outputXml = outputter.outputString(doc);
+        if (StringUtils.isBlank(outputXml)) { return StepResult.fail(action + " failed with blank XML content"); }
+
+        context.setData(var, outputXml.trim());
+        return StepResult.success(action + " completed and saved to '" + var + "'");
     }
 
     protected Source[] getSchemaSources(String schema) throws IOException {

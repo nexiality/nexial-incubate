@@ -1,30 +1,3 @@
-buildscript {
-	ext.kotlin_version = '1.2.21'
-	repositories {
-		mavenLocal()
-		mavenCentral()
-	}
-
-	dependencies {
-		classpath "org.springframework.boot:spring-boot-gradle-plugin:${springBootVersion}"
-		classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-	}
-}
-
-plugins {
-	id "org.jetbrains.kotlin.jvm" version "1.2.21"
-}
-
-apply plugin: 'kotlin'
-apply plugin: 'java'
-apply plugin: 'eclipse'
-apply plugin: 'idea'
-apply plugin: 'maven'
-apply plugin: 'org.springframework.boot'
-apply plugin: 'distribution'
-
-group = componentGroup
-
 /*
  * Copyright 2012-2018 the original author or authors.
  *
@@ -42,6 +15,32 @@ group = componentGroup
  *
  */
 
+buildscript {
+	ext.kotlin_version = '1.3.11'
+	repositories {
+		mavenLocal()
+		mavenCentral()
+	}
+
+	dependencies {
+		classpath "org.springframework.boot:spring-boot-gradle-plugin:${springBootVersion}"
+		classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+	}
+}
+
+plugins {
+	id "org.jetbrains.kotlin.jvm" version "1.3.11"
+}
+
+apply plugin: 'java'
+apply plugin: 'eclipse'
+apply plugin: 'idea'
+apply plugin: 'maven'
+apply plugin: 'org.springframework.boot'
+apply plugin: 'distribution'
+
+group = componentGroup
+
 // BUILD_NUMBER
 // org.gradle.project.BUILD_NUMBER=systemPropertyValue
 ext.env = System.getenv()
@@ -57,6 +56,7 @@ repositories {
 	mavenLocal()
 	mavenCentral()
 	//	maven { url "http://www.dcm4che.org/maven2" }
+	//	maven { url 'https://jitpack.io' }
 }
 
 bootRepackage { enabled = false }
@@ -73,8 +73,9 @@ sourceSets.main.compileClasspath += configurations.provided
 dependencies {
 	compile("org.apache.httpcomponents:httpcore:${httpcoreVersion}")
 	compile("org.apache.httpcomponents:httpclient:+")
-	compile("org.apache.httpcomponents:fluent-hc:${httpcoreVersion}")
+	compile("org.apache.httpcomponents:fluent-hc:${httpclientFluent}")
 	compile("org.apache.httpcomponents:httpmime:+")
+	compile("org.apache.httpcomponents:httpasyncclient:${httpasyncclient}")
 
 	// support: apache commons
 	compile("commons-beanutils:commons-beanutils:+")
@@ -107,7 +108,7 @@ dependencies {
 	compile("org.springframework:spring-tx")
 
 	// unit testing
-	compile("junit:junit")
+	compile("junit:junit:${junitVersion}")
 
 	// selenium
 	// for IE webdriver: https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/
@@ -121,6 +122,9 @@ dependencies {
 	compile("org.seleniumhq.selenium:selenium-safari-driver:${seleniumVersion}")
 	compile("org.seleniumhq.selenium:selenium-chrome-driver:${seleniumVersion}")
 
+	// https://mvnrepository.com/artifact/io.appium/java-client
+	//	compile("io.appium:java-client:${appiumVersion}")
+
 	// winium
 	// for Winium.Desktop.Driver.exe download: https://github.com/2gis/Winium.Desktop/releases/latest
 	compile("com.github.2gis.winium:winium-webdriver:+")
@@ -130,10 +134,17 @@ dependencies {
 	compile("ch.qos.logback:logback-core:+")
 	compile("ch.qos.logback:logback-access:+")
 	compile("ch.qos.logback.contrib:logback-json-core:+")
-	compile("ch.qos.logback.contrib:logback-mongodb-core:+")
+	compile("org.fusesource.jansi:jansi:1.+")
+
+	//	compile("ch.qos.logback.contrib:logback-mongodb-core:+")
 
 	// support: aws
+	compile("com.amazonaws:aws-java-sdk-core:+")
 	compile("com.amazonaws:aws-java-sdk-s3:+")
+	compile("com.amazonaws:aws-java-sdk-polly:+")
+	compile("com.amazonaws:aws-java-sdk-sns:+")
+	compile("com.amazonaws:aws-java-sdk-ses:+")
+	compile("com.amazonaws:aws-java-sdk-sts:+")
 
 	// support: browsermob
 	compile("net.lightbody.bmp:browsermob-proxy:+")
@@ -148,35 +159,36 @@ dependencies {
 	compile("org.apache.pdfbox:xmpbox:+")
 
 	// support: poi/msoffice
-	compile("org.apache.poi:poi:+")
-	compile("org.apache.poi:poi-ooxml:+")
-	compile("org.apache.poi:poi-ooxml-schemas:+")
+	compile("org.apache.poi:poi:${poiVersion}")
+	compile("org.apache.poi:poi-ooxml:${poiVersion}")
+	compile("org.apache.poi:poi-ooxml-schemas:${poiVersion}")
 
 	// support: json
 	compile("org.json:json:${jsonVersion}")
 	compile("com.cedarsoftware:java-util:+")
 	compile("com.cedarsoftware:json-io:+")
 	compile("com.github.fge:json-schema-validator:+")
-	compile("com.google.code.gson:gson:+")
+	compile("com.google.code.gson:gson:${gsonVersion}")
 	compile("org.danilopianini:gson-extras:+")
 	compile("com.jayway.jsonpath:json-path:+")
 	compile("org.jdom:jdom2:+")
 	compile("org.jsoup:jsoup:+")
 	// v23r* is not compatible with selenium 3.4.0
-	compile("com.google.guava:guava:+")
+	compile("com.google.guava:guava:${guavaVersion}")
 
 	// support: ini
 	compile("org.ini4j:ini4j:+")
 
 	// support: data sources
-	compile("org.mongodb:mongo-java-driver:+")
-	compile("org.mongodb:mongodb-driver-async:+")
 	// compile("org.mongodb:mongodb-driver-async:${mongoDriverVersion}") { force = true }
 	compile("mysql:mysql-connector-java:${mysqlVersion}")
 	compile("org.postgresql:postgresql:+")
 	compile("com.microsoft.sqlserver:mssql-jdbc:${mssqlVersion}")
 	compile("org.xerial:sqlite-jdbc:${sqliteVersion}")
 	compile("org.hsqldb:hsqldb:${hsqldbVersion}")
+
+	// support: redis
+	compile("redis.clients:jedis:${jedisVersion}")
 
 	// support: joda-time
 	compile("joda-time:joda-time:+")
@@ -199,16 +211,22 @@ dependencies {
 	compile("org.apache.activemq:activemq-client:5.14.5")
 	compile("com.rabbitmq.jms:rabbitmq-jms:1.8.1")
 
-	compile("org.apache.tika:tika-core:+")
-	compile("org.apache.tika:tika-parsers:+")
-	compile("org.apache.commons:commons-compress:+")
+	// https://mvnrepository.com/artifact/pl.touk/throwing-function
+	compile("pl.touk:throwing-function:1.3")
 
-	//	compile("com.rallydev.rest:rally-rest-api:+")
+	compile("org.apache.tika:tika-core:${tikaVersion}")
+	compile("org.apache.tika:tika-parsers:${tikaVersion}")
+	compile("org.apache.commons:commons-compress:+")
 
 	// support: ssh, scp, sftp
 	compile("com.jcraft:jsch:+")
 
-	compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+	compile("org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version")
+
+	compile("com.googlecode.soundlibs:jlayer:1.0.1.4")
+
+	// console with color
+	compile("com.diogonunes:JCDP:2.0.3.1")
 
 	//	non-distributable libs
 	compile fileTree(dir: 'lib', include: '*.jar')
@@ -216,14 +234,14 @@ dependencies {
 	provided("javax.servlet:javax.servlet-api:${servletApiVersion}") { force = true }
 
 	testCompile("org.springframework.boot:spring-boot-starter-test")
-	testCompile("junit:junit")
+	testCompile("junit:junit:${junitVersion}")
 	testCompile("org.jetbrains.kotlin:kotlin-test")
 	testCompile("org.jetbrains.kotlin:kotlin-test-junit")
 }
 
 jar {
 	baseName = archivesBaseName
-	version = version
+//	version = version
 	manifest {
 		attributes "Implementation-Title": archivesBaseName,
 		           "Implementation-Version": version,
@@ -232,23 +250,29 @@ jar {
 }
 
 tasks.withType(Test) {
-	//	maxParallelForks = 2
+	maxParallelForks = 10
 	// -Dnexial.home=~/projects/nexial/nexial-core
 	//	systemProperty 'BROWSER', System.getProperty('BROWSER', 'firefox')
 	systemProperty 'nexial.home', projectDir
 }
 
 test {
+	maxHeapSize = "256m"
+	//	jvmArgs '-XX:MaxPermSize=512m'
+	jvmArgs '-Xss24m'
 	reports.html.enabled = true
 	reports.junitXml.enabled = true
 	exclude '**/*Manual*'
-}
-
-kotlin {
-	experimental {
-		coroutines 'enable'
+	testLogging {
+		events "PASSED", "STARTED", "FAILED", "SKIPPED"
 	}
 }
+
+//kotlin {
+//	experimental {
+//		coroutines 'enable'
+//	}
+//}
 
 compileJava.dependsOn(processResources)
 
@@ -265,7 +289,7 @@ task singleDependentJar(type: Jar) {
 		           "Main-Class": componentMainClass
 	}
 	baseName = archivesBaseName
-	version = version
+//	version = version
 	from { configurations.compile.collect { it.isDirectory() ? it : zipTree(it) } }
 	with jar
 	zip64 = true
@@ -274,6 +298,12 @@ task singleDependentJar(type: Jar) {
 task sourcesJar(type: Jar) {
 	classifier = "sources"
 	from sourceSets.main.allSource
+}
+
+task testJar(type: Jar) {
+	classifier = 'tests'
+	from sourceSets.test.output
+	include('**/*.class')
 }
 
 artifacts {
@@ -310,11 +340,13 @@ distributions {
 compileKotlin {
 	kotlinOptions {
 		jvmTarget = componentJavaVersion
+		javaParameters = true
 	}
 }
 
 compileTestKotlin {
 	kotlinOptions {
 		jvmTarget = componentJavaVersion
+		javaParameters = true
 	}
 }

@@ -26,9 +26,9 @@ import java.util.Map;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
+import org.springframework.web.util.UriUtils;
 
 public final class URLEncodingUtils {
     private static final List<Character> ACCEPTABLE_PATH_CHARS =
@@ -86,13 +86,13 @@ public final class URLEncodingUtils {
         params.keySet().forEach(name -> {
             String value = params.get(name);
             try {
-                value = StringUtils.replace(URLEncoder.encode(value, DEF_CHAR_ENCODING), TMP_AMPERSAND, "&amp;");
+                value = StringUtils.replace(URLEncoder.encode(value, DEF_CHAR_ENCODING), TMP_AMPERSAND, "%26");
             } catch (UnsupportedEncodingException e) {
                 System.err.println("Unable to encode query string value '" + value + "': " + e.getMessage());
             }
 
             try {
-                name = StringUtils.replace(URLEncoder.encode(name, DEF_CHAR_ENCODING), TMP_AMPERSAND, "&amp;");
+                name = StringUtils.replace(URLEncoder.encode(name, DEF_CHAR_ENCODING), TMP_AMPERSAND, "%26");
             } catch (UnsupportedEncodingException e) {
                 System.err.println("Unable to encode query string name '" + value + "': " + e.getMessage());
             }
@@ -106,6 +106,24 @@ public final class URLEncodingUtils {
     public static String decodeString(String encoded) {
         try {
             return URLDecoder.decode(encoded, DEF_CHAR_ENCODING);
+        } catch (UnsupportedEncodingException e) {
+            System.err.println("Unable to decode: " + e.getMessage());
+            return encoded;
+        }
+    }
+
+    public static String encodeAuth(String plain) {
+        try {
+            return UriUtils.encodeUserInfo(plain, DEF_CHAR_ENCODING);
+        } catch (UnsupportedEncodingException e) {
+            System.err.println("Unable to encode: " + e.getMessage());
+            return plain;
+        }
+    }
+
+    public static String decodeAuth(String encoded) {
+        try {
+            return UriUtils.decode(encoded, DEF_CHAR_ENCODING);
         } catch (UnsupportedEncodingException e) {
             System.err.println("Unable to decode: " + e.getMessage());
             return encoded;

@@ -27,7 +27,6 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.ControllerAdvice
 import org.springframework.web.context.request.WebRequest
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler
-import java.lang.Exception
 
 @Order(HIGHEST_PRECEDENCE)
 @ControllerAdvice
@@ -37,11 +36,10 @@ class ServiceErrorHandler : ResponseEntityExceptionHandler() {
                                          headers: HttpHeaders?,
                                          status: HttpStatus,
                                          request: WebRequest?): ResponseEntity<Any> {
+        val errorThrown = ArrayUtils.toString(ExceptionUtils.getRootCause(ex))
+        val message = body?.toString() ?: errorThrown
         return ResponseEntity(
-            ServiceRequestError(status = status,
-                                                        message = body.toString(),
-                                                        debugMessage = ArrayUtils.toString(
-                                                            ExceptionUtils.getRootCause(ex))),
+            ServiceRequestError(status = status, message = message, debugMessage = errorThrown),
             status)
     }
 }

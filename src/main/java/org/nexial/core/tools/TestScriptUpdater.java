@@ -22,20 +22,23 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
 import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.poi.ss.util.CellAddress;
 import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.slf4j.MDC;
-
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
@@ -45,46 +48,70 @@ import org.nexial.core.model.TestStep;
 import org.nexial.core.tools.ScriptMetadata.Commands;
 import org.nexial.core.tools.ScriptMetadata.NamedRange;
 import org.nexial.core.utils.InputFileUtils;
-import com.google.gson.GsonBuilder;
+import org.slf4j.MDC;
 
+import static java.io.File.separator;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.NexialConst.Data.SHEET_SYSTEM;
+import static org.nexial.core.NexialConst.ExitStatus.RC_BAD_CLI_ARGS;
+import static org.nexial.core.NexialConst.Project.NEXIAL_HOME;
+import static org.nexial.core.NexialConst.Project.appendCommandJson;
 import static org.nexial.core.excel.ExcelConfig.*;
 import static org.nexial.core.plugins.base.BaseCommand.PARAM_AUTO_FILL_COMMANDS;
-import static java.io.File.separator;
+import static org.nexial.core.tools.CommandDiscovery.GSON;
 
 /**
- * utility to update one or more test scripts with the latest command listing.  The command listing is sync'd from S3.
+ * utility to update one or more test scripts with the latest command listing.  The command listing is sync'd from
+ * ${NEXIAL_HOME}/template.
  *
- * @see ScriptMetadataUpdater
+ * @see CommandMetaGenerator
  */
-public class TestScriptUpdater extends S3BoundCLI {
+public class TestScriptUpdater {
     private static final List<String> NON_MACRO_COMMANDS = Arrays.asList("macro(file,sheet,name)");
+    private static final Map<String, String> REPLACED_COMMANDS = TextUtils.toMap(
+        "=",
+        "number.assertBetween(num,lower,upper)=number.assertBetween(num,min,max)",
+        "desktop.scanTable(var,name)=desktop.useTable(var,name)",
+        "desktop.getRowCount(var)=desktop.saveRowCount(var)");
+    private static final Map<String, String> COMMAND_SUGGESTIONS = TextUtils.toMap(
+        "=",
+        "desktop.useTable(var,name)=This command is deprecated and will soon be removed. " +
+        "Consider using desktop » editTableCells(row,nameValues) instead",
+        "desktop.editCurrentRow(nameValues)=This command is deprecated and will soon be removed. " +
+        "Consider using desktop » editTableCells(row,nameValues) instead");
+    private static final Options cmdOptions = new Options();
 
-    private String systemSheetName;
-    private String metadataFilename;
+    private boolean verbose;
     private List<File> targetFiles;
 
-    public void setSystemSheetName(String systemSheetName) { this.systemSheetName = systemSheetName; }
-
-    public void setMetadataFilename(String metadataFilename) { this.metadataFilename = metadataFilename; }
-
-    public void setTargetFiles(List<File> targetFiles) { this.targetFiles = targetFiles; }
-
     public static void main(String[] args) throws Exception {
+        initOptions();
+
         TestScriptUpdater updater = newInstance(args);
-        if (updater == null) { System.exit(-1); }
+        if (updater == null) { System.exit(RC_BAD_CLI_ARGS); }
+
         updater.update(updater.retrieveMetadata());
     }
 
-    @Override
-    protected void initOptions() {
-        super.initOptions();
-        cmdOptions.addOption("t", "target", true, "[REQUIRED] Location of a single Excel test script or a " +
-                                                  "directory to update.");
+    public void setTargetFiles(List<File> targetFiles) { this.targetFiles = targetFiles; }
+
+    protected static TestScriptUpdater newInstance(String[] args) {
+        try {
+            TestScriptUpdater updater = new TestScriptUpdater();
+            updater.parseCLIOptions(new DefaultParser().parse(cmdOptions, args));
+            return updater;
+        } catch (Exception e) {
+            System.err.println("\nERROR: " + e.getMessage() + "\n");
+            HelpFormatter formatter = new HelpFormatter();
+            formatter.printHelp(TestScriptUpdater.class.getName(), cmdOptions, true);
+            return null;
+        }
     }
 
-    @Override
     protected void parseCLIOptions(CommandLine cmd) {
         if (!cmd.hasOption("t")) { throw new RuntimeException("[target] is a required argument and is missing"); }
+
+        verbose = cmd.hasOption("v");
 
         String target = cmd.getOptionValue("t");
         File targetFile = new File(target);
@@ -94,9 +121,7 @@ public class TestScriptUpdater extends S3BoundCLI {
 
         targetFiles = new ArrayList<>();
         if (targetFile.isFile()) {
-            if (verbose && logger.isInfoEnabled()) {
-                logger.info("resolved target as a single Excel file " + targetFile);
-            }
+            if (verbose) { System.out.println("resolved target as a single Excel file " + targetFile); }
             targetFiles.add(targetFile);
         } else {
             targetFiles.addAll(
@@ -104,91 +129,176 @@ public class TestScriptUpdater extends S3BoundCLI {
                          .filter(file -> !file.getName().startsWith("~") &&
                                          !file.getAbsolutePath().contains(separator + "output" + separator))
                          .collect(Collectors.toList()));
-
-            if (verbose && logger.isInfoEnabled()) {
-                logger.info("resolved target as a set of " + targetFiles.size() + " Excel files");
-            }
-        }
-
-        setMetadataFilename(cmd.getOptionValue("n", defaultMetadata));
-        setSystemSheetName(cmd.getOptionValue("s", defaultSheetName));
-    }
-
-    private static TestScriptUpdater newInstance(String[] args) {
-        TestScriptUpdater updater = new TestScriptUpdater();
-        try {
-            updater.parseCLIOptions(args);
-            return updater;
-        } catch (Exception e) {
-            System.err.println("\nERROR: " + e.getMessage() + "\n");
-            HelpFormatter formatter = new HelpFormatter();
-            formatter.printHelp(TestScriptUpdater.class.getName(), updater.cmdOptions, true);
-            return null;
+            if (verbose) { System.out.println("resolved target as a set of " + targetFiles.size() + " Excel files"); }
         }
     }
 
-    private ScriptMetadata retrieveMetadata() throws IOException {
-        return new GsonBuilder().setPrettyPrinting()
-                                .create()
-                                .fromJson(new String(copyFromS3(defaultDestination, metadataFilename)),
-                                          ScriptMetadata.class);
+    protected ScriptMetadata retrieveMetadata() throws IOException {
+        String nexialHome = System.getProperty(NEXIAL_HOME);
+        if (StringUtils.isBlank(nexialHome)) {
+            throw new IOException("Unable to retrieve metadata: System property " + NEXIAL_HOME + " not defined");
+        }
+
+        String metadataPath = appendCommandJson(nexialHome);
+        if (!FileUtil.isFileReadable(metadataPath, 1024)) {
+            throw new IOException("Unable to retrieve metadata from " + metadataPath);
+        }
+
+        String metadata = FileUtils.readFileToString(new File(metadataPath), DEF_FILE_ENCODING);
+
+        return GSON.fromJson(metadata, ScriptMetadata.class);
     }
 
-    private void update(final ScriptMetadata metadata) {
+    protected void update(final ScriptMetadata metadata) {
         targetFiles.forEach(file -> {
             try {
                 Excel excel = new Excel(file);
-                if (InputFileUtils.isValidScript(file.getAbsolutePath())) {
-                    if (verbose && logger.isInfoEnabled()) {
-                        logger.info("processing " + excel.getFile().getAbsolutePath());
-                    }
+                String filePath = excel.getFile().getAbsolutePath();
+
+                if (InputFileUtils.isValidScript(excel)) {
+                    System.out.println("processing " + filePath);
+
+                    if (updateTemplate(excel) && verbose) { System.out.println("\tscript updated to latest template"); }
 
                     handleSystemSheet(excel, metadata);
-                    if (verbose && logger.isInfoEnabled()) { logger.info("\tupdated commands"); }
+                    if (verbose) { System.out.println("\tupdated commands"); }
 
                     scanInvalidCommands(excel, metadata);
-                    if (verbose && logger.isInfoEnabled()) { logger.info("\tcompleted script inspection"); }
+                    if (verbose) { System.out.println("\tcompleted script inspection"); }
 
-                    if (updateTemplate(excel) && verbose && logger.isInfoEnabled()) {
-                        logger.info("script updated to match latest template");
-                    }
-                } else if (InputFileUtils.isValidMacro(file.getAbsolutePath())) {
-                    if (verbose && logger.isInfoEnabled()) {
-                        logger.info("processing " + excel.getFile().getAbsolutePath());
-                    }
+                    // reset zoom and starting position
+                    excel.getWorksheetsStartWith("").forEach(worksheet -> {
+                        if (!StringUtils.equals(worksheet.getName(), SHEET_SYSTEM)) {
+                            XSSFSheet sheet = worksheet.getSheet();
+                            System.out.println("\t[" + worksheet.getName() + "] " +
+                                               "setting starting position as A5 and reset zoom to 100%");
+                            sheet.setActiveCell(new CellAddress("A5"));
+                            sheet.setZoom(100);
+                        }
+                    });
+                    excel.getWorkbook().setActiveSheet(1);
+                    excel.getWorkbook().setFirstVisibleTab(1);
+                    excel.getWorkbook().setSelectedTab(1);
+                    excel.save();
+
+                } else if (InputFileUtils.isValidMacro(excel)) {
+                    System.out.println("processing " + filePath);
 
                     handleMacroSystemSheet(excel, metadata);
-                    if (verbose && logger.isInfoEnabled()) { logger.info("\tupdated commands"); }
+                    if (verbose) { System.out.println("\tupdated commands"); }
 
                     scanInvalidMacroCommands(excel, metadata);
-                    if (verbose && logger.isInfoEnabled()) { logger.info("\tcompleted macro inspection"); }
+                    if (verbose) { System.out.println("\tcompleted macro inspection"); }
 
-                    if (updateTemplate(excel) && verbose && logger.isInfoEnabled()) {
-                        logger.info("macro library updated to match latest template");
-                    }
                 } else {
                     // remove system sheet, if found..
-                    Worksheet worksheet = excel.worksheet(systemSheetName);
+                    Worksheet worksheet = excel.worksheet(SHEET_SYSTEM);
                     if (worksheet != null) {
-                        if (verbose && logger.isInfoEnabled()) {
-                            logger.info("removing 'system' sheet for non-script file: " + excel.getFile().getName());
+                        if (verbose) {
+                            System.out.println("\tremoving 'system' sheet for non-script file: " +
+                                               excel.getFile().getName());
                         }
 
                         XSSFWorkbook workbook = excel.getWorkbook();
                         for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
-                            if (StringUtils.equals(workbook.getSheetAt(i).getSheetName(), systemSheetName)) {
-                                System.out.println("deleting sheet #" + i + " for " + file.getAbsolutePath());
+                            if (StringUtils.equals(workbook.getSheetAt(i).getSheetName(), SHEET_SYSTEM)) {
+                                System.out.println("\tdeleting sheet #" + i + " for " + file.getAbsolutePath());
                                 workbook.removeSheetAt(i);
                                 Excel.save(file, workbook);
                                 break;
                             }
                         }
                     }
+
+                    // could be a plan of old (v2) format...
+                    List<Worksheet> v2Plans = InputFileUtils.retrieveV2Plan(excel);
+                    if (CollectionUtils.isEmpty(v2Plans)) {
+                        if (verbose) { System.out.println("not recognized as nexial script: " + filePath); }
+                    } else {
+                        System.out.println("processing " + filePath);
+
+                        v2Plans.forEach(plan -> {
+                            if (!updateV2Plan(plan)) {
+                                System.err.println("\tUNABLE TO UPDATE TEST PLAN " + plan.getName() +
+                                                   " in " + filePath + "; CHECK TEST PLAN FOR ERRORS");
+                            }
+                        });
+
+                        XSSFWorkbook workbook = excel.getWorkbook();
+                        workbook.setActiveSheet(0);
+                        workbook.setFirstVisibleTab(0);
+                        workbook.setSelectedTab(0);
+                        excel.save();
+                    }
                 }
             } catch (Exception e) {
-                logger.error("Unable to parse Excel file " + file + ": " + e, e);
+                System.err.println("Unable to parse Excel file " + file + ": " + e.getMessage());
             }
         });
+    }
+
+    protected boolean updateTemplate(Excel excel) throws IOException {
+        boolean[] updated = new boolean[]{false};
+
+        // find all existing worksheet (minus system sheet)
+        XSSFWorkbook workbook = excel.getWorkbook();
+        int sheetCount = workbook.getNumberOfSheets();
+        for (int i = 0; i < sheetCount; i++) {
+            XSSFSheet sheet = workbook.getSheetAt(i);
+            String sheetName = sheet.getSheetName();
+            if (StringUtils.equals(sheetName, SHEET_SYSTEM)) { continue; }
+
+            MDC.put("script.file", excel.getFile().getName());
+            MDC.put("script.scenario", sheetName);
+
+            // start from row 5, scan for each command
+            if (verbose) { System.out.println("\tinspecting " + sheetName); }
+
+            Worksheet worksheet = excel.worksheet(sheetName);
+
+            // probably no one's using V1 anymore... so commented out
+            if (InputFileUtils.isV1Script(worksheet) || InputFileUtils.isV15Script(worksheet)) {
+                worksheet.firstCell(ADDR_HEADER_TEST_STEP).setCellValue(HEADER_ACTIVITY);
+                worksheet.firstCell(new ExcelAddress("" + COL_TARGET +
+                                                     (ADDR_HEADER_TEST_STEP.getRowStartIndex() + COL_IDX_TARGET - 1)))
+                         .setCellValue(HEADER_COMMAND_TYPE);
+                worksheet.firstCell(new ExcelAddress("J4")).setCellValue(HEADER_TEST_STEP_FLOW_CONTROLS);
+                updated[0] = true;
+            }
+
+            if (InputFileUtils.isV2Script(worksheet)) {
+                worksheet.setColumnValues(ADDR_HEADER_SCENARIO_INFO2, Arrays.asList(HEADER_SCENARIO_INFO_PROJECT,
+                                                                                    HEADER_SCENARIO_INFO_RELEASE,
+                                                                                    HEADER_SCENARIO_INFO_FEATURE,
+                                                                                    HEADER_SCENARIO_INFO_TESTREF,
+                                                                                    HEADER_SCENARIO_INFO_AUTHOR));
+                updated[0] = true;
+            }
+        }
+
+        if (updated[0]) { excel.save(); }
+
+        return updated[0];
+    }
+
+    protected boolean updateV2Plan(Worksheet plan) {
+        XSSFSheet sheet = plan.getSheet();
+        String sheetName = sheet.getSheetName();
+        if (verbose) { System.out.println("\tupdating test plan " + sheetName); }
+
+        plan.setColumnValues(ADD_PLAN_HEADER_FEATURE_AND_TEST,
+                             Arrays.asList(PLAN_HEADER_FEATURE_OVERRIDE, PLAN_HEADER_TESTREF_OVERRIDE));
+
+        System.out.println("\t[" + sheetName + "] setting starting position as A5 and reset zoom to 100%");
+        sheet.setActiveCell(new CellAddress("A5"));
+        sheet.setZoom(100);
+        return true;
+    }
+
+    private static void initOptions() {
+        cmdOptions.addOption("v", "verbose", false, "Turn on verbose logging.");
+        cmdOptions.addOption("t", "target", true, "[REQUIRED] Location of a single Excel test script or a " +
+                                                  "directory to update.");
     }
 
     private void handleMacroSystemSheet(Excel excel, ScriptMetadata metadata) throws IOException {
@@ -207,7 +317,7 @@ public class TestScriptUpdater extends S3BoundCLI {
         List<Commands> commands = metadata.getCommands();
         List<NamedRange> names = metadata.getNames();
 
-        Worksheet worksheet = excel.worksheet(systemSheetName, true);
+        Worksheet worksheet = excel.worksheet(SHEET_SYSTEM, true);
         worksheet.clearAllContent();
 
         worksheet.setColumnValues(new ExcelAddress("A1"), headers);
@@ -255,19 +365,21 @@ public class TestScriptUpdater extends S3BoundCLI {
             allCommands.get(j).getCommands().forEach(cmd -> targetCommands.add(target + "." + cmd));
         }
 
+        boolean excelUpdated = false;
+
         // find all existing worksheet (minus system sheet)
         XSSFWorkbook workbook = excel.getWorkbook();
         int sheetCount = workbook.getNumberOfSheets();
         for (int i = 0; i < sheetCount; i++) {
             XSSFSheet sheet = workbook.getSheetAt(i);
             String sheetName = sheet.getSheetName();
-            if (StringUtils.equals(sheetName, systemSheetName)) { continue; }
+            if (StringUtils.equals(sheetName, SHEET_SYSTEM)) { continue; }
 
             MDC.put("script.file", excel.getFile().getName());
             MDC.put("script.scenario", sheetName);
 
             // start from row 5, scan for each command
-            // if (verbose && logger.isInfoEnabled()) { logger.info("\tinspecting " + sheetName); }
+            // if (verbose && logger.isInfoEnabled()) { System.out.println("\tinspecting " + sheetName); }
 
             Worksheet worksheet = excel.worksheet(sheetName);
             int lastCommandRow = worksheet.findLastDataRow(addrCommandStart);
@@ -282,28 +394,58 @@ public class TestScriptUpdater extends S3BoundCLI {
 
                 // form the command signature
                 XSSFCell cellTarget = row.get(COL_IDX_TARGET);
-                String target = cellTarget == null || StringUtils.isBlank(cellTarget.getRawValue()) ?
-                                "" : cellTarget.getStringCellValue();
+                String target = Excel.getCellValue(cellTarget);
                 if (!targets.contains(target)) {
-                    logger.error("\tInvalid command target - " + target);
+                    System.err.println("\tInvalid command target - " + target);
                     continue;
                 }
 
                 XSSFCell cellCommand = row.get(COL_IDX_COMMAND);
-                String command = cellCommand == null || StringUtils.isBlank(cellCommand.getRawValue()) ?
-                                 "" : cellCommand.getStringCellValue();
+                String command = Excel.getCellValue(cellCommand);
                 if (StringUtils.isBlank(command)) {
-                    logger.error("\tInvalid command: " + command);
+                    System.err.println("\tInvalid command: " + command);
                     continue;
                 }
 
                 String targetCommand = target + "." + command;
+
+                // check for auto-substitution
+                if (REPLACED_COMMANDS.containsKey(targetCommand)) {
+                    // found old command, let's replace it with new one
+                    String newCommand = REPLACED_COMMANDS.get(targetCommand);
+                    if (cellTarget != null) {
+                        cellTarget.setCellValue(StringUtils.substringBefore(newCommand, "."));
+                    }
+                    if (cellCommand != null) {
+                        cellCommand.setCellValue(StringUtils.substringAfter(newCommand, "."));
+                    }
+
+                    targetCommand = newCommand;
+                    excelUpdated = true;
+                }
+
+                // todo: correct scripts with outdated commands
+                // todo: desktop.scanTable --> desktop.useTable
+                // todo: desktop.useTableRow --> MESSAGE NOT NEED, CHANGE TO USE desktop.editTableCell
+                // todo: desktop.editCurrentRow --> MESSAGE NOT NEED, CHANGE TO USE desktop.editTableCell
+                // todo: desktop.get*** --> desktop.save***
+
+                // check for warning/suggest
+                if (COMMAND_SUGGESTIONS.containsKey(targetCommand)) {
+                    String suggestion = COMMAND_SUGGESTIONS.get(targetCommand);
+                    System.err.println("\t!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                    System.err.println("\tRow " + rowIndex + ": " + target + " » " + command);
+                    System.err.println("\t" + suggestion);
+                    System.err.println("\t!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                }
+
+                String commandSignature = targetCommand;
                 Optional<String> matchedCommand = targetCommands.stream()
-                                                                .filter(s -> s.startsWith(targetCommand))
+                                                                .filter(s -> s.startsWith(commandSignature))
                                                                 .findFirst();
                 if (!matchedCommand.isPresent()) {
                     // for every unknown command, spit out an error
-                    logger.error("\tInvalid command: " + targetCommand);
+                    System.err.println("\tInvalid command: " + targetCommand);
                     continue;
                 }
 
@@ -321,52 +463,20 @@ public class TestScriptUpdater extends S3BoundCLI {
                 List<String> paramValues = TestStep.readParamValues(row);
                 int paramValuesCount = CollectionUtils.size(paramValues);
                 if (paramValuesCount != paramCount) {
-                    logger.error("\tWrong number of parameters for command " + targetCommand +
-                                 ": expected " + paramCount + " parameter(s) but found " + paramValuesCount);
+                    System.err.println("\tWrong number of parameters for command " + targetCommand +
+                                       ": expected " + paramCount + " parameter(s) but found " + paramValuesCount);
                 }
 
                 for (int k = 0; k < paramCount; k++) {
                     if (StringUtils.isBlank(Excel.getCellValue(row.get(COL_IDX_PARAMS_START + k)))) {
-                        logger.error("\tWrong number of parameters for command " + targetCommand +
-                                     ": no data/value found for parameter '" + IterableUtils.get(paramList, k) + "'");
+                        System.err.println("\tWrong number of parameters for command " +
+                                           targetCommand +
+                                           ": no data/value found for parameter '" +
+                                           IterableUtils.get(paramList, k) +
+                                           "'");
                     }
                 }
-
-                // todo: correct scripts with outdated commands
             }
         }
-    }
-
-    private boolean updateTemplate(Excel excel) throws IOException {
-        boolean[] updated = new boolean[]{false};
-
-        // find all existing worksheet (minus system sheet)
-        XSSFWorkbook workbook = excel.getWorkbook();
-        int sheetCount = workbook.getNumberOfSheets();
-        for (int i = 0; i < sheetCount; i++) {
-            XSSFSheet sheet = workbook.getSheetAt(i);
-            String sheetName = sheet.getSheetName();
-            if (StringUtils.equals(sheetName, systemSheetName)) { continue; }
-
-            MDC.put("script.file", excel.getFile().getName());
-            MDC.put("script.scenario", sheetName);
-
-            // start from row 5, scan for each command
-            if (verbose && logger.isInfoEnabled()) { logger.info("\tinspecting " + sheetName); }
-
-            Worksheet worksheet = excel.worksheet(sheetName);
-
-            if (InputFileUtils.isV1Script(worksheet)) {
-                worksheet.firstCell(ADDR_HEADER_TEST_STEP).setCellValue(HEADER_ACTIVITY);
-                worksheet.firstCell(new ExcelAddress("" + COL_TARGET +
-                                                     (ADDR_HEADER_TEST_STEP.getRowStartIndex() + COL_IDX_TARGET - 1)))
-                         .setCellValue(HEADER_COMMAND_TYPE);
-                updated[0] = true;
-            }
-        }
-
-        excel.save();
-
-        return updated[0];
     }
 }

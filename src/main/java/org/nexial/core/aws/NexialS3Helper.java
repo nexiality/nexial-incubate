@@ -20,13 +20,16 @@ package org.nexial.core.aws;
 import java.io.File;
 import java.io.IOException;
 
+import org.apache.commons.lang3.StringUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.utils.ConsoleUtils;
 
+import static com.amazonaws.regions.Regions.DEFAULT_REGION;
 import static org.nexial.core.NexialConst.*;
 
 /**
- * S3 helper specific to Nexial's internal use for transfering execution output to S3
+ * S3 helper specific to Nexial's internal use for transferring execution output to S3
  */
 public class NexialS3Helper extends S3Support {
     protected ExecutionContext context;
@@ -42,11 +45,20 @@ public class NexialS3Helper extends S3Support {
      * a common output prefix ({@link #outputBase}), current project name and current {@code Run ID}.
      */
     public String resolveOutputDir() {
-        checkContext();
-        return context.getStringData(OPT_CLOUD_OUTPUT_BASE, outputBase) + S3_PATH_SEPARATOR +
-               context.getProject().getName() + S3_PATH_SEPARATOR +
-               context.getRunId();
+        if (context == null) {
+            // no choice but to resolve output dir via System props.
+            return outputBase + S3_PATH_SEPARATOR +
+                   System.getProperty(OPT_PROJECT_NAME) + S3_PATH_SEPARATOR +
+                   System.getProperty(OPT_RUN_ID);
+        } else {
+            return context.getStringData(OPT_CLOUD_OUTPUT_BASE, outputBase) + S3_PATH_SEPARATOR +
+                   context.getProject().getName() + S3_PATH_SEPARATOR +
+                   context.getRunId();
+        }
     }
+
+    @Override
+    public boolean isReadyForUse() { return super.isReadyForUse() && StringUtils.isNotBlank(outputBase); }
 
     public String importMedia(File media) throws IOException {
         checkContext();
@@ -60,6 +72,13 @@ public class NexialS3Helper extends S3Support {
 
     public String importFile(File source, boolean removeLocal) throws IOException {
         return importToS3(source, resolveOutputDir(), removeLocal);
+    }
+
+    protected void init() {
+        if (StringUtils.isBlank(outputBase)) { ConsoleUtils.log("outputBase not set; output-to-cloud DISABLED!"); }
+        if (StringUtils.isBlank(accessKey)) { ConsoleUtils.log("accessKey not set; output-to-cloud DISABLED!"); }
+        if (StringUtils.isBlank(secretKey)) { ConsoleUtils.log("secretKey not set; output-to-cloud DISABLED!"); }
+        if (region == null) { ConsoleUtils.log("region not set; default to " + DEFAULT_REGION); }
     }
 
     protected String resolveCaptureDir() { return resolveOutputDir() + S3_PATH_SEPARATOR + SUBDIR_CAPTURES; }

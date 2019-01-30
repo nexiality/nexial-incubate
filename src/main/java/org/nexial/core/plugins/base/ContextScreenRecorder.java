@@ -23,16 +23,15 @@ import java.io.IOException;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.OutputFileUtils;
 import org.nexial.core.variable.Syspath;
 
+import static java.io.File.separator;
 import static org.nexial.core.NexialConst.Data.*;
 import static org.nexial.core.NexialConst.Project.appendCapture;
-import static java.io.File.separator;
 
 /**
  * main delegate for various screen recording strategies
@@ -70,7 +69,7 @@ public class ContextScreenRecorder {
         startingLocation = "ROW " + (startsFrom.getRow().get(0).getRowIndex() + 1);
         ConsoleUtils.log(startingLocation, "start recording to '" + videoFile + "'");
 
-        videoTitle = context.getTestScript().getName() + " : " + context.getCurrentTestStep().toString();
+        videoTitle = context.getTestScript().getFile().getName() + " : " + context.getCurrentTestStep().toString();
 
         screenRecorder.setTitle(videoTitle);
         screenRecorder.start(videoFile);
@@ -86,7 +85,7 @@ public class ContextScreenRecorder {
 
         if (videoFile != null && context != null) {
             String outputUrl = context.isOutputToCloud() ?
-                               context.getS3Helper().importMedia(new File(videoFile)) :
+                               context.getOtc().importMedia(new File(videoFile)) :
                                context.resolveRunModeSpecificUrl(videoFile);
             TestStep currentTestStep = context.getCurrentTestStep();
             if (currentTestStep != null) {

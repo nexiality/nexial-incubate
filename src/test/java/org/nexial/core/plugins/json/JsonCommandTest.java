@@ -17,34 +17,44 @@
 
 package org.nexial.core.plugins.json;
 
+import java.io.File;
+
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.SystemUtils;
 import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-
-import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.MockExecutionContext;
+import org.nexial.core.model.StepResult;
 
-/**
- *
- */
+import com.google.gson.JsonArray;
+
+import static java.io.File.separator;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.NexialConst.Data.TREAT_JSON_AS_IS;
+import static org.nexial.core.NexialConst.GSON_COMPRESSED;
+
 public class JsonCommandTest {
-    private ExecutionContext context = new MockExecutionContext();
+    private MockExecutionContext context = new MockExecutionContext();
+    private String destinationBase;
 
     @Before
     public void init() {
         if (context == null) { context = new MockExecutionContext(); }
+        destinationBase = SystemUtils.getJavaIoTmpDir().getAbsolutePath() + separator + "JsonCommandTest" + separator;
     }
 
     @After
     public void tearDown() {
-        if (context != null) { ((MockExecutionContext) context).cleanProject(); }
+        if (context != null) { context.cleanProject(); }
+        if (destinationBase != null) { FileUtils.deleteQuietly(new File(destinationBase)); }
     }
 
     @Test
-    public void testAssertElementPresent() {
+    public void assertElementPresent() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -120,7 +130,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testFind() {
+    public void find() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -201,7 +211,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testCount() {
+    public void count() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -240,7 +250,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testCount_Array() {
+    public void count_Array() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -259,7 +269,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testWellform() {
+    public void wellform() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -291,7 +301,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testNotWellform() {
+    public void notWellform() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -333,7 +343,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testCorrectness() {
+    public void correctness() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -377,7 +387,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testCorrectness2() {
+    public void correctness2() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -420,7 +430,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testCorrectness3() {
+    public void correctness3() {
         JsonCommand fixture = new JsonCommand();
         fixture.init(context);
 
@@ -470,7 +480,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testToJsonObject() {
+    public void toJsonObject() {
         String fixture =
             "{" +
             "   \"timestamp\":\"2017-09-25T19:23:24.419-07:00\"," +
@@ -483,7 +493,7 @@ public class JsonCommandTest {
 
         JsonCommand subject = new JsonCommand();
         subject.init(context);
-        Object jsonObject = subject.toJSONObject(context, fixture);
+        Object jsonObject = subject.toJSONObject(fixture);
         Assert.assertNotNull(jsonObject);
         Assert.assertTrue(jsonObject instanceof JSONObject);
 
@@ -492,7 +502,7 @@ public class JsonCommandTest {
     }
 
     @Test
-    public void testToJsonObject2() {
+    public void toJsonObject2() {
         String fixture =
             "{" +
             "   \"timestamp\":\"2017-09-25T19:23:24.419-07:00\"," +
@@ -505,7 +515,7 @@ public class JsonCommandTest {
 
         JsonCommand subject = new JsonCommand();
         subject.init(context);
-        Object jsonObject = subject.toJSONObject(context, fixture);
+        Object jsonObject = subject.toJSONObject(fixture);
         Assert.assertNotNull(jsonObject);
         Assert.assertTrue(jsonObject instanceof JSONObject);
 
@@ -530,6 +540,262 @@ public class JsonCommandTest {
         Assert.assertTrue(subject.assertValue(fixture, "deductionList[1].deductionAmount", "0.00").isSuccess());
         Assert.assertTrue(subject.assertValues(fixture, "deductionList.deductionAmount", "100.00,0.00", "true")
                                  .isSuccess());
+
+    }
+
+    @Test
+    public void fromCsv_withHeader() throws Exception {
+        context.setData("nexial.textDelim", "|");
+        String fixture = "ID|NAME|AGE|ADDRESS|TITLE\r\n" +
+                         "001|John Doe|17|154 Merlin Ave., Party Town, CA 90235|Senior Intern\n" +
+                         "002|Cassine LaCoprale|25|2054 Sourcano Avenida, Mi Casa|El Jefe\n" +
+                         "003|Chow Mi Toue|23|Apt 12-B, 9209 Ching Tong Rd, Konmandon, Mi Gouk|Big Boss Man\n";
+
+        String destination = destinationBase + "fromCsv_withHeader.json";
+
+        JsonCommand subject = new JsonCommand();
+        subject.init(context);
+        StepResult result = subject.fromCsv(fixture, "true", destination);
+
+        Assert.assertNotNull(result);
+        Assert.assertTrue(result.isSuccess());
+
+        String output = FileUtils.readFileToString(new File(destination), DEF_FILE_ENCODING);
+        System.out.println(output);
+        System.out.println();
+
+        JsonArray array = GSON_COMPRESSED.fromJson(output, JsonArray.class);
+        Assert.assertNotNull(array);
+        Assert.assertEquals(3, array.size());
+        String template = "{\"ID\":\"%s\",\"NAME\":\"%s\",\"AGE\":\"%s\",\"ADDRESS\":\"%s\",\"TITLE\":\"%s\"}";
+        Assert.assertEquals(String.format(template,
+                                          "001",
+                                          "John Doe",
+                                          "17",
+                                          "154 Merlin Ave., Party Town, CA 90235",
+                                          "Senior Intern"),
+                            array.get(0).getAsJsonObject().toString());
+        Assert.assertEquals(String.format(template,
+                                          "002",
+                                          "Cassine LaCoprale",
+                                          "25",
+                                          "2054 Sourcano Avenida, Mi Casa",
+                                          "El Jefe"),
+                            array.get(1).getAsJsonObject().toString());
+        Assert.assertEquals(String.format(template,
+                                          "003",
+                                          "Chow Mi Toue",
+                                          "23",
+                                          "Apt 12-B, 9209 Ching Tong Rd, Konmandon, Mi Gouk",
+                                          "Big Boss Man"),
+                            array.get(2).getAsJsonObject().toString());
+    }
+
+    @Test
+    public void fromCsv_noHeader() throws Exception {
+        context.setData("nexial.textDelim", "|");
+        String fixture = "ID|NAME|AGE|ADDRESS|TITLE\n" +
+                         "001|John Doe|17|154 Merlin Ave., Party Town, CA 90235|Senior Intern\n" +
+                         "002|Cassine LaCoprale|25|2054 Sourcano Avenida, Mi Casa|El Jefe\n\r" +
+                         "003|Chow Mi Toue|23|Apt 12-B, 9209 Ching Tong Rd, Konmandon, Mi Gouk|Big Boss Man\n";
+
+        String destination = destinationBase + "fromCsv_noHeader.json";
+
+        JsonCommand subject = new JsonCommand();
+        subject.init(context);
+        StepResult result = subject.fromCsv(fixture, "false", destination);
+
+        Assert.assertNotNull(result);
+        Assert.assertTrue(result.isSuccess());
+
+        String output = FileUtils.readFileToString(new File(destination), DEF_FILE_ENCODING);
+        System.out.println(output);
+        System.out.println();
+
+        JsonArray array = GSON_COMPRESSED.fromJson(output, JsonArray.class);
+        Assert.assertNotNull(array);
+        Assert.assertEquals(4, array.size());
+        String template = "[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]";
+        Assert.assertEquals(String.format(template, "ID", "NAME", "AGE", "ADDRESS", "TITLE"),
+                            array.get(0).getAsJsonArray().toString());
+        Assert.assertEquals(String.format(template,
+                                          "001",
+                                          "John Doe",
+                                          "17",
+                                          "154 Merlin Ave., Party Town, CA 90235",
+                                          "Senior Intern"),
+                            array.get(1).getAsJsonArray().toString());
+        Assert.assertEquals(String.format(template,
+                                          "002",
+                                          "Cassine LaCoprale",
+                                          "25",
+                                          "2054 Sourcano Avenida, Mi Casa",
+                                          "El Jefe"),
+                            array.get(2).getAsJsonArray().toString());
+        Assert.assertEquals(String.format(template,
+                                          "003",
+                                          "Chow Mi Toue",
+                                          "23",
+                                          "Apt 12-B, 9209 Ching Tong Rd, Konmandon, Mi Gouk",
+                                          "Big Boss Man"),
+                            array.get(3).getAsJsonArray().toString());
+    }
+
+    @Test
+    public void assertValue_or_Values() throws Exception {
+        context.setData("jobParameters", "[]");
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        String json = "{ " +
+                      " \"response\": { " +
+                      "     \"jobParameters\": [    \t \t \n \n \t   ] " +
+                      " } " +
+                      "}";
+
+        System.out.println("data = " + fixture.find(json, "response.jobParameters"));
+        System.out.println("data = " + fixture.find(json, "response.jobParameters[]"));
+
+        Assert.assertTrue(fixture.assertValue(json, "response.jobParameters", null).isSuccess());
+
+        Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", "[]", "false").isSuccess());
+        Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", context.replaceTokens("(null)"), "false")
+                                 .isSuccess());
+        Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", "", "false").isSuccess());
+        Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", null, "false").isSuccess());
+        Assert.assertTrue(fixture.assertValues(json,
+                                               "response.jobParameters",
+                                               context.replaceTokens("[TEXT(${jobParameters}) => removeRegex(\\[\\])]"),
+                                               "false").isSuccess());
+
+        Assert.assertTrue(fixture.assertElementCount(json, "response.jobParameters", "0").isSuccess());
+        Assert.assertTrue(fixture.assertElementCount(json, "response.jobParameters[]", "0").isSuccess());
+    }
+
+    @Test
+    public void assertValues() throws Exception {
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        Assert.assertTrue(fixture.assertValues("{\"a\":[{\"name\":\"John\"},{\"name\":\"Jim\"},{\"name\":\"James\"}]}",
+                                               "a.name", "John,Jim,James", "true").isSuccess());
+
+        Assert.assertTrue(fixture.assertValues("{\"b\":[{\"id\":2},{\"id\":23},{\"id\":235}]}",
+                                               "b.id", "2,23,235", "true").isSuccess());
+
+        Assert.assertTrue(fixture.assertValues("{\"c\":[{\"id\":2},{\"id\":23},{\"id\":235}]}",
+                                               "c.id", "23,235,2", "false").isSuccess());
+
+        Assert.assertTrue(fixture.assertValues("{\"a\":[" +
+                                               "    {\"name\":\"John A.\"}," +
+                                               "    {\"name\":\"Jim C.\"}," +
+                                               "    {\"name\":\"James W.\"}" +
+                                               "]}",
+                                               "a.name", "John A.,Jim C.,James W.", "true").isSuccess());
+
+        Assert.assertTrue(fixture.assertValues("{\"a\":[" +
+                                               "    {\"name\":\"John A.\"}," +
+                                               "    {\"name\":\"Jim C.\"}," +
+                                               "    {\"name\":\"James W.\"}" +
+                                               "]}",
+                                               "a",
+                                               "{\"name\":\"John A.\"}, {\"name\":\"Jim C.\"}, {\"name\":\"James W.\"}",
+                                               "true").isSuccess());
+
+        Assert.assertTrue(fixture.assertValues("{\"a\":[" +
+                                               "    {\"name\":\"John A.\"}," +
+                                               "    {\"name\":\"Jim C.\"}," +
+                                               "    {\"name\":\"James W.\"}" +
+                                               "]}",
+                                               "a",
+                                               "{\"name\":\"Jim C.\"}, {\"name\":\"John A.\"}, {\"name\":\"James W.\"}",
+                                               "false").isSuccess());
+
+        Assert.assertFalse(fixture.assertValues("{\"c\":[{\"id\":2},{\"id\":23},{\"id\":235}]}",
+                                                "c.id", "23,2,235,2", "false").isSuccess());
+    }
+
+    @Test
+    public void toJsonArray_simple() throws Exception {
+        String delim = ",";
+
+        JsonArray array = JsonCommand.toJsonArray("a,b,c,d,e", delim);
+        Assert.assertNotNull(array);
+        Assert.assertEquals(5, array.size());
+
+        array = JsonCommand.toJsonArray("a, b, c, d,e", delim);
+        Assert.assertNotNull(array);
+        Assert.assertEquals(5, array.size());
+
+        array = JsonCommand.toJsonArray("a, b,true,27,0.09283", delim);
+        Assert.assertNotNull(array);
+        Assert.assertEquals(5, array.size());
+        Assert.assertEquals("a", array.get(0).getAsString());
+        Assert.assertEquals("b", array.get(1).getAsString());
+        Assert.assertEquals("true", array.get(2).getAsString());
+        Assert.assertEquals("27", array.get(3).getAsString());
+        Assert.assertEquals("0.09283", array.get(4).getAsString());
+
+        array = JsonCommand.toJsonArray("a, b,true,27, this is a test", delim);
+        Assert.assertNotNull(array);
+        Assert.assertEquals(5, array.size());
+        Assert.assertEquals("a", array.get(0).getAsString());
+        Assert.assertEquals(" b", array.get(1).getAsString());
+        Assert.assertEquals("true", array.get(2).getAsString());
+        Assert.assertEquals("27", array.get(3).getAsString());
+        Assert.assertEquals(" this is a test", array.get(4).getAsString());
+
+        // this one FAILS to parse!!!
+        // array = JsonCommand.toJsonArray("a, b,true,{\"key\":\"value\"}, this is a test", delim);
+        // Assert.assertNotNull(array);
+        // Assert.assertEquals(5, array.size());
+        // Assert.assertEquals("a", array.get(0).getAsString());
+        // Assert.assertEquals(" b", array.get(1).getAsString());
+        // Assert.assertEquals("true", array.get(2).getAsString());
+        // Assert.assertEquals("{\"key\":\"value\"}", array.get(3).getAsJsonObject().toString());
+        // Assert.assertEquals(" this is a test", array.get(4).getAsString());
+    }
+
+    @Test
+    public void extractJsonValue() throws Exception {
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        String json = "{\n" +
+                      "    \"shipping_address\": [\n" +
+                      "        {\n" +
+                      "            \"street_address\": \"1600 Pennsylvania Avenue NW\",\n" +
+                      "            \"city\": \"Washington\",\n" +
+                      "            \"state\": \"DC\"\n" +
+                      "        },\n" +
+                      "        {\n" +
+                      "            \"street_address\": \"1733 Washington Avenue\",\n" +
+                      "            \"city\": \"Glenoak\",\n" +
+                      "            \"state\": \"CA\"\n" +
+                      "        }\n" +
+                      "    ],\n" +
+                      "    \"billing_address\": {\n" +
+                      "        \"street_address\": \"1st Street SE\",\n" +
+                      "        \"city\": \"Washington\",\n" +
+                      "        \"state\": \"DC\"\n" +
+                      "    }\n" +
+                      "}";
+
+        Assert.assertTrue(fixture.extractJsonValue(json, "shipping_address[0].city", "dummy").isSuccess());
+        Assert.assertEquals("Washington", context.getStringData("dummy"));
+
+        Assert.assertTrue(fixture.extractJsonValue(json,
+                                                   "[REGEX:shipping_address|billing_address].city => distinct ascending",
+                                                   "dummy")
+                                 .isSuccess());
+        Assert.assertEquals("[\"Glenoak\",\"Washington\"]", context.getStringData("dummy"));
+
+        context.setData(TREAT_JSON_AS_IS, "false");
+        Assert.assertTrue(fixture.extractJsonValue(json,
+                                                   "[REGEX:shipping_address|billing_address].city => distinct ascending",
+                                                   "dummy")
+                                 .isSuccess());
+        Assert.assertEquals("[Glenoak, Washington]", context.getStringData("dummy"));
 
     }
 }

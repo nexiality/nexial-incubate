@@ -1,48 +1,98 @@
 #!/bin/bash
 
 function reportBadInputAndExit() {
-	echo
+    echo
     echo ERROR: Required input not found.
     echo USAGE: $0 [project name] [optional: testcase id, testcase id, ...]
-    echo
     echo
     exit -1
 }
 
 NEXIAL_HOME=$(cd `dirname $0`/..; pwd -P)
 . ${NEXIAL_HOME}/bin/.commons.sh
-title "nexial runner"
-title "nexial project creator"
+title "nexial project artifact creator"
 checkJava
 resolveEnv
 
-if [[ "$1" = "" ]] ; then
-	reportBadInputAndExit
+# set up
+if [[ "$1" = "" ]]; then
+    reportBadInputAndExit
 fi
 
-PROJECT_HOME=${PROJECT_BASE}/$1
-echo "  PROJECT_HOME: ${PROJECT_HOME}"
+# allow user to specify project home - if it exists
+PROJECT_NAME=
+PROJECT_HOME=
+TMP_PROJECT_HOME="$1"
+TMP_PROJECT_HOME="`echo ${TMP_PROJECT_HOME/\~/$HOME}`"
+if [[ -d "$TMP_PROJECT_HOME" ]]; then
+    PROJECT_HOME="$TMP_PROJECT_HOME"
+else
+    PROJECT_HOME=${PROJECT_BASE}/$1
+fi
+PROJECT_NAME="`basename "${PROJECT_HOME}"`"
+echo "  PROJECT_HOME:   ${PROJECT_HOME}"
+echo "  PROJECT_NAME:   ${PROJECT_NAME}"
 
 echo
-echo "» creating project home at ${PROJECT_HOME}"
-mkdir -p ${PROJECT_HOME}/artifact/script > /dev/null 2>&1
-mkdir -p ${PROJECT_HOME}/artifact/data > /dev/null 2>&1
-mkdir -p ${PROJECT_HOME}/artifact/plan > /dev/null 2>&1
-mkdir -p ${PROJECT_HOME}/output > /dev/null 2>&1
+echo "» (re)creating project home at ${PROJECT_HOME}"
+mkdir -p "${PROJECT_HOME}/.meta" > /dev/null 2>&1
+mkdir -p "${PROJECT_HOME}/artifact/script" > /dev/null 2>&1
+mkdir -p "${PROJECT_HOME}/artifact/data" > /dev/null 2>&1
+mkdir -p "${PROJECT_HOME}/artifact/plan" > /dev/null 2>&1
+mkdir -p "${PROJECT_HOME}/output" > /dev/null 2>&1
 
-cp ${NEXIAL_HOME}/template/nexial-testplan.xlsx ${PROJECT_HOME}/artifact/plan/$1.xlsx
+# create project.id file to uniquely identify a "project" across enterprise (i.e. same SCM)
+PROJECT_ID="${PROJECT_HOME}/.meta/project.id"
+if [[ ! -s "${PROJECT_ID}" ]] ; then
+    echo "» create ${PROJECT_ID}"
+    mkdir -p "${PROJECT_HOME}/.meta"
+    echo ${PROJECT_NAME} > "${PROJECT_ID}"
+fi
 
-while [ "$1" != "" ] ; do
-	echo "» create test script for $1"
-	cp ${NEXIAL_HOME}/template/nexial-script.xlsx ${PROJECT_HOME}/artifact/script/$1.xlsx
-	cp ${NEXIAL_HOME}/template/nexial-data.xlsx ${PROJECT_HOME}/artifact/data/$1.data.xlsx
-	shift
+SKIP_DEF_SCRIPTS=true
+for f in "${PROJECT_HOME}/artifact/script/*.xlsx"; do
+    ## Check if the glob gets expanded to existing files.
+    ## If not, f here will be exactly the pattern above
+    ## and the exists test will evaluate to false.
+    [[ -e "$f" ]] && SKIP_DEF_SCRIPTS=true || SKIP_DEF_SCRIPTS=false
+
+    ## This is all we needed to know, so we can break after the first iteration
+    break
 done
 
-chmod -fR 755 ${PROJECT_HOME}
+if [[ ${SKIP_DEF_SCRIPTS} = true ]] ; then
+    echo "» skip over the creation of default script/data files"
 
-${NEXIAL_HOME}/bin/nexial-script-update.sh -v -t ${PROJECT_HOME}
+    # in dealing with existing project, we don't need to create default script/data files
+    shift
+else
+    cp -n ${NEXIAL_HOME}/template/nexial-testplan.xlsx "${PROJECT_HOME}/artifact/plan/${PROJECT_NAME}-plan.xlsx"
+fi
 
-cd ${PROJECT_HOME}
+# first, create script/data files based on project name (if needed)
+if $(find "${PROJECT_HOME}/artifact/script" -mindepth 1 2>/dev/null | read); then
+    echo "» skip over the creation of default script/data files on ${PROJECT_HOME}"
+else
+    echo "» create test script and data file for '${PROJECT_NAME}' on ${PROJECT_HOME}"
+    cp -n ${NEXIAL_HOME}/template/nexial-script.xlsx "${PROJECT_HOME}/artifact/script/${PROJECT_NAME}.xlsx"
+    cp -n ${NEXIAL_HOME}/template/nexial-data.xlsx   "${PROJECT_HOME}/artifact/data/${PROJECT_NAME}.data.xlsx"
+fi
+shift
+
+while [[ "$1" != "" ]]; do
+    script_name="$1"
+    echo "» create test script and data file for '${script_name}'"
+    cp -n ${NEXIAL_HOME}/template/nexial-script.xlsx "${PROJECT_HOME}/artifact/script/${script_name}.xlsx"
+    cp -n ${NEXIAL_HOME}/template/nexial-data.xlsx   "${PROJECT_HOME}/artifact/data/${script_name}.data.xlsx"
+    shift
+done
+
+echo "» DONE - nexial automation project created as follows:"
 echo
-echo "» DONE"
+
+cd "${PROJECT_HOME}"
+chmod -fR 755 "${PROJECT_HOME}"
+find "${PROJECT_HOME}" | sort -n
+
+echo
+echo

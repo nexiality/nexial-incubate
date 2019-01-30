@@ -22,31 +22,27 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
-import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFCell;
-import org.apache.poi.xssf.usermodel.XSSFRow;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
-
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.nexial.core.ExecutionEventListener;
+import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.excel.ExcelArea;
+import org.nexial.core.service.EventTracker;
+import org.nexial.core.service.SQLiteManager;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.ExecutionLogger;
 
-import static org.nexial.core.NexialConst.*;
-import static org.nexial.core.NexialConst.Data.CMD_COMMAND_REPEATER;
+import static org.nexial.core.NexialConst.Data.CMD_REPEAT_UNTIL;
 import static org.nexial.core.excel.ExcelConfig.*;
-import static org.nexial.core.excel.ExcelConfig.StyleConfig.MSG;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.SCENARIO;
-import static org.apache.poi.ss.usermodel.CellType.STRING;
-import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
 
 public class TestScenario {
     private ExecutionContext context;
@@ -54,6 +50,23 @@ public class TestScenario {
     private Worksheet worksheet;
     private TestScenarioMeta meta;
     private ExecutionSummary executionSummary = new ExecutionSummary();
+    private String scenarioId;
+    private int scenarioSeqId = 0;
+    private String iterationId;
+
+    public TestScenario(ExecutionContext context, Worksheet worksheet) {
+        assert context != null && StringUtils.isNotBlank(context.getId());
+        assert worksheet != null && worksheet.getSheet() != null;
+
+        this.context = context;
+        this.worksheet = worksheet;
+        this.name = worksheet.getName();
+        this.scenarioId = SQLiteManager.get();
+
+        parse();
+    }
+
+    public void setIterationId(String iterationId) { this.iterationId = iterationId; }
 
     /**
      * the section with the corresponding worksheet that has test steps
@@ -65,16 +78,7 @@ public class TestScenario {
     private List<TestStep> allSteps;
     private Map<Integer, TestStep> testStepsByRow;
 
-    public TestScenario(ExecutionContext context, Worksheet worksheet) {
-        assert context != null && StringUtils.isNotBlank(context.getId());
-        assert worksheet != null && worksheet.getSheet() != null;
-
-        this.context = context;
-        this.worksheet = worksheet;
-        this.name = worksheet.getName();
-
-        parse();
-    }
+    public void setScenarioSeqId(int scenarioSeqId) { this.scenarioSeqId = scenarioSeqId; }
 
     public String getName() { return name; }
 
@@ -94,25 +98,12 @@ public class TestScenario {
 
     public TestCase getTestCase(String name) { return testCaseMap.get(name); }
 
-    public void save() throws IOException {
-        XSSFCell summaryCell = worksheet.cell(ADDR_SCENARIO_EXEC_SUMMARY);
-        if (summaryCell != null) {
-            if (executionSummary.getEndTime() == 0) { executionSummary.setEndTime(System.currentTimeMillis()); }
-            summaryCell.setCellValue(executionSummary.toString());
-        }
-
-        worksheet.getSheet().setZoom(100);
-        worksheet.save();
-    }
-
     public boolean execute() throws IOException {
         ExecutionLogger logger = context.getLogger();
         logger.log(this, "executing test scenario");
 
-        boolean interativeMode = context.isInterativeMode();
-
         // by default, only fail fast if we are not in interactive mode
-        boolean shouldFailFast = !interativeMode && context.isFailFast();
+        boolean shouldFailFast = context.isFailFast();
         boolean skipDueToFailFast = false;
         boolean skipDueToEndFast = false;
         boolean skipDueToEndLoop = false;
@@ -120,23 +111,33 @@ public class TestScenario {
 
         executionSummary.setName(name);
         executionSummary.setExecutionLevel(SCENARIO);
-        executionSummary.setTestScript(worksheet.getFile());
+        executionSummary.setTestScript(worksheet.excel().getOriginalFile());
         executionSummary.setStartTime(System.currentTimeMillis());
         executionSummary.setTotalSteps(CollectionUtils.size(allSteps));
 
+        ExecutionEventListener executionEventListener = context.getExecutionEventListener();
+        executionEventListener.onScenarioStart();
+        executionSummary.setId(scenarioId);
+        EventTracker.INSTANCE.track(new NexialScenarioStartEvent(scenarioId, name, iterationId, scenarioSeqId));
+        int activitySeqId = 0;
+
         for (TestCase testCase : testCases) {
+            testCase.setScenarioId(scenarioId);
+            testCase.setActivitySeqId(++activitySeqId);
+            context.setCurrentActivity(testCase);
+
             if (skipDueToFailFast) {
-                logger.log(this, "skipping test case due to previous failure");
+                logger.log(this, "skipping test activity due to previous failure");
                 continue;
             }
 
             if (skipDueToEndFast) {
-                logger.log(this, "skipping test case due to previous end");
+                logger.log(this, "skipping test activity due to previous end");
                 continue;
             }
 
             if (skipDueToEndLoop) {
-                logger.log(this, "skipping test case due to break-loop in effect");
+                logger.log(this, "skipping test activity due to break-loop in effect");
                 continue;
             }
 
@@ -145,83 +146,38 @@ public class TestScenario {
                 allPass = false;
                 if (shouldFailFast || context.isFailImmediate()) {
                     skipDueToFailFast = true;
-                    logger.log(this, "test case execution failed. " +
+                    logger.log(this, "test activity execution failed. " +
                                      "Because of this, all subsequent test case will be skipped");
                 }
             }
 
             if (context.isEndImmediate()) {
                 skipDueToEndFast = true;
-                logger.log(this, "test case execution ending due to EndIf() flow control activated.");
+                logger.log(this, "test activity execution ending due to EndIf() flow control activated.");
             }
 
             if (context.isBreakCurrentIteration()) {
                 skipDueToEndLoop = true;
-                logger.log(this, "test case execution ending due to EndLoopIf() flow control activated.");
+                logger.log(this, "test activity execution ending due to EndLoopIf() flow control activated " +
+                                 "or unrecoverable execution failure.");
             }
 
             executionSummary.addNestSummary(testCase.getExecutionSummary());
-
-            // todo: forcefully stop video recording (if any) in case we are currently dealing
-            // with the last agenda or that fail-fast condition is reached.
-            //if (i == testScenarios.size() - 1 || failFast) { forceStopVideoRecording(); }
         }
 
-        if (interativeMode) {
-            // todo probably not in the right place.  Interactive mode would negate multiple test scenarios
-            doInteractive(context);
-            return allPass;
-        }
+        context.setCurrentActivity(null);
 
         executionSummary.setEndTime(System.currentTimeMillis());
         executionSummary.setFailedFast(shouldFailFast);
-
-        XSSFSheet excelSheet = worksheet.getSheet();
-
-        Map<TestStepManifest, List<NestedMessage>> nestMessages = executionSummary.getNestMessages();
-        int lastRow = worksheet.findLastDataRow(ADDR_COMMAND_START);
-        if (MapUtils.isNotEmpty(nestMessages)) {
-            int forwardRowsBy = 0;
-
-            Set<TestStepManifest> testStepsWithNestMessages = nestMessages.keySet();
-            for (TestStepManifest step : testStepsWithNestMessages) {
-                if (StringUtils.equals(step.getCommandFQN(), CMD_VERBOSE)) { continue; }
-
-                List<NestedMessage> nestedMessages = nestMessages.get(step);
-                int messageCount = CollectionUtils.size(nestedMessages);
-                if (messageCount < 1) { continue; }
-
-                int currentRow = step.getRowIndex() + 1 + forwardRowsBy;
-                excelSheet.getWorkbook().setMissingCellPolicy(CREATE_NULL_AS_BLANK);
-                // +1 if lastRow is the same as currentRow.  Otherwise shiftRow on a single row block causes problem for createRow (later on).
-                worksheet.shiftRows(currentRow, lastRow + (currentRow == lastRow ? 1 : 0), messageCount);
-
-                for (int i = 0; i < messageCount; i++) {
-                    nestedMessages.get(i).printTo(excelSheet.createRow(currentRow + i));
-                }
-
-                lastRow += messageCount;
-                forwardRowsBy += messageCount;
-            }
-        }
-
-        // scan for verbose() or similar commands where merging should be done
-        int startRow = ADDR_PARAMS_START.getRowStartIndex();
-        for (int i = startRow; i < lastRow; i++) {
-            XSSFRow row = excelSheet.getRow(i);
-            if (row == null) { continue; }
-
-            XSSFCell cellTarget = row.getCell(COL_IDX_TARGET);
-            XSSFCell cellCommand = row.getCell(COL_IDX_COMMAND);
-            String command = (cellTarget == null ? "" : cellTarget.getStringCellValue()) + "." +
-                             (cellCommand == null ? "" : cellCommand.getStringCellValue());
-            if (MERGE_OUTPUTS.contains(command)) { mergeOutput(excelSheet, row, i); }
-        }
-
         executionSummary.aggregatedNestedExecutions(context);
 
-        logger.log(this, "saving test scenario");
-        save();
+        ExecutionResultHelper.writeTestScenarioResult(worksheet, executionSummary);
+
+        executionEventListener.onScenarioComplete(executionSummary);
+
+        // clear off any scenario-ref incurred during the execution of this scenario.. we don't want current
+        // scenario-ref's to taint subsequent scenario
+        context.clearScenarioRefData();
 
         return allPass;
     }
@@ -237,43 +193,42 @@ public class TestScenario {
         return testSteps;
     }
 
-    protected void mergeOutput(XSSFSheet excelSheet, XSSFRow row, int rowIndex) {
-        XSSFCell cellMerge = row.getCell(COL_IDX_MERGE_RESULT_START);
-        if (cellMerge == null) { return; }
-
-        // determine aggregated column width from 'param 1' to 'flow control'
-        int mergedWidth = 0;
-        for (int j = COL_IDX_MERGE_RESULT_START; j < COL_IDX_MERGE_RESULT_END + 1; j++) {
-            mergedWidth += worksheet.getSheet().getColumnWidth(j);
+    public void close() {
+        if (CollectionUtils.isNotEmpty(testCases)) {
+            testCases.forEach(TestCase::close);
+            testCases.clear();
+            testCases = null;
         }
-        int charPerLine = (int) ((mergedWidth - DEF_CHAR_WIDTH) / (DEF_CHAR_WIDTH * MSG.getFontHeight()));
 
-        excelSheet.addMergedRegion(
-            new CellRangeAddress(rowIndex, rowIndex, COL_IDX_MERGE_RESULT_START, COL_IDX_MERGE_RESULT_END));
-        if (cellMerge.getCellTypeEnum() == STRING) { cellMerge.setCellStyle(worksheet.getStyle(STYLE_MESSAGE)); }
+        if (worksheet != null) {
+            XSSFSheet sheet = worksheet.getSheet();
+            if (sheet != null) {
+                XSSFWorkbook workbook = sheet.getWorkbook();
+                if (workbook != null) {
+                    try {
+                        workbook.close();
+                    } catch (IOException e) {
+                        ConsoleUtils.error("Unable to close scenario (" + name + "): " + e.getMessage());
+                    }
+                }
+            }
+            worksheet = null;
+        }
 
-        String mergedContent = cellMerge.getStringCellValue();
-        cellMerge.setCellValue(mergedContent);
+        if (MapUtils.isNotEmpty(testCaseMap)) {
+            testCaseMap.clear();
+            testCaseMap = null;
+        }
 
-        int lineCount = StringUtils.countMatches(mergedContent, "\n") + 1;
-        String[] lines = StringUtils.split(mergedContent, "\n");
-        if (ArrayUtils.isEmpty(lines)) { lines = new String[]{mergedContent}; }
-        for (String line : lines) { lineCount += Math.ceil((double) StringUtils.length(line) / charPerLine) - 1; }
+        if (CollectionUtils.isNotEmpty(allSteps)) {
+            allSteps.clear();
+            allSteps = null;
+        }
 
-        // lineCount should always be at least 1. otherwise this row will not be rendered with height 0
-        if (lineCount < 1) { lineCount = 1; }
-
-        worksheet.setHeight(cellMerge, lineCount);
-        if (lineCount == 1) { cellMerge.getRow().setHeightInPoints(20); }
-    }
-
-    protected void doInteractive(ExecutionContext context) {
-        context.setData(OPT_EXCEL_FILE, context.getStringData(OPT_LAST_TEST_SCENARIO));
-        context.setData(OPT_EXCEL_WORKSHEET, context.getStringData(OPT_LAST_TEST_STEP));
-        // todo: need to fix soon
-        //InteractiveDispatcher dispatcher = execution.newInteractiveDispatcher();
-        //dispatcher.setExecutor(this);
-        //dispatcher.doPrompt();
+        if (MapUtils.isNotEmpty(testStepsByRow)) {
+            testStepsByRow.clear();
+            testStepsByRow = null;
+        }
     }
 
     protected void parse() {
@@ -282,10 +237,7 @@ public class TestScenario {
 
         // 2. find last command
         int lastCommandRow = worksheet.findLastDataRow(ADDR_COMMAND_START);
-        area = new ExcelArea(worksheet,
-                             new ExcelAddress("" + COL_TEST_CASE + (ADDR_COMMAND_START.getRowStartIndex() + 1)
-                                              + ":" + COL_REASON + lastCommandRow),
-                             false);
+        area = new ExcelArea(worksheet, new ExcelAddress(FIRST_STEP_ROW + ":" + COL_REASON + lastCommandRow), false);
         testCases = new ArrayList<>();
         testCaseMap = new HashMap<>();
         allSteps = new ArrayList<>();
@@ -297,7 +249,8 @@ public class TestScenario {
             List<XSSFCell> row = area.getWholeArea().get(i);
 
             XSSFCell cellTestCase = row.get(COL_IDX_TESTCASE);
-            boolean hasTestCase = cellTestCase != null && StringUtils.isNotBlank(cellTestCase.getStringCellValue());
+            String testCase = Excel.getCellValue(cellTestCase);
+            boolean hasTestCase = StringUtils.isNotBlank(testCase);
             if (currentTestCase == null && !hasTestCase) {
                 // first row must define test case (hence at least 1 test case is required)
                 throw new RuntimeException("Invalid format found in " + worksheet.getFile() + " (" + name +
@@ -306,7 +259,7 @@ public class TestScenario {
 
             if (hasTestCase) {
                 currentTestCase = new TestCase();
-                currentTestCase.setName(cellTestCase.getStringCellValue());
+                currentTestCase.setName(testCase);
                 currentTestCase.setTestScenario(this);
                 testCases.add(currentTestCase);
                 testCaseMap.put(currentTestCase.getName(), currentTestCase);
@@ -329,22 +282,22 @@ public class TestScenario {
         // expectation: first parameter is the number of test steps for the repeats
         // expectation: second parameter is the max. wait time in ms
         String errMsg = "[ROW " + (startFrom + ADDR_COMMAND_START.getRowStartIndex()) + "]" +
-                        " wrong parameters specified for " + CMD_COMMAND_REPEATER + ": " + testStep.getParams();
+                        " wrong parameters specified for " + CMD_REPEAT_UNTIL + ": " + testStep.getParams();
         if (CollectionUtils.size(testStep.getParams()) != 2) {
-            ConsoleUtils.log(errMsg);
+            ConsoleUtils.error(errMsg);
             throw new RuntimeException(errMsg);
         }
 
         String steps = context.replaceTokens(testStep.getParams().get(0));
         int numOfStepsIncluded = NumberUtils.toInt(steps);
         if (numOfStepsIncluded < 1) {
-            ConsoleUtils.log(errMsg);
+            ConsoleUtils.error(errMsg);
             throw new RuntimeException(errMsg);
         }
 
         if ((startFrom + numOfStepsIncluded) > allSteps.size()) {
             String errMsg1 = errMsg + " - number of steps specified greater than available in this test scenario";
-            ConsoleUtils.log(errMsg1);
+            ConsoleUtils.error(errMsg1);
             throw new RuntimeException(errMsg1);
         }
 
@@ -352,7 +305,7 @@ public class TestScenario {
         long maxWait = NumberUtils.toLong(maxWaitMs);
         if (maxWait != -1 && maxWait < 1000) {
             String errMsg1 = errMsg + " - minimum wait time is 1000ms: " + maxWait;
-            ConsoleUtils.log(errMsg1);
+            ConsoleUtils.error(errMsg1);
             throw new RuntimeException(errMsg1);
         }
 

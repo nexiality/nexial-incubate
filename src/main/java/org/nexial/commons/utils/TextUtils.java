@@ -22,21 +22,21 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
-
+import java.util.stream.Collectors;
 import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.core.utils.ConsoleUtils;
 
-import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 import static java.awt.event.KeyEvent.*;
 import static java.lang.Character.UnicodeBlock.SPECIALS;
 import static java.lang.System.lineSeparator;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
 /**
  * @author Mike Liu
@@ -141,6 +141,15 @@ public final class TextUtils {
         }
 
         return replaced;
+    }
+
+    public static List<String> replaceItems(List<String> list, String find, String replaceWith) {
+        if (CollectionUtils.isEmpty(list)) { return list; }
+        if (StringUtils.isEmpty(find)) { return list; }
+
+        List<String> newList = new ArrayList<>(list.size());
+        list.forEach(item -> newList.add(StringUtils.replace(item, find, replaceWith)));
+        return newList;
     }
 
     public static String insert(String text, int position, String extra) {
@@ -336,7 +345,7 @@ public final class TextUtils {
 
         List<String> list = new ArrayList<>();
 
-        String[] items = StringUtils.splitPreserveAllTokens(text, delim);
+        String[] items = StringUtils.splitByWholeSeparatorPreserveAllTokens(text, delim);
         for (String item : items) {
             if (trim) { item = StringUtils.trim(item); }
             list.add(item);
@@ -417,6 +426,7 @@ public final class TextUtils {
      * convert {@code array} into a string, with optional delimiter, prefix and suffix.  For example,
      * {@code toString(new String[]{"a", "b", "c"}, ",", "'", "'")} will return {@code "'a','b','c'"}
      */
+    @NotNull
     public static String toString(String[] array, String delim, String prefix, String suffix) {
         if (array == null || array.length == 0) { return ""; }
 
@@ -429,8 +439,9 @@ public final class TextUtils {
         return sb.substring(0, sb.length() - d.length());
     }
 
-    public static String toCsvLine(String[] array, String delim, String recordDelm) {
-        if (ArrayUtils.isEmpty(array)) { return recordDelm; }
+    @NotNull
+    public static String toCsvLine(String[] array, String delim, String recordDelim) {
+        if (ArrayUtils.isEmpty(array)) { return recordDelim; }
 
         StringBuilder sb = new StringBuilder();
         for (String value : array) {
@@ -439,7 +450,21 @@ public final class TextUtils {
             sb.append(data).append(delim);
         }
 
-        return StringUtils.removeEnd(sb.toString(), delim) + recordDelm;
+        return StringUtils.removeEnd(sb.toString(), delim) + recordDelim;
+    }
+
+    @NotNull
+    public static String toCsvLine(List<String> array, String delim, String recordDelim) {
+        if (CollectionUtils.isEmpty(array)) { return recordDelim; }
+
+        StringBuilder sb = new StringBuilder();
+        for (String value : array) {
+            String data = StringUtils.containsAny(value, delim, "\r", "\n") ?
+                          TextUtils.wrapIfMissing(value, "\"", "\"") : value;
+            sb.append(data).append(delim);
+        }
+
+        return StringUtils.removeEnd(sb.toString(), delim) + recordDelim;
     }
 
     public static String toString(Map map, String pairDelim, String nameValueDelim) {
@@ -456,8 +481,15 @@ public final class TextUtils {
         return sb.toString();
     }
 
-    public static String toString(List list, String delim) { return CollectionUtil.toString(list, delim); }
+    @NotNull
+    public static String toString(Collection list, String delim) { return CollectionUtil.toString(list, delim); }
 
+    @NotNull
+    public static String toString(Iterable<?> iterable, String delim, String nullValue) {
+        return IterableUtils.toString(iterable, input -> input == null ? nullValue : input.toString(), delim, "", "");
+    }
+
+    @NotNull
     public static String toString(List<?> list, String delim, String prefix, String suffix) {
         if (CollectionUtils.isEmpty(list)) { return ""; }
 
@@ -470,6 +502,7 @@ public final class TextUtils {
         return StringUtils.removeEnd(sb.toString(), d);
     }
 
+    @NotNull
     public static String toString(Set<?> set, String delim) { return CollectionUtil.toString(set, delim); }
 
     /** test to see if {@code matchList} contains any element that starts with {@code matchBy}. */
@@ -511,7 +544,7 @@ public final class TextUtils {
     }
 
     /** transfer comment text so that newlines are rendered as HTML BR */
-    public static String prepForInlinDisplay(String text) {
+    public static String prepForInlineDisplay(String text) {
         if (StringUtils.isBlank(text)) { return StringUtils.defaultString(text); }
         return StringUtils.replaceEach(text, INLINE_UNFRIENDLY_TEXT, INLINE_BR);
     }
@@ -551,7 +584,15 @@ public final class TextUtils {
 
     public static String wrapIfMissing(String text, String start, String end) {
         if (StringUtils.isEmpty(text)) { return start + end; }
-        return StringUtils.prependIfMissing(StringUtils.appendIfMissing(text, start), end);
+        return StringUtils.prependIfMissing(StringUtils.appendIfMissing(text, end), start);
+    }
+
+    /**
+     * substring between the first occurrence of {@code start} and the last occurrence of {@code end} from {@code text}.
+     */
+    public static String unwrap(String text, String start, String end) {
+        if (StringUtils.isEmpty(text)) { return ""; }
+        return StringUtils.substringBeforeLast(StringUtils.substringAfter(text, start), end);
     }
 
     /**
@@ -621,6 +662,23 @@ public final class TextUtils {
         return StringUtils.substring(text, 0, start) + StringUtils.substring(text, start + remove.length());
     }
 
+    /**
+     * remove all extraneous whitespaces, including space, tab, newline, carriage return so that {@code text} would
+     * contain NO CONTIGUOUS whitespace.
+     *
+     * Note that this method will convert all whitespaces (non-printable) to space (ASCII 20), and remove space dups.
+     */
+    @NotNull
+    public static String removeExcessWhitespaces(String text) {
+        if (StringUtils.isEmpty(text)) { return ""; }
+        if (StringUtils.isBlank(text)) { return " "; }
+
+        text = StringUtils.replaceAll(text, "\\s+", " ");
+        text = StringUtils.replaceAll(text, "  ", " ");
+
+        return text;
+    }
+
     public static String xpathFriendlyQuotes(String name) {
         if (name == null) { return "''"; }
         if (StringUtils.isBlank(name)) { return "'" + name + "'"; }
@@ -664,48 +722,134 @@ public final class TextUtils {
      * create ASCII table (aka ascii art) based on a {@link List} of objects, which can varied in types.  The extraction
      * of cell-level value would be differed to {@link ExtractCellByPosition} implementation
      */
+    @NotNull
     public static <T> String createAsciiTable(List<String> headers,
                                               List<T> records,
                                               ExtractCellByPosition<T> extractor) {
         // figure out the right width to apply
-        Map<Integer, Integer> columnWidths = new HashMap<>();
+        Map<Integer, Integer> widths = new HashMap<>();
         if (CollectionUtils.isNotEmpty(headers)) {
-            for (int i = 0; i < headers.size(); i++) { columnWidths.put(i, StringUtils.length(headers.get(i)) + 1); }
+            for (int i = 0; i < headers.size(); i++) { widths.put(i, StringUtils.length(headers.get(i)) + 1); }
         }
 
-        records.forEach(
-            row -> columnWidths.forEach(
-                (index, currentWidth) ->
-                    columnWidths.put(index,
-                                     Math.max(currentWidth, StringUtils.length(extractor.getCell(row, index)) + 1))));
+        if (CollectionUtils.isNotEmpty(records)) {
+            records.forEach(
+                row -> widths.forEach(
+                    (index, currentWidth) -> {
+                        int width = Math.max(currentWidth, StringUtils.length(extractor.getCell(row, index)) + 1);
+                        widths.put(index, width);
+                    }));
+        }
 
         int[] totalWidth = new int[]{1};
-        columnWidths.forEach((index, width) -> totalWidth[0] += width + 1);
+        widths.forEach((index, width) -> totalWidth[0] += width + 1);
 
-        String lineAcross = StringUtils.repeat("-", totalWidth[0]) + lineSeparator();
+        String linSep = lineSeparator();
+        String lineAcross = StringUtils.repeat("-", totalWidth[0]) + linSep;
 
         // ready to draw
         StringBuilder tableContent = new StringBuilder();
-        tableContent.append(lineAcross);
 
         if (CollectionUtils.isNotEmpty(headers)) {
+            tableContent.append(lineAcross);
             tableContent.append("|");
             for (int i = 0; i < headers.size(); i++) {
-                tableContent.append(StringUtils.rightPad(headers.get(i), columnWidths.get(i))).append("|");
+                tableContent.append(StringUtils.rightPad(headers.get(i), widths.get(i))).append("|");
             }
-            tableContent.append(lineSeparator()).append(lineAcross);
+            tableContent.append(linSep).append(lineAcross);
         }
 
-        records.forEach(row -> {
-            tableContent.append("|");
-            columnWidths.forEach(
-                (position, width) -> tableContent.append(StringUtils.rightPad(extractor.getCell(row, position),
-                                                                              columnWidths.get(position)))
-                                                 .append("|"));
-            tableContent.append(lineSeparator()).append(lineAcross);
-        });
+        if (CollectionUtils.isNotEmpty(records)) {
+            records.forEach(row -> {
+                tableContent.append("|");
+                widths.forEach(
+                    (position, width) -> {
+                        String cell = StringUtils.rightPad(extractor.getCell(row, position), widths.get(position));
+                        tableContent.append(cell).append("|");
+                    });
+                tableContent.append(linSep).append(lineAcross);
+            });
+        }
 
         return tableContent.toString();
+    }
+
+    /**
+     * create HTML table with optional {@code tableStyleClass}.
+     *
+     * This implementation requires the same size of {@code headers} and {@code records}.  {@code headers} is thus
+     * expected to <b>NOT TO BE EMPTY</b>, or no table HTML would be generated.
+     */
+    @NotNull
+    public static <T> String createHtmlTable(List<String> headers,
+                                             List<T> records,
+                                             ExtractCellByPosition<T> extractor,
+                                             String tableStyleClass) {
+        int bufferSize = Math.max(20 * CollectionUtils.size(headers) * CollectionUtils.size(records), 100);
+        StringBuilder buffer = new StringBuilder(bufferSize);
+
+        String lineSep = lineSeparator();
+
+        if (StringUtils.isNotBlank(tableStyleClass)) {
+            buffer.append("<table class=\"").append(tableStyleClass).append("\">");
+        } else {
+            buffer.append("<table>");
+        }
+        buffer.append(lineSep);
+
+        // header
+        int columnCount = CollectionUtils.size(headers);
+        if (CollectionUtils.isNotEmpty(headers)) {
+            buffer.append("<thead><tr>");
+            headers.forEach(header -> buffer.append("<th>").append(header).append("</th>"));
+            buffer.append("</tr></thead>").append(lineSep);
+        }
+
+        // body
+        if (CollectionUtils.isNotEmpty(records)) {
+            buffer.append("<tbody>").append(lineSep);
+            records.forEach(row -> {
+                buffer.append("<tr>");
+                for (int i = 0; i < columnCount; i++) {
+                    buffer.append("<td>").append(extractor.getCell(row, i)).append("</td>");
+                }
+                buffer.append("</tr>").append(lineSep);
+            });
+            buffer.append("</tbody>").append(lineSep);
+        }
+
+        buffer.append("</table>").append(lineSep);
+
+        return buffer.toString();
+    }
+
+    @NotNull
+    public static String createHtmlTable(List<String> headers,
+                                         List<List<String>> data,
+                                         String tableStyleClass) {
+        return createHtmlTable(headers, data, List::get, tableStyleClass);
+    }
+
+    @NotNull
+    public static String createCsv(List<String> headers,
+                                   List<List<String>> data,
+                                   String recordSep,
+                                   String fieldSep,
+                                   String wrapChar) {
+        int bufferSize = Math.max(20 * CollectionUtils.size(headers) * CollectionUtils.size(data), 100);
+        StringBuilder buffer = new StringBuilder(bufferSize);
+
+        // header
+        if (CollectionUtils.isNotEmpty(headers)) {
+            buffer.append(TextUtils.toString(headers, fieldSep)).append(recordSep);
+        }
+
+        // content
+        if (CollectionUtils.isNotEmpty(data)) {
+            data.forEach(row -> buffer.append(TextUtils.toString(row, fieldSep, wrapChar, wrapChar)).append(recordSep));
+        }
+
+        return buffer.toString();
     }
 
     /**
@@ -755,6 +899,157 @@ public final class TextUtils {
         }
 
         return properties;
+    }
+
+    /**
+     * sanitize phone number so that:<ol>
+     * <li>It starts with '+' symbol, follow by country code (i.e. '1' for US)</li>
+     * <li>All letters are converted to number, according to traditional phone number dial pad</li>
+     * </ol>
+     *
+     * In addition, it checks that {@literal phoneNumber} must be 10 characters or more.
+     */
+    @NotNull
+    public static String sanitizePhoneNumber(String phoneNumber) {
+        if (StringUtils.isBlank(phoneNumber)) { throw new IllegalArgumentException("phone number cannot be empty"); }
+        if (StringUtils.length(phoneNumber) < 10) {
+            throw new IllegalArgumentException("invalid phone number: " + phoneNumber);
+        }
+
+        StringBuilder phone = new StringBuilder();
+
+        char[] phoneChars = phoneNumber.toCharArray();
+        for (int i = 0; i < phoneChars.length; i++) {
+            char ch = phoneChars[i];
+
+            if (i == 0 && ch == '+') { phone.append(ch); }
+
+            if (Character.isDigit(ch)) {
+                phone.append(ch);
+                continue;
+            }
+
+            if (Character.isLetter(ch)) {
+                ch = Character.toUpperCase(ch);
+                switch (ch) {
+                    case 'A':
+                    case 'B':
+                    case 'C': {
+                        phone.append('2');
+                        break;
+                    }
+                    case 'D':
+                    case 'E':
+                    case 'F': {
+                        phone.append('3');
+                        break;
+                    }
+                    case 'G':
+                    case 'H':
+                    case 'I': {
+                        phone.append('4');
+                        break;
+                    }
+                    case 'J':
+                    case 'K':
+                    case 'L': {
+                        phone.append('5');
+                        break;
+                    }
+                    case 'M':
+                    case 'N':
+                    case 'O': {
+                        phone.append('6');
+                        break;
+                    }
+                    case 'P':
+                    case 'Q':
+                    case 'R':
+                    case 'S': {
+                        phone.append('7');
+                        break;
+                    }
+                    case 'T':
+                    case 'U':
+                    case 'V': {
+                        phone.append('8');
+                        break;
+                    }
+                    case 'W':
+                    case 'X':
+                    case 'Y':
+                    case 'Z': {
+                        phone.append('9');
+                        break;
+                    }
+                    default: {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            if (ch == '*' || ch == '#') {
+                phone.append(ch);
+            }
+        }
+
+        phoneNumber = phone.toString();
+        if (!StringUtils.startsWith(phoneNumber, "+")) { phoneNumber = "+" + phoneNumber; }
+        if (StringUtils.length(phoneNumber) < 12) { phoneNumber = "+1" + StringUtils.substring(phoneNumber, 1); }
+
+        return phoneNumber;
+    }
+
+    public static String keepOnly(String text, String keepTheseOnly) {
+        if (StringUtils.isEmpty(keepTheseOnly)) { return text; }
+        if (StringUtils.isEmpty(text)) { return text; }
+
+        char[] wantedChars = keepTheseOnly.toCharArray();
+        Character[] wanted = new Character[wantedChars.length];
+        Arrays.setAll(wanted, i -> wantedChars[i]);
+        List<Character> distinctWanted = Arrays.stream(wanted).distinct().collect(Collectors.toList());
+
+        StringBuilder buffer = new StringBuilder();
+        char[] chars = text.toCharArray();
+        for (char c : chars) { if (distinctWanted.contains(c)) { buffer.append(c); } }
+
+        return buffer.toString();
+    }
+
+    @NotNull
+    public static String toCsvContent(List<List<String>> values, String delim, String recordDelim) {
+        StringBuilder csvBuffer = new StringBuilder();
+        values.forEach(row -> {
+            StringBuilder rowBuffer = new StringBuilder();
+            row.forEach(cell -> rowBuffer.append(cell).append(delim));
+            csvBuffer.append(StringUtils.removeEnd(rowBuffer.toString(), delim)).append(recordDelim);
+        });
+        return csvBuffer.toString();
+    }
+
+    public static String base64encoding(String plain) {
+        return StringUtils.isEmpty(plain) ? plain : Base64.getEncoder().encodeToString(plain.getBytes());
+    }
+
+    public static String base64decoding(String encoded) {
+        return StringUtils.isEmpty(encoded) ? encoded : new String(Base64.getDecoder().decode(encoded.getBytes()));
+    }
+
+    public static String demarcate(String text, int markPosition, String delim) {
+        if (StringUtils.isEmpty(text)) { return text; }
+        if (StringUtils.isEmpty(delim)) { return text; }
+        if (markPosition < 1 || markPosition > text.length()) { return text; }
+
+        int delimLength = delim.length();
+        int seekPos = markPosition;
+
+        while (seekPos < text.length()) {
+            text = text.substring(0, seekPos) + delim + text.substring(seekPos);
+            seekPos += markPosition + delimLength;
+        }
+
+        return text;
     }
 
     private static Map<String, String> initDefaultEscapeHtmlMapping() {

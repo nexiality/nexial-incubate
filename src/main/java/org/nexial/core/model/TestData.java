@@ -17,7 +17,9 @@
 
 package org.nexial.core.model;
 
+import java.io.File;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
@@ -25,7 +27,6 @@ import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.xssf.usermodel.XSSFCell;
-
 import org.nexial.commons.utils.CollectionUtil;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
@@ -44,7 +45,7 @@ import static org.nexial.core.NexialConst.*;
  * <ol>
  * <li>Predefined data that remains constant throughout an entire test execution (which could be multiple scenarios and
  * or iterations).  Such data names are prefixed with <code>nexial.scope.</code>.  The value of such data, once parsed,
- * will remain unchange as not to alter the execution context. For example:
+ * will remain unchanged as not to alter the execution context. For example:
  * <pre>
  *     nexial.scope.iteration=4                     # define that nexial should loop the specified test 4 times.
  *     nexial.scope.fallbackToPrevious=true         # define that missing data in current iteration should resolve to previous value.
@@ -59,12 +60,12 @@ import static org.nexial.core.NexialConst.*;
  *     nexial.textDelim                             # define the delimiter character to transform text string into a list.
  * </pre>
  * </li>
- * <li>USer-defined data that could be altered between iterations.  Such data names are anything not prefixed with
+ * <li>User-defined data that could be altered between iterations.  Such data names are anything not prefixed with
  * <code>nexial.</code>  Nexial users are free to define any names or values.  Using <code>nexial.scope.iteration</code>
  * and <code>nexial.scope.fallbackToPrevious</code> one can control how Nexial handle data values between iterations.</li>
  * </ol>
  *
- * It is noteworthy that non-scoped data can be altereed as a test execution progresses.  The altered data would impacting
+ * It is noteworthy that non-scoped data can be altered as a test execution progresses.  The altered data would impacting
  * the subsequent test scenarios/cases/steps.  The progressive data management is by design. The ability to "remember" data
  * states would allow a more meaningful and dynamic way to execute tests, esp. for tests that spread across multiple
  * scenarios. However data changes and the transitive behavior will not persists between test execution.
@@ -80,7 +81,7 @@ import static org.nexial.core.NexialConst.*;
  * <p/>
  */
 public class TestData {
-    private Excel excel;
+    private File dataFile;
     private List<String> dataSheetNames;
     private Map<String, String> scopeSettings = new HashMap<>();
     private Map<String, List<String>> dataMap = new HashMap<>();
@@ -89,13 +90,13 @@ public class TestData {
     public TestData(Excel excel, List<String> dataSheetNames) {
         assert excel != null && excel.getFile() != null && CollectionUtils.isNotEmpty(dataSheetNames);
 
-        this.excel = excel;
+        dataFile = excel.getFile();
         this.dataSheetNames = dataSheetNames;
 
-        List<Worksheet> validDataSheets = InputFileUtils.filterValidDataSheets(this.excel);
+        List<Worksheet> validDataSheets = InputFileUtils.filterValidDataSheets(excel);
         if (CollectionUtils.isEmpty(validDataSheets)) { return; }
 
-        // #default is always the first one; default datasheet IS ALWAYS overridden by other datasheets
+        // #default is always the first one; default data sheet IS ALWAYS overridden by other data sheets
         validDataSheets.forEach(validDataSheet -> {
             if (StringUtils.equals(validDataSheet.getName(), SHEET_DEFAULT_DATA)) { collectData(validDataSheet); }
         });
@@ -106,15 +107,26 @@ public class TestData {
                 collectData(validDataSheet);
             }
         }));
+
+        // to be added/displayed in execution output #summary
+        System.setProperty(SCRIPT_REF_PREFIX + DATA_SHEETS,
+                           validDataSheets.stream()
+                                          .filter(validSheet -> validSheet.getName().equals(SHEET_DEFAULT_DATA) ||
+                                                                dataSheetNames.contains(validSheet.getName()))
+                                          .map(Worksheet::getName)
+                                          .distinct()
+                                          .collect(Collectors.joining(", ")));
+        System.setProperty(SCRIPT_REF_PREFIX + DATA_FILE, dataFile.getName());
     }
-
-    public boolean isLocalExecution() { return StringUtils.equals(getSetting(EXECUTION_MODE), EXECUTION_MODE_LOCAL); }
-
-    public boolean isRemoteExecution() { return StringUtils.equals(getSetting(EXECUTION_MODE), EXECUTION_MODE_REMOTE); }
 
     public String getMailTo() { return getSetting(MAIL_TO); }
 
-    public int getIteration() { return getSettingAsInt(ITERATION); }
+    public int getIteration() {
+        String iteration = getSetting(ITERATION);
+        return NumberUtils.isDigits(iteration) ?
+               NumberUtils.toInt(iteration) :
+               NumberUtils.toInt(StringUtils.substringBefore(iteration, "-"));
+    }
 
     public IterationManager getIterationManager() { return IterationManager.newInstance(getSetting(ITERATION)); }
 
@@ -196,12 +208,16 @@ public class TestData {
     public boolean has(int iteration, String name) {
         // data name must exists, data value must exist or else fallback must be set to true and iteration is not the 1st
         return dataMap.containsKey(name) &&
-               (StringUtils.isNotEmpty(CollectionUtil.getOrDefault(dataMap.get(name), (iteration - 1), ""))
-                || (getSettingAsBoolean(FALLBACK_TO_PREVIOUS) && iteration > 1));
+               (StringUtils.isNotEmpty(CollectionUtil.getOrDefault(dataMap.get(name), (iteration - 1), "")) ||
+                getSettingAsBoolean(FALLBACK_TO_PREVIOUS) && iteration > 1);
     }
 
     public String getValue(int iteration, String name) {
         List<String> values = getAllValue(name);
+
+        // in case there isn't any iteration, or data is defined outside of iteration (i.e. in project.properties or
+        // #default sheet).
+        if (CollectionUtils.size(values) == 1) { return values.get(0); }
 
         for (int i = iteration - 1; i >= 0; i--) {
             String data = CollectionUtil.getOrDefault(values, i, "");
@@ -211,8 +227,6 @@ public class TestData {
         // nothing means nothing
         return "";
     }
-
-    public Excel getExcel() { return excel; }
 
     public List<String> getDataSheetNames() { return dataSheetNames; }
 
@@ -237,7 +251,7 @@ public class TestData {
 
         // make sure we have data def. in A1, since that's where we start
         XSSFCell firstCell = sheet.cell(addr);
-        if (firstCell == null || StringUtils.isBlank(firstCell.getStringCellValue())) {
+        if (StringUtils.isBlank(Excel.getCellValue(firstCell))) {
             throw new IllegalArgumentException(errPrefix + "test data must be defined at " + addr);
         }
 
@@ -260,15 +274,16 @@ public class TestData {
 
             // column A must be defined with data name
             XSSFCell headerCell = row.get(0).get(0);
-            if (headerCell == null || StringUtils.isBlank(headerCell.getStringCellValue())) {
+            String name = Excel.getCellValue(headerCell);
+            if (StringUtils.isBlank(name)) {
                 throw new IllegalArgumentException(errPrefix + "no data name defined at A" + i);
             }
 
-            String name = headerCell.getStringCellValue();
             if (StringUtils.startsWith(name, SCOPE)) {
                 XSSFCell dataCell = row.get(0).get(1);
-                if (dataCell == null || StringUtils.isBlank(dataCell.getStringCellValue())) { continue; }
-                scopeSettings.put(name, dataCell.getStringCellValue());
+                String dataCellValue = Excel.getCellValue(dataCell);
+                if (StringUtils.isBlank(dataCellValue)) { continue; }
+                scopeSettings.put(name, dataCellValue);
             }
         }
 
@@ -283,8 +298,7 @@ public class TestData {
             // no need for empty/bad row checks since we did it in the first pass
 
             List<XSSFCell> row = sheet.cells(addrThisRow).get(0);
-            XSSFCell headerCell = row.get(0);
-            String name = headerCell.getStringCellValue();
+            String name = Excel.getCellValue(row.get(0));
             if (!StringUtils.startsWith(name, SCOPE)) {
                 collectIterationData(row, lastIteration, name, dataMap);
 
@@ -307,7 +321,7 @@ public class TestData {
                                         String dataKey,
                                         Map<String, List<String>> dataMap) {
 
-        // computIfAbsent(...) will add valid key/value to dataMap
+        // computeIfAbsent(...) will add valid key/value to dataMap
         List<String> data = dataMap.computeIfAbsent(dataKey, s -> new ArrayList<>(lastIteration));
 
         for (int j = 1; j < row.size(); j++) {
@@ -327,7 +341,7 @@ public class TestData {
                             data.add(dataIndex, value);
                         }
                     } catch (IllegalStateException e) {
-                        ConsoleUtils.error("Unable to read/handle file " + excel.getFile() +
+                        ConsoleUtils.error("Unable to read/handle file " + dataFile +
                                            ", worksheet " + dataCell.getSheet().getSheetName() +
                                            ", location " + dataCell.getAddress().formatAsString() + ": " +
                                            e.getMessage());
@@ -342,16 +356,25 @@ public class TestData {
      * since this {@code dataKey} is found in a non-default data sheet (not #default), we should not track such
      * data as part of the {@link #defaultDataMap}.
      */
-    protected void eliminateFromDefaultDataMap(String dataKey) {
-        defaultDataMap.remove(dataKey);
-    }
+    protected void eliminateFromDefaultDataMap(String dataKey) { defaultDataMap.remove(dataKey); }
 
     protected void infuseIntraExecutionData(Map<String, Object> intraExecutionData) {
-        if (MapUtils.isEmpty(intraExecutionData)) { return; }
+        if (MapUtils.isEmpty(intraExecutionData) || !intraExecutionData.containsKey(LAST_ITERATION)) { return; }
 
         int lastIteration = NumberUtils.toInt(Objects.toString(intraExecutionData.get(LAST_ITERATION)));
+        if (lastIteration < 1) { return; }
+
         intraExecutionData.forEach((name, value) -> {
-            if (isDefinedAsDefault(name)) {
+            // (2018/12/06,automike): no longer limit to just "default" variable so that we can extend the changes from
+            // (2018/12/06,automike): one script to another within the same execution plan.
+            // (2018/12/06,automike): Use Case 1: modification of an iteration-bound data variable in `script1` should
+            // (2018/12/06,automike):             remain effective to the subsequent scripts within same plan.
+            // (2018/12/06,automike): Use Case 2: modification of an iteration-bound data variable in `script1` should
+            // (2018/12/06,automike):             not preclude the same by subsequent scripts within same plan.
+            // (2018/12/06,automike): Use Case 3: data variables defined or created in one script should be read/write-
+            // (2018/12/06,automike):             able by all subsequent scripts within same plan.
+
+            // if (isDefinedAsDefault(name)) {
                 String stringValue = Objects.toString(value);
 
                 // we should be sync'ing back value to its initial iteration, not the current/latest iteration
@@ -361,7 +384,7 @@ public class TestData {
                     for (int i = 0; i < lastIteration; i++) { if (data.size() <= i) { data.add(i, null); } }
                 }
                 data.set((lastIteration - 1), stringValue);
-            }
+            // }
         });
     }
 }

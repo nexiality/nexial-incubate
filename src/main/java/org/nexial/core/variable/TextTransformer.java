@@ -17,7 +17,6 @@
 
 package org.nexial.core.variable;
 
-import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -30,7 +29,6 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.text.WordUtils;
-
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
@@ -39,7 +37,6 @@ import org.nexial.core.model.ExecutionContext;
 import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
 import static org.nexial.core.utils.CheckUtils.requiresPositiveNumber;
 import static org.nexial.core.variable.ExpressionUtils.fixControlChars;
-import static org.apache.commons.lang.math.NumberUtils.isNumber;
 
 public class TextTransformer<T extends TextDataType> extends Transformer {
     private static final Map<String, Integer> FUNCTION_TO_PARAM_LIST = discoverFunctions(TextTransformer.class);
@@ -151,7 +148,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
     }
 
     public NumberDataType number(T data) {
-        if (data == null || StringUtils.isBlank(data.getValue()) || !isNumber(data.getValue())) {
+        if (data == null || StringUtils.isBlank(data.getValue()) || !NumberUtils.isCreatable(data.getValue())) {
             return null;
         }
 
@@ -182,6 +179,26 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
     public T remove(T data, String text) {
         if (data == null || StringUtils.isEmpty(data.getTextValue()) || StringUtils.isEmpty(text)) { return data; }
         data.setValue(StringUtils.remove(data.getTextValue(), fixControlChars(text)));
+        return data;
+    }
+
+    public T removeRegex(T data, String regex) {
+        if (data == null || StringUtils.isEmpty(data.getTextValue()) || StringUtils.isEmpty(regex)) { return data; }
+        data.setValue(RegexUtils.removeMatches(data.getTextValue(), fixControlChars(regex)));
+        return data;
+    }
+
+    public T retain(T data, String keep) {
+        if (data == null || StringUtils.isEmpty(data.getTextValue()) || StringUtils.isEmpty(keep)) { return data; }
+
+        String current = data.getTextValue();
+        data.setValue(TextUtils.keepOnly(current, fixControlChars(keep)));
+        return data;
+    }
+
+    public T retainRegex(T data, String regex) {
+        if (data == null || StringUtils.isEmpty(data.getTextValue()) || StringUtils.isEmpty(regex)) { return data; }
+        data.setValue(RegexUtils.retainMatches(data.getTextValue(), fixControlChars(regex)));
         return data;
     }
 
@@ -245,7 +262,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
         return data;
     }
 
-    public ExpressionDataType save(T data, String path) { return super.save(data, path); }
+    public ExpressionDataType save(T data, String path, String append) { return super.save(data, path, append); }
 
     public T removeEnd(T data, String ending) {
         if (data == null || StringUtils.isEmpty(ending)) { return data; }
@@ -311,8 +328,8 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
             StringBuilder record = new StringBuilder();
             int lastPos = 0;
             for (int pos : positionNums) {
-                record.append(StringUtils.substring(line, lastPos, pos-1)).append(delim);
-                lastPos = pos-1;
+                record.append(StringUtils.substring(line, lastPos, pos - 1)).append(delim);
+                lastPos = pos - 1;
             }
             record.append(StringUtils.substring(line, lastPos));
             csvContent.append(record.toString()).append("\n");
@@ -325,6 +342,18 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
         csv.setReadyToParse(true);
         csv.parse();
         return csv;
+    }
+
+    public T base64encode(T data) {
+        if (data == null || StringUtils.isEmpty(data.getValue())) { return data; }
+        data.setValue(TextUtils.base64encoding(data.getValue()));
+        return data;
+    }
+
+    public T base64decode(T data) {
+        if (data == null || StringUtils.isEmpty(data.getValue())) { return data; }
+        data.setValue(TextUtils.base64decoding(data.getValue()));
+        return data;
     }
 
     @Override

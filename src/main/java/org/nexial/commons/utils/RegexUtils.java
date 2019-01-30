@@ -19,6 +19,7 @@ package org.nexial.commons.utils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,6 +31,8 @@ import static java.util.regex.Pattern.*;
  * @author Mike Liu
  */
 public final class RegexUtils {
+    private static final int REGEX_FLAGS = MULTILINE | UNIX_LINES | DOTALL;
+
     private RegexUtils() { }
 
     /**
@@ -41,7 +44,7 @@ public final class RegexUtils {
         if (StringUtils.isEmpty(text)) { return text; }
         if (StringUtils.isEmpty(regex)) { return text; }
 
-        Pattern p = Pattern.compile(regex);
+        Pattern p = Pattern.compile(regex, REGEX_FLAGS);
 
         StringBuilder sb = new StringBuilder();
         String[] lines = StringUtils.splitPreserveAllTokens(text, '\n');
@@ -67,7 +70,7 @@ public final class RegexUtils {
         if (StringUtils.isEmpty(text)) { return text; }
         if (StringUtils.isEmpty(regex)) { return text; }
 
-        Pattern p = Pattern.compile(regex, MULTILINE | UNIX_LINES | DOTALL);
+        Pattern p = Pattern.compile(regex, REGEX_FLAGS);
         Matcher matcher = p.matcher(text);
         if (matcher.find()) { return matcher.replaceAll(replace); }
         return text;
@@ -84,8 +87,20 @@ public final class RegexUtils {
     public static boolean isExact(String text, String regex, boolean multiline) {
         if (StringUtils.isEmpty(regex)) { return true; }
         if (StringUtils.isEmpty(text)) { return false; }
-        Pattern p = multiline ? Pattern.compile(regex, DOTALL) : Pattern.compile(regex);
+        Pattern p = multiline ? Pattern.compile(regex, REGEX_FLAGS) : Pattern.compile(regex);
         return p.matcher(text).matches();
+    }
+
+    /** "contain" match (instead of exact) */
+    public static boolean match(String text, String regex) { return match(text, regex, false); }
+
+    /** "contain" match (instead of exact).  Use {@code multiline} to handle {@code text} that might contain multiple lines */
+    public static boolean match(String text, String regex, boolean multiline) {
+        if (StringUtils.isEmpty(text)) { return false; }
+        if (StringUtils.isEmpty(regex)) { return false; }
+
+        Pattern p = multiline ? Pattern.compile(regex, REGEX_FLAGS) : Pattern.compile(regex);
+        return p.matcher(text).find();
     }
 
     /**
@@ -110,13 +125,11 @@ public final class RegexUtils {
         if (!acceptBlank && StringUtils.isBlank(text)) { return list; }
         if (StringUtils.isBlank(regex)) { return list; }
 
-        Pattern pattern = multiline ? Pattern.compile(regex, DOTALL) : Pattern.compile(regex);
+        Pattern pattern = multiline ? Pattern.compile(regex, REGEX_FLAGS) : Pattern.compile(regex);
         Matcher matcher = pattern.matcher(text);
         if (matcher.matches() && matcher.groupCount() > 0) {
             // always starts with 1 since group 0 represents the "entire" match
-            for (int i = 1; i <= matcher.groupCount(); i++) {
-                list.add(matcher.group(i));
-            }
+            for (int i = 1; i <= matcher.groupCount(); i++) { list.add(matcher.group(i)); }
         }
 
         return list;
@@ -127,9 +140,51 @@ public final class RegexUtils {
         if (!acceptBlank && StringUtils.isBlank(text)) { return list; }
         if (StringUtils.isBlank(regex)) { return list; }
 
-        Pattern pattern = multiline ? Pattern.compile(regex, DOTALL) : Pattern.compile(regex);
+        Pattern pattern = multiline ? Pattern.compile(regex, REGEX_FLAGS) : Pattern.compile(regex);
         Matcher matcher = pattern.matcher(text);
         while (matcher.find()) { list.add(matcher.group()); }
         return list;
+    }
+
+    public static String removeMatches(String text, String regex) {
+        if (StringUtils.isEmpty(text)) { return text; }
+        if (StringUtils.isBlank(regex)) { return text; }
+
+        Pattern pattern = Pattern.compile(regex, REGEX_FLAGS);
+        Matcher matcher = pattern.matcher(text);
+        while (matcher.find()) { text = matcher.replaceAll(""); }
+
+        return text;
+    }
+
+    /** extract (and join) matched region(s) */
+    public static String retainMatches(String text, String regex) {
+        if (StringUtils.isEmpty(text)) { return text; }
+        if (StringUtils.isBlank(regex)) { return text; }
+
+        String retained = "";
+        Pattern pattern = Pattern.compile(regex, REGEX_FLAGS);
+        Matcher matcher = pattern.matcher(text);
+        while (matcher.find()) {
+            MatchResult result = matcher.toMatchResult();
+            retained += StringUtils.substring(text, result.start(), result.end());
+        }
+
+        return retained;
+    }
+
+    /** extract first matched region(s) */
+    public static String firstMatches(String text, String regex) {
+        if (StringUtils.isEmpty(text)) { return text; }
+        if (StringUtils.isBlank(regex)) { return text; }
+
+        Pattern pattern = Pattern.compile(regex, REGEX_FLAGS);
+        Matcher matcher = pattern.matcher(text);
+        if (matcher.find()) {
+            MatchResult result = matcher.toMatchResult();
+            return StringUtils.substring(text, result.start(), result.end());
+        }
+
+        return null;
     }
 }

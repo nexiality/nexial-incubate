@@ -18,15 +18,8 @@
 package org.nexial.core.utils;
 
 import java.io.File;
-import java.util.List;
 
-import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.poi.xssf.usermodel.XSSFCell;
-import org.nexial.core.plugins.NexialCommand;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.model.ExecutionContext;
@@ -34,15 +27,21 @@ import org.nexial.core.model.TestCase;
 import org.nexial.core.model.TestScenario;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.plugins.CanLogExternally;
+import org.nexial.core.plugins.NexialCommand;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ExecutionLogger {
+    private ExecutionContext context;
     private String runId;
     private Logger logger = LoggerFactory.getLogger(this.getClass());
 
-    public ExecutionLogger(String runId) { this.runId = runId; }
+    public ExecutionLogger(ExecutionContext context) {
+        this.context = context;
+        this.runId = context.getRunId();
+    }
 
     public void log(NexialCommand subject, String message) {
-        ExecutionContext context = ExecutionThread.get();
         TestStep testStep = context.getCurrentTestStep();
         if (testStep != null) {
             // test step undefined could mean that we are in interactive mode, or we are running unit testing
@@ -80,43 +79,42 @@ public class ExecutionLogger {
 
     public void error(ExecutionContext subject, String message) { error(toHeader(subject), message); }
 
-    private String toHeader(TestStep subject) {
+    public static String toHeader(TestStep subject) {
         if (subject == null) { return "UNKNOWN TEST STEP"; }
-
-        String header = toHeader(subject.getTestCase());
-
-        List<XSSFCell> row = subject.getRow();
-        if (CollectionUtils.isNotEmpty(row)) {
-            header += "|#" + StringUtils.leftPad(row.get(0).getRowIndex() + 1 + "", 3);
-        }
-        header += "|" + StringUtils.truncate(StringUtils.defaultString(subject.getCommandFQN()), 25);
-
-        return header;
+        return toHeader(subject.getTestCase()) +
+               "|#" + StringUtils.leftPad((subject.getRowIndex() + 1) + "", 3) +
+               "|" + StringUtils.truncate(subject.getCommandFQN(), 25);
     }
 
-    private String toHeader(TestCase subject) {
-        return subject == null ? "UNKNOWN TESTCASE" : (toHeader(subject.getTestScenario()) + "|" + subject.getName());
+    public static String toHeader(TestCase subject) {
+        return subject == null ? "UNKNOWN ACTIVITY" : (toHeader(subject.getTestScenario()) + "|" + subject.getName());
     }
 
-    private String toHeader(TestScenario subject) {
+    public static String toHeader(TestScenario subject) {
         Worksheet worksheet = subject.getWorksheet();
         return justFileName(worksheet.getFile()) + "|" + worksheet.getName();
     }
 
-    private String toHeader(ExecutionContext subject) { return justFileName(subject.getTestScript()); }
+    public static String toHeader(ExecutionContext subject) {
+        if (subject != null && subject.getTestScript() != null) {
+            return justFileName(subject.getTestScript().getFile());
+        } else {
+            return "current script";
+        }
+    }
 
-    private static String justFileName(File file) { return StringUtils.substringBeforeLast(file.getName(), "."); }
+    public static String justFileName(File file) { return StringUtils.substringBeforeLast(file.getName(), "."); }
 
     private void log(String header, String message) { logger.info(header + " - " + message); }
 
     private void error(String header, String message) { error(header, message, null); }
 
     private void error(String header, String message, Throwable e) {
-        Logger logger = LoggerFactory.getLogger(header);
+        // Logger logger = LoggerFactory.getLogger(header);
         if (e == null) {
-            logger.error(message);
+            logger.error(header + " - " + message);
         } else {
-            logger.error(message, e);
+            logger.error(header + " - " + message, e);
         }
     }
 }

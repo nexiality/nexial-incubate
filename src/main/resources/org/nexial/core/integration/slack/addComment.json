@@ -1,0 +1,41 @@
+{
+    "channel": "${slackCommentChannel}",
+    "link_names": 1,
+    "parse": "full",
+    "mrkdwn": true,
+    "text": "Nexial Automation Results!",
+    "attachments": [
+        {
+            "title": "Test Environment",
+            "color": "#000000",
+            "text": "${testEnvironmentDetails}"
+        },
+        {
+            "title": "Test Results",
+            "color": "${resultColor}",
+            "fields": [
+                {
+                    "title": "Total Steps",
+                    "value": "${totalSteps}",
+                    "short": true
+                },
+                {
+                    "title": "Total Executed",
+                    "value": "${totalExecuted}",
+                    "short": true
+                },
+                {
+                    "title": "Passed",
+                    "value": "${totalPassed}",
+                    "short": true
+                },
+                {
+                    "title": "Failed",
+                    "value": "${totalFailed}",
+                    "short": true
+                }
+            ]
+
+        }
+    ]
+}

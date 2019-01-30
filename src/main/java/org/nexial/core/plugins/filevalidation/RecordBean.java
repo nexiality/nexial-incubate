@@ -17,18 +17,93 @@
 
 package org.nexial.core.plugins.filevalidation;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.map.ListOrderedMap;
+import org.nexial.core.plugins.filevalidation.validators.Error;
+import org.nexial.core.plugins.filevalidation.validators.ValidationsExecutor.Severity;
 
 public class RecordBean extends ListOrderedMap<String, FieldBean> {
 
+    private int recordNumber;
     private transient Map<String, FieldBean> recordFieldsMap;
     private List<FieldBean> fields;
     private transient RecordData recordData;
+    private List<Error> errors;
+    private String skippedMsg;
+    private boolean isSkipped;
+    private boolean isFailed;
+
+    public boolean isSkipped() {
+        return isSkipped;
+    }
+
+    public void setSkipped(boolean skipped) {
+        isSkipped = skipped;
+    }
+
+    public boolean isFailed() {
+        return isFailed;
+    }
+
+    public void setFailed(boolean failed) {
+        isFailed = failed;
+    }
+
+    public String getSkippedMsg() {
+        return skippedMsg;
+    }
+
+    public void setSkippedMsg(String skippedMsg) {
+        this.skippedMsg = skippedMsg;
+    }
+
+    public void collectErrors() {
+        List<Error> allErrors = new ArrayList<>();
+
+        int totalWarnings = recordData.getTotalRecordsWarning();
+        for (FieldBean recordField : fields) {
+
+            List<Error> errors = recordField.getErrors();
+            if (CollectionUtils.isNotEmpty(errors)) {
+                for (Error error : errors) {
+                    // todo: optimize reading error severity
+                    error.setRecordLine(String.valueOf(recordNumber + 1));
+                    if (error.getSeverity().equals(Severity.ERROR.toString())) {
+                        isFailed = true;
+                        recordData.setHasError(true);
+                    }
+                    if (error.getSeverity().equals(Severity.WARNING.toString())) {
+                        totalWarnings++;
+                    }
+                    allErrors.add(error);
+                }
+            }
+        }
+        recordData.setTotalRecordsWarning(totalWarnings);
+        setErrors(allErrors);
+    }
+
+    public List<Error> getErrors() {
+        return errors;
+    }
+
+    public void setErrors(List<Error> errors) {
+        this.errors = errors;
+    }
 
     public RecordData getRecordData() { return recordData; }
+
+    public int getRecordNumber() {
+        return recordNumber;
+    }
+
+    public void setRecordNumber(int recordNumber) {
+        this.recordNumber = recordNumber;
+    }
 
     public void setRecordData(RecordData recordData) { this.recordData = recordData; }
 

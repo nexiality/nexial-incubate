@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2012-2018 the original author or authors.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~       http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  -->
+
+<beans xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:p="http://www.springframework.org/schema/p"
+       xmlns="http://www.springframework.org/schema/beans"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd"
+       default-lazy-init="true">
+
+    <import resource="nexial-props.xml"/>
+
+    <!--
+    added "PathStyleAccessEnabled() to avoid SSL certificate issue since the adding bucket as subdomain to
+    Amazon's SSL cert would result in cert to domain name mismatch
+    -->
+    <bean id="s3PathStyleAccessEnabled" class="java.lang.Boolean">
+        <constructor-arg value="true"/>
+    </bean>
+
+    <bean id="otc" class="org.nexial.core.aws.NexialS3Helper" init-method="init"
+          p:encoding="UTF-8"
+          p:outputBase="${nexial.outputCloudBase:}"
+          p:accessKey="${nexial.otc.accessKey:}"
+          p:secretKey="${nexial.otc.secretKey:}"
+          p:s3PathStyleAccessEnabled="${nexial.otc.s3PathStyleAccessEnabled:true}"
+          p:verbose="false">
+        <property name="region">
+            <bean class="com.amazonaws.regions.Regions" factory-method="fromName">
+                <constructor-arg value="${nexial.otc.region:us-east-1}"/>
+            </bean>
+        </property>
+    </bean>
+
+    <bean id="tts" class="org.nexial.core.aws.TtsHelper" scope="prototype"
+          p:accessKey="${nexial.tts.accessKey:}"
+          p:secretKey="${nexial.tts.secretKey:}"
+          p:language="${nexial.tts.language:en-US}"
+          p:sampleRate="${nexial.tts.sampleRate:22050}"
+          p:voiceGenderString="${nexial.tts.voiceGender:Female}"
+          p:verbose="false">
+        <property name="region">
+            <bean class="com.amazonaws.regions.Regions" factory-method="fromName">
+                <constructor-arg value="${nexial.tts.region:us-east-1}"/>
+            </bean>
+        </property>
+    </bean>
+
+    <!-- The sender ID shown on the device. (shh.. it's 1-NEXIAL-BOTS) -->
+    <bean id="smsHelper" class="org.nexial.core.aws.SmsHelper" scope="prototype" init-method="init"
+          p:smsNotReadyMessage-ref="smsNotReadyMessage"
+          p:prefix="nexial-bot: "
+          p:senderId="16394252687"
+          p:accessKey="${nexial.sms.accessKey:}"
+          p:secretKey="${nexial.sms.secretKey:}">
+        <property name="region">
+            <bean class="com.amazonaws.regions.Regions" factory-method="fromName">
+                <constructor-arg value="${nexial.sms.region:us-east-1}"/>
+            </bean>
+        </property>
+    </bean>
+
+    <bean id="otcNotReadyMessage" class="java.lang.String">
+        <constructor-arg value="Nexial Cloud Integration not probably configured. See https://nexiality.github.io/documentation/systemvars/index.html#nexial.outputToCloud for more details."/>
+    </bean>
+
+    <bean id="smsNotReadyMessage" class="java.lang.String">
+        <constructor-arg value="sms not configured. See https://nexiality.github.io/documentation/commands/sms/index.html#setup for setup details."/>
+    </bean>
+
+    <!-- event log collector -->
+    <bean class="org.nexial.core.service.EventCollector" primary="true" lazy-init="false" init-method="init">
+        <constructor-arg index="0" value="https://w62rwmoetb.execute-api.us-east-1.amazonaws.com/nexial/num"/>
+        <constructor-arg index="1" value="${nexial.event.publish.verbose:false}"/>
+        <constructor-arg index="2" value="${nexial.event.publish:false}"/>
+        <!--<constructor-arg index="2" value="${nexial.event.publish:true}"/>-->
+    </bean>
+
+    <!-- mail -->
+    <bean id="htmlTemplateEngine" class="org.thymeleaf.TemplateEngine" lazy-init="true">
+        <property name="templateResolver">
+            <bean class="org.thymeleaf.templateresolver.ClassLoaderTemplateResolver"
+                  p:templateMode="HTML5" p:suffix=".html" p:prefix="org/nexial/core/reports/"/>
+        </property>
+    </bean>
+
+    <!--<bean id="mailNotifier" class="org.nexial.core.reports.MailNotifier" lazy-init="true"-->
+    <!--p:mailTemplateEngine-ref="mailTemplateEngine"-->
+    <!--p:mailTemplate="email_notification"/>-->
+    <bean id="nexialMailer" class="org.nexial.core.reports.NexialMailer" lazy-init="true"
+          p:mailTemplateEngine-ref="htmlTemplateEngine"
+          p:mailTemplate="email_notification"/>
+
+    <bean id="executionResultHelper" class="org.nexial.core.reports.ExecutionReporter" lazy-init="true"
+          p:templateEngine-ref="htmlTemplateEngine"
+          p:executionTemplate="execution_summary"
+          p:htmlOutputFile="execution-output.html"
+          p:detailJsonFile="execution-detail.json"
+          p:junitFile="junit.xml"
+          p:summaryJsonFile="execution-summary.json"/>
+
+</beans>

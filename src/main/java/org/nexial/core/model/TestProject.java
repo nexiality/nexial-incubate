@@ -24,12 +24,11 @@ import java.util.Set;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.commons.utils.TextUtils;
 
+import static java.io.File.separator;
 import static org.nexial.core.NexialConst.OPT_PROJECT_BASE;
 import static org.nexial.core.NexialConst.Project.*;
-import static java.io.File.separator;
 
 /**
  * object representation of the standard Nexial project structure.
@@ -47,35 +46,27 @@ public class TestProject {
     private String outPath;
     private boolean isStandardStructure;
     private String projectProps;
+    private boolean hasProjectProps;
 
     public TestProject() { nexialHome = new File(System.getProperty(NEXIAL_HOME)); }
 
-    // public static TestProject newInstanceViaPlan(File planFile) {
-    //     return newInstance(planFile, DEF_REL_LOC_TEST_PLAN);
-    // }
-    // public static TestProject newInstance(File inputFile) {
-    //     return newInstance(inputFile, DEF_REL_LOC_TEST_SCRIPT);
-    // }
-
-    public static TestProject newInstance(File inputFile, String relativePath) {
+    public static TestProject newInstance(File inputFile) {
+        // this file could be a script or a plan
         String inputFullPath = inputFile.getAbsolutePath();
 
-        // is the test script confined within the standard project structure (i.e. artifact/script/[...].xlsx)?
-        String inputFileRelPath = relativePath + inputFile.getName();
-
         TestProject project = new TestProject();
-        if (StringUtils.contains(inputFullPath, inputFileRelPath)) {
+        // is the test script confined within the standard project structure (i.e. artifact/script/[...].xlsx)?
+        if (containsWithin(inputFullPath, DEF_REL_LOC_TEST_SCRIPT)) {
             // yes, standard project structure observed. proceed to resolve other directories
             project.setProjectHome(
-                StringUtils.removeEnd(StringUtils.substringBefore(inputFullPath, inputFileRelPath), separator));
+                StringUtils.removeEnd(StringUtils.substringBefore(inputFullPath, DEF_REL_LOC_TEST_SCRIPT), separator));
             project.isStandardStructure = true;
         } else {
             // is the input file a test plan?
-            inputFileRelPath = DEF_REL_LOC_TEST_PLAN + inputFile.getName();
-            if (StringUtils.contains(inputFullPath, inputFileRelPath)) {
+            if (containsWithin(inputFullPath, DEF_REL_LOC_TEST_PLAN)) {
                 // yes, standard project structure observed. proceed to resolve other directories
-                project.setProjectHome(
-                    StringUtils.removeEnd(StringUtils.substringBefore(inputFullPath, inputFileRelPath), separator));
+                project.setProjectHome(StringUtils.removeEnd(
+                    StringUtils.substringBefore(inputFullPath, DEF_REL_LOC_TEST_PLAN), separator));
                 project.isStandardStructure = true;
             }
         }
@@ -97,6 +88,8 @@ public class TestProject {
 
     public void setProjectHome(String projectHome) {
         this.projectHome = projectHome;
+
+        // note that this setter is called PRIOR to spring.
         projectProps = StringUtils.appendIfMissing(this.projectHome, separator) + DEF_REL_PROJECT_PROPS;
         loadProjectProperties();
         PROJECT_PROPERTIES.put(OPT_PROJECT_BASE, this.projectHome);
@@ -138,6 +131,8 @@ public class TestProject {
 
     public String getProjectProps() { return projectProps; }
 
+    public boolean isHasProjectProps() { return hasProjectProps; }
+
     public TestProject copy() {
         TestProject project = new TestProject();
         project.nexialHome = nexialHome;
@@ -158,6 +153,12 @@ public class TestProject {
         if (MapUtils.isNotEmpty(properties)) {
             PROJECT_PROPERTIES.clear();
             properties.forEach(PROJECT_PROPERTIES::put);
+            hasProjectProps = MapUtils.isNotEmpty(PROJECT_PROPERTIES);
         }
+    }
+
+    private static boolean containsWithin(String path, String substring) {
+        return path.indexOf(
+            StringUtils.appendIfMissing(StringUtils.prependIfMissing(substring, separator), separator)) > 1;
     }
 }

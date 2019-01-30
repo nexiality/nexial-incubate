@@ -43,26 +43,24 @@ import org.apache.xmpbox.schema.DublinCoreSchema;
 import org.apache.xmpbox.schema.XMPBasicSchema;
 import org.apache.xmpbox.xml.DomXmpParser;
 import org.apache.xmpbox.xml.XmpParsingException;
-import org.nexial.core.model.StepResult;
-import org.thymeleaf.util.ArrayUtils;
-import org.thymeleaf.util.ListUtils;
-
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.model.StepResult;
 import org.nexial.core.plugins.base.BaseCommand;
 import org.nexial.core.plugins.io.IoCommand;
 import org.nexial.core.plugins.pdf.PdfTableExtractor.LineRange;
-import org.nexial.core.variable.Syspath;
+import org.thymeleaf.util.ArrayUtils;
+import org.thymeleaf.util.ListUtils;
 
-import static org.nexial.core.NexialConst.DEF_CHARSET;
-import static org.nexial.core.NexialConst.Data.*;
-import static org.nexial.core.NexialConst.PdfMeta.*;
-import static org.nexial.core.utils.CheckUtils.*;
 import static java.io.File.separator;
 import static java.io.File.separatorChar;
 import static java.util.regex.Pattern.DOTALL;
 import static java.util.regex.Pattern.MULTILINE;
+import static org.nexial.core.NexialConst.DEF_CHARSET;
+import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.PdfMeta.*;
+import static org.nexial.core.utils.CheckUtils.*;
 
 /**
  *
@@ -101,7 +99,7 @@ public class PdfCommand extends BaseCommand {
         requiresNotBlank(actualPdf, "blank baseline");
         requiresNotBlank(expectedPdf, "blank current");
 
-        String outPath = new Syspath().out("fullpath");
+        String outPath = syspath.out("fullpath");
 
         String actualExt = StringUtils.lowerCase(FilenameUtils.getExtension(actualPdf));
         String newBaselinePath;
@@ -142,7 +140,7 @@ public class PdfCommand extends BaseCommand {
             Matcher matcher = pattern.matcher(content);
             boolean notFound = !matcher.find();
             return new StepResult(notFound,
-                                    "pattern '" + regex + "' " + (notFound ? " NOT " : "") + "found in '" + pdf + "'",
+                                  "pattern '" + regex + "' " + (notFound ? " NOT " : "") + "found in '" + pdf + "'",
                                   null);
         } catch (IOException e) {
             return StepResult.fail("unable to extract content from " + pdf, e);
@@ -180,7 +178,7 @@ public class PdfCommand extends BaseCommand {
             String content = extractText(pdf);
             boolean found = StringUtils.contains(content, text);
             return new StepResult(found,
-                                    "EXPECTED text '" + text + "' " + (found ? "" : "NOT ") + "found in '" + pdf + "'",
+                                  "EXPECTED text '" + text + "' " + (found ? "" : "NOT ") + "found in '" + pdf + "'",
                                   null);
         } catch (IOException e) {
             return StepResult.fail("unable to extract content from " + pdf, e);
@@ -193,7 +191,7 @@ public class PdfCommand extends BaseCommand {
             String content = extractText(pdf);
             boolean notFound = !StringUtils.contains(content, text);
             return new StepResult(notFound,
-                                    "text '" + text + "' " + (notFound ? "NOT " : "") + "found in '" + pdf + "'",
+                                  "text '" + text + "' " + (notFound ? "NOT " : "") + "found in '" + pdf + "'",
                                   null);
         } catch (IOException e) {
             return StepResult.fail("unable to extract content from " + pdf, e);
@@ -208,7 +206,7 @@ public class PdfCommand extends BaseCommand {
             String content = extractText(pdf);
             int count = StringUtils.countMatches(content, text);
             context.setData(var, count);
-            return StepResult.success("occurence of '" + text + "' in '" + pdf + "' saved to '" + var + "'");
+            return StepResult.success("occurrence of '" + text + "' in '" + pdf + "' saved to '" + var + "'");
         } catch (IOException e) {
             return StepResult.fail("unable to extract content from " + pdf, e);
         }
@@ -328,9 +326,9 @@ public class PdfCommand extends BaseCommand {
             matched = StringUtils.equals(Objects.toString(valueObject), expected);
         }
         return new StepResult(matched,
-                                "Form element (" + name + ") " +
-                                (matched ? "contains" : "DOES NOT contain") +
-                                " expected value '" + expected + "'",
+                              "Form element (" + name + ") " +
+                              (matched ? "contains" : "DOES NOT contain") +
+                              " expected value '" + expected + "'",
                               null);
     }
 
@@ -361,7 +359,7 @@ public class PdfCommand extends BaseCommand {
 
         boolean found = getFormValue(var, name) != null;
         return new StepResult(found,
-                                "form element (" + name + ") was " + (found ? "found" : "not found") + " as EXPECTED",
+                              "form element (" + name + ") was " + (found ? "found" : "not found") + " as EXPECTED",
                               null);
     }
 

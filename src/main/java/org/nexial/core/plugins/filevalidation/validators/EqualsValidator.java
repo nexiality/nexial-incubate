@@ -22,7 +22,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.core.plugins.filevalidation.FieldBean;
 import org.nexial.core.plugins.filevalidation.config.ValidationConfig;
 import org.nexial.core.plugins.filevalidation.validators.ValidationsExecutor.Severity;
@@ -51,14 +50,14 @@ public class EqualsValidator implements FieldValidator {
                 String actual = field.getFieldValue();
 
                 if (StringUtils.startsWith(expected, "${")) {
-                    Map<String, Object> mapValues = field.getRecord().getRecordData().getMapValues();
+                    Map<String, Number> mapValues = field.getRecord().getRecordData().getMapValues();
                     DecimalFormat decimalFormat = new DecimalFormat("#.##");
                     actual = decimalFormat.format(Double.valueOf(actual));
                     expected = String.valueOf(mapValues.get(StringUtils.substringBetween(expected, "${", "}")));
                     expected = decimalFormat.format(Double.valueOf(expected));
                 }
 
-                if (!StringUtils.equals(expected, actual)) {
+                if (!StringUtils.equals(StringUtils.trim(expected), StringUtils.trim(actual))) {
                     String errorMessage = ErrorMessage.compareEqualsError(field,
                                                                           ValidationType.EQUALS,
                                                                           expected,

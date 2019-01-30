@@ -17,23 +17,23 @@
 
 package org.nexial.core.plugins.filevalidation.validators;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.collections4.map.ListOrderedMap;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.LineIterator;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.core.plugins.filevalidation.FieldBean;
 import org.nexial.core.plugins.filevalidation.RecordBean;
 import org.nexial.core.plugins.filevalidation.RecordData;
 import org.nexial.core.plugins.filevalidation.config.FieldConfig;
 import org.nexial.core.plugins.filevalidation.config.MasterConfig;
 import org.nexial.core.plugins.filevalidation.config.RecordConfig;
+import org.nexial.core.utils.ConsoleUtils;
 
 import static org.nexial.core.utils.CheckUtils.requiresNotNull;
 import static org.nexial.core.utils.CheckUtils.requiresReadableFile;
@@ -45,88 +45,89 @@ public class FixedLengthFileValidator implements MasterFileValidator {
     @Override
     public void setMasterConfig(MasterConfig masterConfig) {
         requiresNotNull(masterConfig, "Failed to create master config");
-        this.configs = masterConfig.getConfigs(masterConfig);
+        this.configs = masterConfig.getConfigs();
     }
 
     public RecordData parseAndValidate(String targetFilePath) {
         requiresReadableFile(targetFilePath);
         File targetFile = new File(targetFilePath);
-        List<String> targetLines;
-        try {
-            targetLines = FileUtils.readLines(targetFile, "UTF-8");
-        } catch (IOException e) {
-            throw new IllegalStateException("Unable to locate targetFile " + targetFilePath);
-        }
         RecordData recordData = new RecordData();
-        Map<Integer, RecordBean> recordSet = new HashMap<>();
         ValidationsExecutor validationsExecutor = new ValidationsExecutor();
-        Map<String, Object> mapValues = new ListOrderedMap<>();
-        Map<Integer, String> skippedRecords = new ListOrderedMap<>();
+        File csvOutputFile = validationsExecutor.resolveCsvOutputFile();
+        Map<String, Number> mapValues = new ListOrderedMap<>();
+        int i = 0;
+        int processedLines = 0;
+        Map<String, Object> tempDupValues = validationsExecutor.moveDupValuesFromContext(configs);
+        try (BufferedOutputStream outputStream = new BufferedOutputStream(FileUtils.openOutputStream(csvOutputFile))) {
+            LineIterator iterator = FileUtils.lineIterator(targetFile, "UTF-8");
 
-        for (int i = 0; i < targetLines.size(); i++) {
-            RecordBean recordBean = new RecordBean();
-            String targetLine = targetLines.get(i);
+            while (iterator.hasNext()) {
+                String targetLine = iterator.nextLine();
+                List<FieldBean> fields = new ArrayList<>();
+                for (RecordConfig recordConfig : configs) {
+                    if (recordConfig != null && recordConfig.isValid()) {
+                        List<FieldConfig> fieldConfigs = recordConfig.getFieldConfigList();
+                        String expectedRecordId = recordConfig.getRecordId();
+                        String actualRecordId = null;
+                        for (FieldConfig config : fieldConfigs) {
+                            if (config.getFieldname().equals(recordConfig.getRecordIdField())) {
+                                actualRecordId = StringUtils.substring(targetLine, config.getPositionfrom() - 1,
+                                                                       config.getPositionto());
+                                break;
+                            }
+                        }
+                        // condition to identify the record with config
+                        if (expectedRecordId.equals(actualRecordId)) {
+                            RecordBean recordBean = new RecordBean();
+                            recordBean.setRecordNumber(i);
+                            int expectedLength = fieldConfigs.get(fieldConfigs.size() - 1).getPositionto();
+                            if (targetLine.length() != expectedLength) {
+                                int totalSkipped = recordData.getTotalRecordsSkipped();
+                                String msg = "Skipped:" + i + "," + expectedRecordId + ",Expected record length "
+                                             + expectedLength + ". But Actual length found "
+                                             + targetLine.length() + "\n";
 
-            List<FieldBean> fields = new ArrayList<>();
-            for (RecordConfig recordConfig : configs) {
+                                ConsoleUtils.log(msg);
+                                recordBean.setSkipped(true);
+                                recordBean.setSkippedMsg(msg);
+                                recordData.setTotalRecordsSkipped(++totalSkipped);
+                                validationsExecutor.writeReportToFile(outputStream, recordBean);
+                                continue;
+                            }
+                            ConsoleUtils.log("validating line number: " + i + " Record ID: " + expectedRecordId);
+                            processedLines++;
+                            for (FieldConfig config : fieldConfigs) {
+                                String fieldValue = StringUtils.substring(targetLine,
+                                                                          config.getPositionfrom() - 1,
+                                                                          config.getPositionto());
+                                FieldBean field = new FieldBean(config, fieldValue);
+                                field.setRecord(recordBean);
+                                fields.add(field);
+                            }
 
-                if (recordConfig != null) {
-                    List<FieldConfig> configs = recordConfig.getFieldConfigList();
-                    String expectedRecordId = recordConfig.getRecordId();
-                    String actualRecordId = null;
-                    for (FieldConfig config : configs) {
-                        if (config.getFieldname().equals(recordConfig.getRecordIdFiled())) {
-                            actualRecordId = StringUtils.substring(targetLine, config.getPositionfrom() - 1,
-                                                                   config.getPositionto());
+                            recordBean.setFields(fields);
+                            validationsExecutor.doBasicValidations(recordBean);
+                            recordBean.setRecordData(recordData);
+                            mapValues = validationsExecutor.collectMapValues(recordConfig, recordBean, mapValues);
+                            recordData.setMapValues(mapValues);
+                            validationsExecutor.executeValidations(outputStream, recordBean);
                             break;
                         }
                     }
-
-                    // condition to identify the record with config
-                    if (expectedRecordId.equals(actualRecordId)) {
-                        int expectedLength = configs.get(configs.size() - 1).getPositionto();
-                        if (targetLine.length() != expectedLength) {
-                            String msg = "Record ID: " +
-                                         expectedRecordId +
-                                         " - Skipped Validation; Expected record length: " +
-                                         expectedLength+". But Actual length found: "+targetLine.length();
-                            skippedRecords.put(i, msg);
-                            continue;
-                        }
-                        for (FieldConfig config : configs) {
-                            String fieldValue = StringUtils.substring(targetLine,
-                                                                      config.getPositionfrom() - 1,
-                                                                      config.getPositionto());
-                            FieldBean field = new FieldBean(config, fieldValue);
-                            field.setRecord(recordBean);
-                            fields.add(field);
-                        }
-
-                        recordBean.setFields(fields);
-                        validationsExecutor.doBasicValidations(recordBean);
-                        recordBean.setRecordData(recordData);
-
-                        mapValues = validationsExecutor.collectMapValues(recordConfig, recordBean, mapValues);
-                        recordData.setMapValues(mapValues);
-                        recordSet.put(i, recordBean);
-                        recordData.setRecords(recordSet);
-                        break;
-                    }
-
                 }
-
-                // todo: (V2) error tolerance to control the parsing of number of lines
+                i++;
             }
 
-
+        } catch (Exception e) {
+            ConsoleUtils.log("File validation failed. " + e.getMessage());
+        } finally {
+            validationsExecutor.restoreValuesToContext(tempDupValues);
         }
-
-        recordData.setSkippedRecords(skippedRecords);
-        recordData.setTotalRecordsProcessed(recordSet.entrySet().size());
-        validationsExecutor.executeValidations(recordData);
+        recordData.printMapFunctionValues();
+        recordData.setTotalRecordsProcessed(processedLines);
+        recordData.calculateTotalPassed();
         return recordData;
     }
-
 
 
 }

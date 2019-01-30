@@ -29,24 +29,23 @@ import java.util.regex.Pattern;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.collections4.map.ListOrderedMap;
-import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.ExecutionThread;
+import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
+import org.nexial.core.plugins.desktop.ig.IgExplorerBar;
+import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.JsonUtils;
 import org.openqa.selenium.By;
 import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.interactions.Actions;
-
-import org.nexial.commons.utils.TextUtils;
-import org.nexial.core.ExecutionThread;
-import org.nexial.core.model.ExecutionContext;
-import org.nexial.core.plugins.desktop.ig.IgExplorerBar;
-import org.nexial.core.utils.ConsoleUtils;
-import org.nexial.core.utils.JsonUtils;
 
 import static org.nexial.core.plugins.desktop.DesktopConst.*;
 import static org.nexial.core.plugins.desktop.DesktopUtils.*;
@@ -240,7 +239,6 @@ public class DesktopTable extends DesktopElement {
 
     public TableData fetchAll() {
         sanityCheck();
-
         Instant startTime = Instant.now();
         String object = (String) driver.executeScript("datagrid: fetch-all", element);
         Instant endTime = Instant.now();
@@ -269,6 +267,7 @@ public class DesktopTable extends DesktopElement {
 
     public DesktopTableRow fetchOrCreateRow(int row) {
         sanityCheck(row, null);
+        ExecutionContext context = ExecutionThread.get();
 
         List<WebElement> dataElements = element.findElements(By.xpath(LOCATOR_TABLE_DATA));
         List<WebElement> rows;
@@ -298,7 +297,12 @@ public class DesktopTable extends DesktopElement {
             List<WebElement> matches;
             // using offsets, only when to click on the first row and it is new row.
             if (row == 0) {
-                clickOffset(element, clickOffsetX, (headerHeight + (TABLE_ROW_HEIGHT * row) + (TABLE_ROW_HEIGHT / 2)));
+                boolean clickBeforeEdit = context.getBooleanData(CURRENT_DESKTOP_TABLE_CLICK_BEFORE_EDIT,
+                                                                 DEF_DESKTOP_TABLE_CLICK_BEFORE_EDIT);
+                if (clickBeforeEdit) {
+                    clickOffset(element, clickOffsetX,
+                                (headerHeight + (TABLE_ROW_HEIGHT * row) + (TABLE_ROW_HEIGHT / 2)));
+                }
                 matches = element.findElements(By.xpath(LOCATOR_NEW_ROW));
                 if (CollectionUtils.isEmpty(matches)) {
                     throw new IllegalArgumentException(msgPrefix + "Unable to retrieve columns - no 'Add Row'");
@@ -334,7 +338,6 @@ public class DesktopTable extends DesktopElement {
         if (CollectionUtils.isEmpty(columns)) { throw new IllegalArgumentException(msgPrefix + "No columns found"); }
 
         // collect names so we can reuse them
-        ExecutionContext context = ExecutionThread.get();
         boolean editableColumnFound = context != null && context.getBooleanData(
             CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_FOUND);
 
@@ -388,7 +391,7 @@ public class DesktopTable extends DesktopElement {
         WebElement cellElement;
 
         boolean focused = true;
-        boolean clickExplorerbar = false;
+        boolean setFocusOut = false;
         for (Map.Entry<String, String> nameValue : nameValues.entrySet()) {
 
             //todo: support function keys along with [CLICK]? and [CHECK]
@@ -414,7 +417,7 @@ public class DesktopTable extends DesktopElement {
             if (StringUtils.equals(value, TABLE_CELL_CLICK)) {
                 ConsoleUtils.log("clicked on " + msgPrefix2);
                 focused = false;
-                if (context != null) { context.setData(CURRENT_DESKTOP_TABLE_ROW, tableRow); }
+                context.setData(CURRENT_DESKTOP_TABLE_ROW, tableRow);
 
                 actionClick(cellElement);
                 continue;
@@ -460,7 +463,7 @@ public class DesktopTable extends DesktopElement {
 
                         if (context.getBooleanData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_FOUND) &&
                             context.getStringData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_NAME).contentEquals(column)) {
-                            clickExplorerbar = true;
+                            setFocusOut = true;
                         }
 
                         messageBuffer.append(msgPrefix2).append("unchecked \n");
@@ -473,7 +476,7 @@ public class DesktopTable extends DesktopElement {
 
                         if (context.getBooleanData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_FOUND) &&
                             context.getStringData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_NAME).contentEquals(column)) {
-                            clickExplorerbar = true;
+                            setFocusOut = true;
                         }
 
                         messageBuffer.append(msgPrefix2).append("checked \n");
@@ -492,7 +495,7 @@ public class DesktopTable extends DesktopElement {
         if (focused) {
             // todo: need to handle first column = null problem
 
-            if (clickExplorerbar) {
+            if (setFocusOut) {
                 looseCurrentFocus();
             } else if (context.getBooleanData(
                 CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_FOUND)) {
@@ -538,7 +541,7 @@ public class DesktopTable extends DesktopElement {
         if (!context.hasData(CURRENT_DESKTOP_SESSION)) { return null; }
 
         Object sessionObj = context.getObjectData(CURRENT_DESKTOP_SESSION);
-        if (sessionObj == null || !(sessionObj instanceof DesktopSession)) {
+        if (!(sessionObj instanceof DesktopSession)) {
             context.removeData(CURRENT_DESKTOP_SESSION);
             return null;
         }
@@ -753,7 +756,8 @@ public class DesktopTable extends DesktopElement {
 
     protected void typeValue(WebElement cellElement, String value, boolean isFormattedText) {
         if (isFormattedText) {
-            ConsoleUtils.log("clear content and send keys on formatted textbox '" + treatColumnHeader(cellElement.getAttribute("Name") + "'"));
+            ConsoleUtils.log("clear content and send keys on formatted textbox '" +
+                             treatColumnHeader(cellElement.getAttribute("Name") + "'"));
             setValue(cellElement, "");
             // formatted text box needs special treatment (using both set value and send keys)
             String[] chars = value.split("");
@@ -773,6 +777,7 @@ public class DesktopTable extends DesktopElement {
         }
         return rows;
     }
+
     private void looseCurrentFocus() {
 
         DesktopSession session = getCurrentSession();
@@ -875,8 +880,6 @@ public class DesktopTable extends DesktopElement {
             driver.executeScript(toShortcuts(StringUtils.substringBetween(value, "[", "]")), cellElement);
             return false;
         }
-
-        value = StringUtils.trim(value);
 
         Pattern p = Pattern.compile("^(.+)\\[(.+)]$");
         Matcher m = p.matcher(value);

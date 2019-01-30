@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.collections4.MapUtils;
@@ -30,7 +31,6 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.commons.utils.web.URLEncodingUtils;
 import org.nexial.core.model.ExecutionContext;
@@ -39,26 +39,26 @@ import org.nexial.core.plugins.base.BaseCommand;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.OutputFileUtils;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import io.jsonwebtoken.*;
 
-import static org.nexial.core.NexialConst.*;
-import static org.nexial.core.utils.CheckUtils.*;
 import static io.jsonwebtoken.SignatureAlgorithm.HS256;
 import static io.jsonwebtoken.impl.TextCodec.BASE64URL;
 import static org.apache.http.HttpHeaders.AUTHORIZATION;
 import static org.apache.http.HttpHeaders.CONTENT_TYPE;
+import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.plugins.ws.WebServiceClient.hideAuthDetails;
+import static org.nexial.core.utils.CheckUtils.*;
 
 public class WsCommand extends BaseCommand {
-    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().setLenient().create();
+    protected boolean verbose;
+
+    public void setVerbose(boolean verbose) { this.verbose = verbose; }
 
     @Override
-    public void init(ExecutionContext context) {
-        super.init(context);
-    }
+    public void init(ExecutionContext context) { super.init(context); }
 
     @Override
     public String getTarget() { return "ws"; }
@@ -68,28 +68,31 @@ public class WsCommand extends BaseCommand {
         requiresValidVariableName(saveTo);
 
         WebServiceClient client = new WebServiceClient(context);
-
-        boolean compact = context.getBooleanData(WS_REQ_PAYLOAD_COMPACT, DEF_WS_REQ_PAYLOAD_COMPACT);
+        client.setVerbose(verbose);
 
         // is queryString a file?
         try {
-            queryString = OutputFileUtils.resolveContent(queryString, context, compact);
+            queryString = OutputFileUtils.resolveContent(queryString, context, compactRequestPayload());
         } catch (IOException e) {
             return StepResult.fail("Unable to read input '" + queryString + "' due to " + e.getMessage());
         }
 
+        logRequest(url, queryString);
+
         try {
-            logRequest(url, queryString);
             Response response = client.download(url, queryString, saveTo);
             logResponseForDownload(response, saveTo);
-            return StepResult.success("Successfully downloaded '"
-                                      + url + (StringUtils.isBlank(queryString) ? "" : ("?" + queryString))
-                                      + "' to " + saveTo);
+            return StepResult.success("Successfully downloaded '" + hideAuthDetails(url) +
+                                      (StringUtils.isBlank(queryString) ? "" : ("?" + queryString)) + "' to " + saveTo);
         } catch (IOException e) {
-            return StepResult.fail("FAILED to downloaded from '"
-                                   + url + (StringUtils.isBlank(queryString) ? "" : ("?" + queryString))
-                                   + "': " + e.getMessage());
+            return StepResult.fail("FAILED to downloaded from '" + hideAuthDetails(url) +
+                                   (StringUtils.isBlank(queryString) ? "" : ("?" + queryString)) +
+                                   "': " + e.getMessage());
         }
+    }
+
+    public StepResult upload(String url, String body, String fileParams, String var) {
+        return requestWithBodyMultipart(url, body, fileParams, var);
     }
 
     public StepResult get(String url, String queryString, String var) {
@@ -105,11 +108,9 @@ public class WsCommand extends BaseCommand {
     public StepResult head(String url, String var) { return requestNoBody(url, null, var, "head"); }
 
     public StepResult delete(String url, String body, String var) {
-        if (StringUtils.isNotEmpty(body)) {
-            return requestWithBody(url, body, var, "delete");
-        } else {
-            return requestNoBody(url, "", var, "delete");
-        }
+        return StringUtils.isNotEmpty(body) ?
+               requestWithBody(url, body, var, "delete") :
+               requestNoBody(url, "", var, "delete");
     }
 
     public StepResult assertReturnCode(String var, String returnCode) {
@@ -230,7 +231,7 @@ public class WsCommand extends BaseCommand {
                 return StepResult.fail("Unable to parse JWT token, invalid payload returned");
             } else {
                 Claims body = parsed.getBody();
-                context.setData(var, GSON.toJsonTree(body).toString());
+                context.setData(var, GSON_COMPRESSED.toJsonTree(body).toString());
                 return StepResult.success();
             }
         } catch (ExpiredJwtException e) {
@@ -257,6 +258,7 @@ public class WsCommand extends BaseCommand {
      * </ul>
      *
      * Each of the above details are to be specified in name=value form, and each pair in separate lines.
+     * However in some cases, the value could be expressed as JSON array or JSON object.
      *
      * With all proper parameters properly specified, the target {@code url} would return back, among other things, a
      * one-use, time-bound access_token.  This token can be subsequently used as a header parameter
@@ -314,12 +316,26 @@ public class WsCommand extends BaseCommand {
         }
 
         // parse response as JSON
-        JsonObject json = GSON.fromJson(response.getBody(), JsonObject.class);
+        JsonObject json = GSON_COMPRESSED.fromJson(response.getBody(), JsonObject.class);
         Set<Entry<String, JsonElement>> jsonProps = json.entrySet();
 
         // save response to var
         Map<String, String> oauthResponse = new HashMap<>();
-        jsonProps.forEach(entry -> oauthResponse.put(entry.getKey(), entry.getValue().getAsString()));
+        jsonProps.forEach(entry -> {
+            String key = entry.getKey();
+            JsonElement value = entry.getValue();
+            // accomodate situation where json response contains multi-element array
+            if (value.isJsonArray()) {
+                JsonArray arrayValue = value.getAsJsonArray();
+                if (arrayValue.size() == 1) {
+                    oauthResponse.put(key, arrayValue.get(0).toString());
+                } else {
+                    oauthResponse.put(key, arrayValue.toString());
+                }
+            } else {
+                oauthResponse.put(key, value.getAsString());
+            }
+        });
         context.setData(var, oauthResponse);
 
         String tokenType = oauthResponse.get(OAUTH_TOKEN_TYPE);
@@ -340,10 +356,13 @@ public class WsCommand extends BaseCommand {
 
         // not yet supported
         // if (StringUtils.equalsIgnoreCase(tokenType, OAUTH_TOKEN_TYPE_MAC)) {
-        //
         // }
 
         return StepResult.fail(failPrefix + "unknown/unsupported " + OAUTH_TOKEN_TYPE + "found: " + tokenType);
+    }
+
+    protected boolean compactRequestPayload() {
+        return context.getBooleanData(WS_REQ_PAYLOAD_COMPACT, DEF_WS_REQ_PAYLOAD_COMPACT);
     }
 
     protected StepResult addAccessTokenToHeader(Map<String, String> oauthResponse, String authPrefix) {
@@ -363,21 +382,19 @@ public class WsCommand extends BaseCommand {
         requiresValidVariableName(var);
 
         WebServiceClient client = new WebServiceClient(context);
+        client.setVerbose(verbose);
 
         // is queryString a file?
         try {
-            queryString = OutputFileUtils.resolveContent(
-                queryString,
-                context,
-                context.getBooleanData(WS_REQ_PAYLOAD_COMPACT, DEF_WS_REQ_PAYLOAD_COMPACT));
+            queryString = OutputFileUtils.resolveContent(queryString, context, compactRequestPayload());
+            queryString = URLEncodingUtils.encodeQueryString(queryString);
         } catch (IOException e) {
             return StepResult.fail("Unable to read input '" + queryString + "' due to " + e.getMessage());
         }
 
-        try {
-            queryString = URLEncodingUtils.encodeQueryString(queryString);
-            logRequest(url, queryString);
+        logRequest(url, queryString);
 
+        try {
             Response response = null;
             if (StringUtils.equals(method, "get")) { response = client.get(url, queryString); }
             if (StringUtils.equals(method, "head")) { response = client.head(url); }
@@ -385,10 +402,16 @@ public class WsCommand extends BaseCommand {
 
             context.setData(var, response);
             logResponse(response, var);
-            return StepResult.success("Successfully invoked web service '" + url + "'");
+            return StepResult.success("Successfully invoked web service '" + hideAuthDetails(url) + "'");
         } catch (IOException e) {
-            return StepResult.fail("Unable to invoke web service '" + url + "': " + e.getMessage());
+            return toFailResult(url, e);
         }
+    }
+
+    @NotNull
+    protected static StepResult toFailResult(String url, IOException e) {
+        String error = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
+        return StepResult.fail("Unable to invoke '" + hideAuthDetails(url) + "': " + error);
     }
 
     protected StepResult requestWithBody(String url, String body, String var, String method) {
@@ -396,13 +419,11 @@ public class WsCommand extends BaseCommand {
         requiresValidVariableName(var);
 
         WebServiceClient client = new WebServiceClient(context);
+        client.setVerbose(verbose);
 
         // is body a file?
         try {
-            body = OutputFileUtils.resolveContent(
-                body,
-                context,
-                context.getBooleanData(WS_REQ_PAYLOAD_COMPACT, DEF_WS_REQ_PAYLOAD_COMPACT));
+            body = OutputFileUtils.resolveContent(body, context, compactRequestPayload());
         } catch (IOException e) {
             return StepResult.fail("Unable to read input '" + body + "' due to " + e.getMessage());
         }
@@ -418,10 +439,36 @@ public class WsCommand extends BaseCommand {
 
             context.setData(var, response);
             logResponse(response, var);
-            return StepResult.success("Successfully invoked web service '" + url + "'");
+            return StepResult.success("Successfully invoked web service '" + hideAuthDetails(url) + "'");
         } catch (IOException e) {
-            String error = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
-            return StepResult.fail("Unable to invoke web service '" + url + "': " + error);
+            return toFailResult(url, e);
+        }
+    }
+
+    protected StepResult requestWithBodyMultipart(String url, String body, String fileParams, String var) {
+        requiresNotBlank(url, "invalid url", url);
+        requiresValidVariableName(var);
+
+        WebServiceClient client = new WebServiceClient(context);
+        client.setVerbose(verbose);
+
+        // is body a file?
+        try {
+            body = OutputFileUtils.resolveContent(body, context, compactRequestPayload());
+        } catch (IOException e) {
+            return StepResult.fail("Unable to read input '" + body + "' due to " + e.getMessage());
+        }
+
+        try {
+            logRequestWithBody(url, body);
+
+            Response response = client.postMultipart(url, body, fileParams);
+
+            context.setData(var, response);
+            logResponse(response, var);
+            return StepResult.success("Successfully invoked web service '" + hideAuthDetails(url) + "'");
+        } catch (IOException e) {
+            return toFailResult(url, e);
         }
     }
 
@@ -434,11 +481,11 @@ public class WsCommand extends BaseCommand {
     }
 
     protected void logRequestWithBody(String url, String body) {
-        ConsoleUtils.log("REQUEST  --> '" + url + "', body length=" + StringUtils.length(body));
+        ConsoleUtils.log("REQUEST  --> '" + hideAuthDetails(url) + "', body length=" + StringUtils.length(body));
     }
 
     protected void logRequest(String url, String queryString) {
-        ConsoleUtils.log("REQUEST  --> '" + url + "', " +
+        ConsoleUtils.log("REQUEST  --> '" + hideAuthDetails(url) + "', " +
                          "queryString='" + StringUtils.defaultString(queryString, "<NONE>") + "'");
     }
 
@@ -451,5 +498,4 @@ public class WsCommand extends BaseCommand {
             log("RESPONSE payload save to '" + saveTo + "' --> \n" + response.getContentLength());
         }
     }
-
 }

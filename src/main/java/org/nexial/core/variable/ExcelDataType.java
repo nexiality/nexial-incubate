@@ -24,8 +24,6 @@ import java.util.List;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.poi.xssf.usermodel.XSSFCell;
-
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.excel.Excel;
@@ -34,10 +32,9 @@ import org.nexial.core.excel.ExcelAddress;
 
 import static java.lang.System.lineSeparator;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
+import static org.nexial.core.excel.Excel.MIN_EXCEL_FILE_SIZE;
 
 public class ExcelDataType extends ExpressionDataType<Excel> {
-    private static final int MAX_EXCEL_FIL_SIZE = 5 * 1024;
-
     private ExcelTransformer transformer = new ExcelTransformer();
     private String filePath;
     private List<String> worksheetNames;
@@ -57,50 +54,6 @@ public class ExcelDataType extends ExpressionDataType<Excel> {
     @Override
     public String toString() {
         return getName() + "(" + lineSeparator() + getTextValue() + lineSeparator() + ")";
-    }
-
-    @Override
-    Transformer getTransformer() { return transformer; }
-
-    @Override
-    ExcelDataType snapshot() {
-        ExcelDataType snapshot = new ExcelDataType();
-        snapshot.transformer = transformer;
-        snapshot.value = value;
-        snapshot.textValue = textValue;
-        snapshot.filePath = filePath;
-        snapshot.worksheetNames = worksheetNames;
-        snapshot.capturedValues = new ArrayList<>(capturedValues);
-        snapshot.currentSheet = currentSheet;
-        snapshot.currentRange = currentRange;
-        return snapshot;
-    }
-
-    @Override
-    protected void init() throws TypeConversionException {
-        if (StringUtils.isBlank(textValue)) {
-            throw new TypeConversionException(getName(), textValue, "Not a valid spreadsheet: '" + textValue + "'");
-        }
-
-        try {
-            if (!FileUtil.isFileReadable(textValue, MAX_EXCEL_FIL_SIZE)) {
-                value = Excel.newExcel(new File(textValue));
-            } else {
-                value = new Excel(new File(textValue), true);
-            }
-
-            filePath = textValue;
-            List<Worksheet> worksheets = value.getWorksheetsStartWith("");
-            if (CollectionUtils.isNotEmpty(worksheets)) {
-                worksheetNames = new ArrayList<>();
-                worksheets.forEach(worksheet -> worksheetNames.add(worksheet.getName()));
-            }
-        } catch (IOException e) {
-            throw new TypeConversionException(getName(),
-                                              textValue,
-                                              "Error opening " + textValue + ": " + e.getMessage(),
-                                              e);
-        }
     }
 
     public String getFilePath() { return filePath; }
@@ -127,34 +80,54 @@ public class ExcelDataType extends ExpressionDataType<Excel> {
 
     public void setCurrentRange(ExcelAddress currentRange) { this.currentRange = currentRange; }
 
+    @Override
+    Transformer getTransformer() { return transformer; }
+
+    @Override
+    ExcelDataType snapshot() {
+        ExcelDataType snapshot = new ExcelDataType();
+        snapshot.transformer = transformer;
+        snapshot.value = value;
+        snapshot.textValue = textValue;
+        snapshot.filePath = filePath;
+        snapshot.worksheetNames = worksheetNames;
+        snapshot.capturedValues = new ArrayList<>(capturedValues);
+        snapshot.currentSheet = currentSheet;
+        snapshot.currentRange = currentRange;
+        return snapshot;
+    }
+
+    @Override
+    protected void init() throws TypeConversionException {
+        if (StringUtils.isBlank(textValue)) {
+            throw new TypeConversionException(getName(), textValue, "Not a valid spreadsheet: '" + textValue + "'");
+        }
+
+        try {
+            if (!FileUtil.isFileReadable(textValue, MIN_EXCEL_FILE_SIZE)) {
+                value = Excel.newExcel(new File(textValue));
+            } else {
+                value = new Excel(new File(textValue), false, false);
+            }
+
+            filePath = textValue;
+            List<Worksheet> worksheets = value.getWorksheetsStartWith("");
+            if (CollectionUtils.isNotEmpty(worksheets)) {
+                worksheetNames = new ArrayList<>();
+                worksheets.forEach(worksheet -> worksheetNames.add(worksheet.getName()));
+            }
+        } catch (IOException e) {
+            throw new TypeConversionException(getName(),
+                                              textValue,
+                                              "Error opening " + textValue + ": " + e.getMessage(),
+                                              e);
+        }
+    }
+
     protected void read(Worksheet worksheet, ExcelAddress range) {
         worksheet.getSheet().getWorkbook().setMissingCellPolicy(CREATE_NULL_AS_BLANK);
-
-        List<List<String>> values = new ArrayList<>();
-        List<List<XSSFCell>> wholeArea = worksheet.cells(range, false);
-        if (CollectionUtils.isNotEmpty(wholeArea)) {
-            wholeArea.forEach(row -> {
-                List<String> rowValues = new ArrayList<>();
-                row.forEach(cell -> rowValues.add(prepCellData(Excel.getCellValue(cell))));
-                values.add(rowValues);
-            });
-        }
-
         currentRange = range;
         currentSheet = worksheet;
-        setCapturedValues(values);
+        setCapturedValues(worksheet.readRange(range));
     }
-
-    protected String prepCellData(String cellValue) {
-        if (StringUtils.isEmpty(cellValue)) { return cellValue; }
-
-        cellValue = StringUtils.replace(cellValue, "\"", "\"\"");
-
-        if (StringUtils.containsAny(cellValue, ",", "\r", "\n")) {
-            return TextUtils.wrapIfMissing(cellValue, "\"", "\"");
-        }
-
-        return cellValue;
-    }
-
 }

@@ -24,18 +24,21 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.commons.utils.CollectionUtil;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.ExecutionThread;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
+import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.utils.ConsoleUtils;
 
 public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
@@ -86,6 +89,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         return data;
     }
 
+    @NotNull
     public T transpose(T data) {
         requireAfterRead(data, "transpose()");
 
@@ -93,34 +97,18 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         return data;
     }
 
-    public CsvDataType csv(T data) throws TypeConversionException {
-        requireAfterRead(data, "csv()");
+    @NotNull
+    public CsvDataType csv(T data) throws TypeConversionException { return toCsv(data, false); }
 
-        StringBuilder csvBuffer = new StringBuilder();
+    @NotNull
+    public CsvDataType csvWithHeader(T data) throws TypeConversionException { return toCsv(data, true); }
 
-        String delim = ",";
-        String recordDelim = "\r\n";
-
-        List<List<String>> capturedValues = data.getCapturedValues();
-        capturedValues.forEach(row -> {
-            StringBuilder rowBuffer = new StringBuilder();
-            row.forEach(cell -> rowBuffer.append(cell).append(delim));
-            csvBuffer.append(StringUtils.removeEnd(rowBuffer.toString(), delim)).append(recordDelim);
-        });
-
-        CsvDataType csv = new CsvDataType(StringUtils.removeEnd(csvBuffer.toString(), recordDelim));
-        // try {
-        csv.setRecordDelim(recordDelim);
-        csv.setDelim(delim);
-        csv.setHeader(false);
-        csv.setReadyToParse(true);
-        csv.parse();
-        return csv;
-        // } catch (IOException e) {
-        //     throw new TypeConversionException(csv.getName(), csv.getTextValue(), e.getMessage(), e);
-        // }
+    @NotNull
+    public JsonDataType json(T data, String firstRowAsHeader) throws TypeConversionException {
+        return new CsvTransformer<>().json(toCsv(data, BooleanUtils.toBoolean(firstRowAsHeader)));
     }
 
+    @NotNull
     public T save(T data, String file, String sheet, String start) throws IOException {
         requireAfterRead(data, "save()");
 
@@ -133,19 +121,16 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         ExcelAddress addr = toExcelAddress(start);
 
         if (FileUtil.isFileReadable(file, 5 * 1024)) {
-            ConsoleUtils.log("Overwritting '" + file + "' with current EXCEL content");
+            ConsoleUtils.log("Overwriting '" + file + "' with current EXCEL content");
         } else {
             FileUtils.forceMkdirParent(new File(file));
         }
 
-        File targetFile = new File(file);
-        Excel targetExcel;
-        if (targetFile.canRead() && Excel.isXlsxVersion(file)) {
-            // existing file is already a XLSX
-            targetExcel = new Excel(targetFile);
-        } else {
-            // file not exists or not a XLSX. Either way, we'll create new file and thus effectively overwrite existing.
-            targetExcel = Excel.createExcel(targetFile, sheet);
+        Excel targetExcel = Excel.asXlsxExcel(file, false, false);
+        if (targetExcel == null) {
+            // file doesn't exists, can't be opened, or not compatible with Excel 2007
+            // if file not exists or not a XLSX, creating a new file will effectively overwrite the existing.
+            targetExcel = Excel.createExcel(new File(file), sheet);
         }
 
         Worksheet currentWorksheet = targetExcel.worksheet(sheet, true);
@@ -190,13 +175,15 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         }
 
         String start = startAndContent[0];
-        String[] content = ArrayUtils.remove(startAndContent, 0);
-        List<String> rowContent = Arrays.asList(content);
+
+        List<List<String>> rows = new ArrayList<>();
+        rows.add(Arrays.asList(ArrayUtils.remove(startAndContent, 0)));
+
         try {
-            data.getCurrentSheet().writeAcross(toExcelAddress(start), rowContent);
+            data.getCurrentSheet().writeAcross(toExcelAddress(start), rows);
             return data;
         } catch (IOException e) {
-            throw new TypeConversionException(data.getName(), rowContent.toString(),
+            throw new TypeConversionException(data.getName(), rows.get(0).toString(),
                                               "Unable to write across " + start + ": " + e.getMessage(), e);
         }
     }
@@ -212,12 +199,14 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         String start = startAndContent[0];
         String[] content = ArrayUtils.remove(startAndContent, 0);
 
-        List<String> rowContent = Arrays.asList(content);
+        List<List<String>> columns = new ArrayList<>();
+        columns.add(Arrays.asList(content));
+
         try {
-            data.getCurrentSheet().writeDown(toExcelAddress(start), rowContent);
+            data.getCurrentSheet().writeDown(toExcelAddress(start), columns);
             return data;
         } catch (IOException e) {
-            throw new TypeConversionException(data.getName(), rowContent.toString(),
+            throw new TypeConversionException(data.getName(), columns.get(0).toString(),
                                               "Unable to write downwards from " + start + ": " + e.getMessage(), e);
         }
     }
@@ -232,6 +221,27 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
 
     @Override
     Map<String, Method> listSupportedMethods() { return FUNCTIONS; }
+
+    @NotNull
+    protected CsvDataType toCsv(T data, boolean withHeader) throws TypeConversionException {
+        requireAfterRead(data, withHeader ? "csvWithHeader()" : "csv()");
+        List<List<String>> capturedValues = data.getCapturedValues();
+
+        ExecutionContext context = ExecutionThread.get();
+        String delim = context == null ? "," : context.getTextDelim();
+        String recordDelim = "\r\n";
+
+        String csvBuffer = TextUtils.toCsvContent(capturedValues, delim, recordDelim);
+
+        CsvDataType csv = new CsvDataType(StringUtils.removeEnd(csvBuffer, recordDelim));
+        csv.setRecordDelim(recordDelim);
+        csv.setDelim(delim);
+        csv.setHeader(withHeader);
+        csv.setReadyToParse(true);
+        csv.parse();
+
+        return csv;
+    }
 
     // todo?
     // public ExcelDataType deleteRow(ExcelDataType data, String row) { }
@@ -249,7 +259,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
 
     protected void requireAfterRead(T data, String op) {
         if (data == null) { throw new IllegalArgumentException("data is null"); }
-        if (CollectionUtils.isEmpty(data.getCapturedValues()) || data.getCurrentSheet() == null) {
+        if (CollectionUtils.isEmpty(data.getCapturedValues()) && data.getCurrentSheet() == null) {
             throw new IllegalArgumentException(op + " can only be performed after a valid read() operation");
         }
     }

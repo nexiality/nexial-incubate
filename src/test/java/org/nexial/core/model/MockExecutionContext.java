@@ -19,8 +19,8 @@ package org.nexial.core.model;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -28,48 +28,72 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.SystemUtils;
-import org.nexial.core.plugins.NexialCommand;
-import org.springframework.context.support.ClassPathXmlApplicationContext;
-
 import org.nexial.commons.utils.DateUtility;
 import org.nexial.commons.utils.EnvUtils;
+import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
+import org.nexial.core.NexialConst.BrowserType;
 import org.nexial.core.aws.NexialS3Helper;
+import org.nexial.core.plugins.NexialCommand;
 import org.nexial.core.utils.ExecutionLogger;
 import org.nexial.core.variable.ExpressionProcessor;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
 
+import static java.io.File.separator;
+import static org.apache.commons.lang3.SystemUtils.JAVA_IO_TMPDIR;
 import static org.nexial.core.NexialConst.DEF_CHARSET;
-import static org.nexial.core.NexialConst.Data.EXECUTION_MODE;
+import static org.nexial.core.NexialConst.Data.TEST_LOG_PATH;
 import static org.nexial.core.NexialConst.Project.DEF_REL_LOC_TEST_SCRIPT;
 import static org.nexial.core.NexialConst.Project.NEXIAL_HOME;
-import static java.io.File.separator;
 
 public class MockExecutionContext extends ExecutionContext {
     protected String runId;
     protected Map<String, NexialCommand> plugins = new HashMap<>();
     protected String projectHome;
 
-    public MockExecutionContext() {
-        this(false);
-    }
+    public MockExecutionContext() { this(false); }
 
     public MockExecutionContext(boolean withSpring) {
         super();
 
-        try {
-            hostname = StringUtils.upperCase(EnvUtils.getHostName());
-        } catch (UnknownHostException e) {
-            throw new RuntimeException("Unable to determine host name of current host: " + e.getMessage());
-        }
-
-        executionLogger = new ExecutionLogger(getRunId());
+        hostname = StringUtils.upperCase(EnvUtils.getHostName());
+        executionLogger = new ExecutionLogger(this);
         runId = DateUtility.createTimestampString(System.currentTimeMillis());
+        System.setProperty(TEST_LOG_PATH, JAVA_IO_TMPDIR);
 
         if (withSpring) {
             this.springContext = new ClassPathXmlApplicationContext("classpath:/nexial.xml");
+            this.otc = springContext.getBean("otc", NexialS3Helper.class);
             this.failfastCommands = springContext.getBean("failfastCommands", new ArrayList<String>().getClass());
             this.builtinFunctions = springContext.getBean("builtinFunctions", new HashMap<String, Object>().getClass());
-            this.s3Helper = springContext.getBean("nexialS3Helper", NexialS3Helper.class);
+            this.readOnlyVars = springContext.getBean("readOnlyVars", new ArrayList<String>().getClass());
+            this.defaultContextProps =
+                springContext.getBean("defaultContextProps", new HashMap<String, String>().getClass());
+            this.referenceDataForExecution =
+                TextUtils.toList(defaultContextProps.get("nexial.referenceDataForExecution"), ",", true);
+            this.webdriverHelperConfig =
+                springContext.getBean("webdriverHelperConfig", new HashMap<BrowserType, String>().getClass());
+        } else {
+            readOnlyVars = Arrays.asList("nexial.runID", "nexial.runID.prefix", "nexial.iterationEnded",
+                                         "nexial.spreadsheet.program", "nexial.lastScreenshot", "nexial.lastOutcome",
+                                         "nexial.minExecSuccessRate", "nexial.screenRecorder", "nexial.scope.iteration",
+                                         "nexial.scope.fallbackToPrevious", "nexial.scope.currentIteration",
+                                         "nexial.scope.lastIteration", "nexial.external.output",
+                                         "nexial.browser.windowSize", "nexial.delayBrowser",
+                                         "nexial.browser.ie.requireWindowFocus", "nexial.lastAlertText",
+                                         "nexial.ignoreBrowserAlert", "nexial.lastAlertText",
+                                         "nexial.browser.incognito", "nexial.browserstack.automatekey",
+                                         "nexial.browserstack.username", "nexial.browserstack.browser",
+                                         "nexial.browserstack.browser.version", "nexial.browserstack.debug",
+                                         "nexial.browserstack.resolution", "nexial.browserstack.app.buildnumber",
+                                         "nexial.browserstack.enablelocal", "nexial.browserstack.os",
+                                         "nexial.browserstack.os.version", "nexial.browser.safari.cleanSession",
+                                         "nexial.browser.safari.useTechPreview", "nexial.forceIE32",
+                                         "webdriver.ie.driver", "webdriver.ie.driver.loglevel",
+                                         "webdriver.ie.driver.logfile", "webdriver.ie.driver.silent",
+                                         "file.separator", "java.home", "java.io.tmpdir", "java.version",
+                                         "line.separator", "os.arch", "os.name", "os.version", "user.country",
+                                         "user.dir", "user.home", "user.language", "user.name", "user.timezone");
         }
 
         expression = new ExpressionProcessor(this);
@@ -77,7 +101,7 @@ public class MockExecutionContext extends ExecutionContext {
         try {
             newProject();
         } catch (IOException e) {
-            throw new RuntimeException("Unable to ceate mock test script and project structure: " + e.getMessage(), e);
+            throw new RuntimeException("Unable to create mock test script and project structure: " + e.getMessage(), e);
         }
 
         ExecutionThread.set(this);
@@ -93,6 +117,11 @@ public class MockExecutionContext extends ExecutionContext {
         this.execDef.setProject(project);
     }
 
+    public void setExecDef(ExecutionDefinition execDef) {
+        this.execDef = execDef;
+        this.project = adjustPath(execDef);
+    }
+
     @Override
     public String getRunId() { return runId; }
 
@@ -103,22 +132,21 @@ public class MockExecutionContext extends ExecutionContext {
     public NexialCommand findPlugin(String target) { return plugins.get(target); }
 
     public void newProject() throws IOException {
-        String nexialHome = System.getProperty(NEXIAL_HOME, "/Users/ml093043/projects/nexial/nexial-core");
+        // String nexialHome = System.getProperty(NEXIAL_HOME, "/Users/ml093043/projects/nexial/nexial-core");
+        String nexialHome = System.getProperty(NEXIAL_HOME, "/NON_EXISTING_PATH/nexial");
         System.setProperty(NEXIAL_HOME, nexialHome);
 
         projectHome = SystemUtils.getJavaIoTmpDir().getAbsolutePath() + separator
                       + "_nexial_" + RandomStringUtils.randomAlphabetic(5) + separator;
-        String tetsScriptPath = projectHome + DEF_REL_LOC_TEST_SCRIPT + "temp.xlsx";
-        File testScript = new File(tetsScriptPath);
+        String testScriptPath = projectHome + DEF_REL_LOC_TEST_SCRIPT + "temp.xlsx";
+        File testScript = new File(testScriptPath);
         FileUtils.writeStringToFile(testScript, RandomStringUtils.random(100), DEF_CHARSET);
-        project = TestProject.newInstance(testScript, DEF_REL_LOC_TEST_SCRIPT);
+        project = TestProject.newInstance(testScript);
         project.setProjectHome(projectHome);
         setTestProject(project);
     }
 
     public void cleanProject() {
         if (projectHome != null) { FileUtils.deleteQuietly(new File(projectHome)); }
-        System.clearProperty(EXECUTION_MODE);
-        this.removeData(EXECUTION_MODE);
     }
 }

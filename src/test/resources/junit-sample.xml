@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xmlns="junit"
+            xsi:schemaLocation="junit junit1.xsd"
+            name="plan name"
+            time="12345"
+            tests="500" errors="5" failures="6">
+
+    <!-- tests should represent number of activities or step? -->
+    <testsuite id="plan step sequence" name="plan step description" package="script file name"
+               hostname="LM11222" timestamp="yyyy-MM-ddTHH:mm:ss" time="12345"
+               tests="500" errors="6" failures="6">
+
+        <!-- execution metadata and scriptRef.* -->
+        <properties>
+            <property name="run from" value="LM11222 (x86_64 Mac OS X 10.13.6)"/>
+            <property name="JAVA_OPT" value="-Dnexial.script=/tmp/nexial/output/nexial.sh"/>
+        </properties>
+
+        <testcase name="activity name" classname="script.iteration.scenario" time="12345">
+
+
+        </testcase>
+    </testsuite>
+</testsuites>

@@ -20,7 +20,6 @@ package org.nexial.core.model;
 import java.io.IOException;
 
 import org.apache.poi.xssf.usermodel.XSSFCell;
-
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 
@@ -30,16 +29,16 @@ public class TestScenarioMeta {
     private static final ExcelAddress ADDR_DESCRIPTION = new ExcelAddress("A2");
     private static final ExcelAddress ADDR_PROJECT = new ExcelAddress("E2");
     private static final ExcelAddress ADDR_RELEASE = new ExcelAddress("F2");
-    private static final ExcelAddress ADDR_JIRA = new ExcelAddress("G2");
-    private static final ExcelAddress ADDR_ZEPHYR = new ExcelAddress("H2");
+    private static final ExcelAddress ADDR_FEATURE = new ExcelAddress("G2");
+    private static final ExcelAddress ADDR_TESTID = new ExcelAddress("H2");
     private static final ExcelAddress ADDR_AUTHOR = new ExcelAddress("I2");
 
     private Worksheet worksheet;
     private String description;
     private String project;
     private String release;
-    private String jira;
-    private String zephyr;
+    private String featureRef;
+    private String testRef;
     private String author;
 
     private TestScenarioMeta(Worksheet worksheet) {
@@ -61,13 +60,13 @@ public class TestScenarioMeta {
 
     public void setRelease(String release) { this.release = release; }
 
-    public String getJira() { return jira; }
+    public String getFeatureRef() { return featureRef; }
 
-    public void setJira(String jira) { this.jira = jira; }
+    public void setFeatureRef(String featureRef) { this.featureRef = featureRef; }
 
-    public String getZephyr() { return zephyr; }
+    public String getTestRef() { return testRef; }
 
-    public void setZephyr(String zephyr) { this.zephyr = zephyr; }
+    public void setTestRef(String testRef) { this.testRef = testRef; }
 
     public String getAuthor() { return author; }
 
@@ -83,11 +82,11 @@ public class TestScenarioMeta {
         cell = worksheet.cell(ADDR_RELEASE);
         if (cell != null) { cell.setCellValue(release); }
 
-        cell = worksheet.cell(ADDR_JIRA);
-        if (cell != null) { cell.setCellValue(jira); }
+        cell = worksheet.cell(ADDR_FEATURE);
+        if (cell != null) { cell.setCellValue(featureRef); }
 
-        cell = worksheet.cell(ADDR_ZEPHYR);
-        if (cell != null) { cell.setCellValue(zephyr); }
+        cell = worksheet.cell(ADDR_TESTID);
+        if (cell != null) { cell.setCellValue(testRef); }
 
         cell = worksheet.cell(ADDR_AUTHOR);
         if (cell != null) { cell.setCellValue(author); }
@@ -105,11 +104,11 @@ public class TestScenarioMeta {
         cell = worksheet.cell(ADDR_RELEASE);
         if (cell != null) { release = readCellValueAsString(cell); }
 
-        cell = worksheet.cell(ADDR_JIRA);
-        if (cell != null) { jira = readCellValueAsString(cell); }
+        cell = worksheet.cell(ADDR_FEATURE);
+        if (cell != null) { featureRef = readCellValueAsString(cell); }
 
-        cell = worksheet.cell(ADDR_ZEPHYR);
-        if (cell != null) { zephyr = readCellValueAsString(cell); }
+        cell = worksheet.cell(ADDR_TESTID);
+        if (cell != null) { testRef = readCellValueAsString(cell); }
 
         cell = worksheet.cell(ADDR_AUTHOR);
         if (cell != null) { author = readCellValueAsString(cell); }

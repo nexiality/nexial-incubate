@@ -23,14 +23,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import javax.validation.constraints.NotNull;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Options;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
@@ -43,6 +44,7 @@ import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.excel.ExcelArea;
+import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.InputFileUtils;
 
 import static java.io.File.separator;
@@ -58,17 +60,27 @@ import static org.nexial.core.tools.CliUtils.newArgOption;
  * Utility to rename the variables in the data files, scripts, properties files and sql files within a project.
  */
 final public class DataVariableUpdater {
-    private static final String OPT_PROJECT_PATH = "f";
-    private static final String OPT_VARIABLES_LIST = "v";
+    protected static boolean isDryRun = false;
+    private static final String OPT_PROJECT_PATH = "t";
+    private static final String OPT_VARIABLES_LIST = "d";
+    private static final String OPT_VERBOSE = "v";
+    private static final String OPT_DRY_RUN = "p";
+
     private static final String DATA_FILE_SUFFIX = "data.xlsx";
     private static final String SCRIPT_FILE_SUFFIX = "xlsx";
+
     private static final String KEY_VALUE_SEPARATOR = "=";
     private static final String VARIABLE_SEPARATOR = ";";
+
     private static final List<String> KEYWORDS_VAR_PARAM = Arrays.asList("var", "saveVar", "profile", "config", "db");
-    private static final List<String> VAR_WRAPPERS = Arrays.asList("store", "CONFIG", "CSV", "DATE", "EXCEL", "INI",
-                                                                   "JSON", "LIST", "NUMBER", "SQL", "TEXT", "XML");
-    // private static final List<String> VAR_PARTIAL_WRAPPERS = Arrays.asList("SkipIf", "PauseBefore", "PauseAfter",
-    //                                                                        "EndIf", "FailIf", "EndLoopIf", "ProceedIf");
+    private static final List<String> VAR_WRAPPERS = Arrays.asList("merge", "store", "BAI2", "CONFIG", "CSV", "DATE",
+                                                                   "EXCEL", "INI", "JSON", "LIST", "NUMBER", "SQL",
+                                                                   "TEXT", "XML");
+    private static final int COLUMN_1_WIDTH = 45;
+    private static final int COLUMN_2_WIDTH = 20;
+    private static final int COLUMN_3_WIDTH = 10;
+    private static final int COLUMN_4_LEFT_MARGIN = (COLUMN_1_WIDTH + COLUMN_2_WIDTH + COLUMN_3_WIDTH);
+    private static final String BECOME_SYMBOL = " => ";
 
     protected String searchFrom;
     protected File searchPath;
@@ -129,8 +141,16 @@ final public class DataVariableUpdater {
 
         @Override
         public String toString() {
-            return StringUtils.leftPad(StringUtils.right(file, 70) + " [" + position + "]: ", 75) +
-                   before + " => " + after;
+            String worksheet = StringUtils.substringBetween(file, "[", "]");
+
+            file = StringUtils.substringBefore(this.file, "[");
+            if (StringUtils.startsWith(file, getSearchFrom())) {
+                file = StringUtils.substringAfter(file, getSearchFrom() + separator);
+            }
+
+            position = "[" + StringUtils.leftPad(position, 4) + "]";
+
+            return formatColumns(file, worksheet, position, reformatLines(before, after, COLUMN_4_LEFT_MARGIN));
         }
     }
 
@@ -149,9 +169,11 @@ final public class DataVariableUpdater {
      */
     public static void main(String[] args) {
         Options cmdOptions = new Options();
-        cmdOptions.addOption(newArgOption(OPT_PROJECT_PATH, "from", "Starting location of update data variable."));
-        cmdOptions.addOption(newArgOption(OPT_VARIABLES_LIST, "variables", "Data variables to replace, in the form " +
-                                                                           "old_var=new_var;old_var2=new_var2"));
+        cmdOptions.addOption(OPT_VERBOSE, "verbose", false, "Turn on verbose logging.");
+        cmdOptions.addOption(OPT_DRY_RUN, "preview", false, "Preview changes (will not save to files)");
+        cmdOptions.addOption(newArgOption(OPT_PROJECT_PATH, "target", "Starting location of update data variable."));
+        cmdOptions.addOption(newArgOption(OPT_VARIABLES_LIST, "data", "Data variables to replace, in the form " +
+                                                                      "old_var=new_var;old_var2=new_var2"));
 
         final CommandLine cmd = getCommandLine(DataVariableUpdater.class.getName(), args, cmdOptions);
         if (cmd == null) {
@@ -165,6 +187,7 @@ final public class DataVariableUpdater {
             updater.setVariableMap(TextUtils.toMap(cmd.getOptionValue(OPT_VARIABLES_LIST),
                                                    VARIABLE_SEPARATOR,
                                                    KEY_VALUE_SEPARATOR));
+            if (cmd.hasOption(OPT_DRY_RUN)) { isDryRun = true; }
             updater.updateAll();
         } catch (IllegalArgumentException e) {
             System.err.println("Error processing command line arguments: " + e.getMessage());
@@ -176,7 +199,11 @@ final public class DataVariableUpdater {
 
     public void setSearchFrom(String searchFrom) {
         if (!FileUtil.isDirectoryReadable(searchFrom)) {
-            throw new IllegalArgumentException("'" + searchFrom + "' is not a readable directory");
+            if (FileUtil.isFileReadable(searchFrom)) {
+                searchFrom = new File(searchFrom).getParentFile().getAbsolutePath();
+            } else {
+                throw new IllegalArgumentException("'" + searchFrom + "' is not a readable directory");
+            }
         }
 
         log("project artifacts from " + searchFrom);
@@ -207,13 +234,170 @@ final public class DataVariableUpdater {
         replaceDataFiles();
         replaceScripts();
 
+        String prompt = isDryRun ? " data variable update preview" : " data variable update summary";
+        String banner = StringUtils.repeat('-', 100);
+
         System.out.println();
         System.out.println();
-        System.out.println("/-------------------------------------------------------------------------------");
-        System.out.println(" data variable update summary");
-        System.out.println("\\-------------------------------------------------------------------------------");
+        System.out.println("/" + banner + "\\");
+        System.out.println("|" + ConsoleUtils.centerPrompt(prompt, 100) + "|");
+        System.out.println("\\" + banner + "/");
+        if (updated.size() == 0) {
+            System.out.println(ConsoleUtils.centerPrompt("There are no matching data variables in the files.", 102));
+            return;
+        }
+
+        System.out.println(formatColumns("File", "DataSheet/Scenario", "Position", "Updating Lines/Cells"));
+        System.out.println(banner + "--");
         updated.forEach(System.out::println);
         System.out.println();
+    }
+
+    /**
+     * Replaces all the keys in the properties file with the values specified in the variables. It also changes the
+     * expressions in the values accordingly.
+     */
+    protected void replaceProperties() {
+        List<File> props = FileUtil.listFiles(searchFrom, DEF_PROJECT_PROPS, true);
+
+        // there should only be 1 artifact/project.properties
+        if (CollectionUtils.isEmpty(props)) { return; }
+
+        File file = props.get(0);
+        log("processing", file);
+
+        try {
+            String content = FileUtils.readFileToString(file, DEF_CHARSET);
+            String sep = StringUtils.contains(content, "\r\n") ? "\r\n" : "\n";
+
+            StringBuilder replaced = new StringBuilder();
+
+            String[] lines = StringUtils.splitByWholeSeparatorPreserveAllTokens(content, sep);
+            for (int i = 0; i < lines.length; i++) {
+                String line = lines[i];
+                String oldLine = line;
+                UpdateLog updateLog = new UpdateLog(file).setPosition(StringUtils.leftPad(i + 1 + "", 3));
+
+                for (String oldVar : variableMap.keySet()) {
+                    String newVar = variableMap.get(oldVar);
+
+                    if (StringUtils.contains(oldVar, "*")) {
+                        line = replaceWildcardVar(line, oldVar, newVar);
+                        continue;
+                    }
+
+                    // check var name first
+                    String regexVarName = "^(" + oldVar + ")(\\s*=\\s*.*)";
+                    if (RegexUtils.isExact(line, regexVarName)) {
+                        line = RegexUtils.replace(line, regexVarName, newVar + "$2");
+                    }
+
+                    String oldToken = TOKEN_START + oldVar + TOKEN_END;
+                    if (StringUtils.contains(line, oldToken)) {
+                        line = StringUtils.replace(line, oldToken, TOKEN_START + newVar + TOKEN_END);
+                    }
+                }
+                if (!StringUtils.equals(oldLine, line)) { updated.add(updateLog.setChange(oldLine, line)); }
+
+                replaced.append(line).append(sep);
+            }
+
+            if (!isDryRun) {
+                FileUtils.writeStringToFile(file, StringUtils.removeEnd(replaced.toString(), sep), DEF_CHARSET);
+            }
+
+            log("processed", file);
+        } catch (IOException e) {
+            System.err.println("Unable to process " + file + " successfully: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Replaces all variables in the text file with the form of ${...}, or KEYWORD(...) or `-- sentry:*` (SQL file).
+     */
+    protected void replaceTextFiles() {
+        List<File> props = FileUtil.listFiles(searchFrom, "(?i).+\\.(txt|json|xml|sql|csv)", true);
+
+        // there should only be 1 artifact/project.properties
+        if (CollectionUtils.isEmpty(props)) { return; }
+
+        for (File file : props) {
+            log("processing", file);
+
+            try {
+                String content = FileUtils.readFileToString(file, DEF_CHARSET);
+                String sep = StringUtils.contains(content, "\r\n") ? "\r\n" : "\n";
+
+                StringBuilder replaced = new StringBuilder();
+
+                String[] lines = StringUtils.splitByWholeSeparatorPreserveAllTokens(content, sep);
+                for (int i = 0; i < lines.length; i++) {
+                    String line = lines[i];
+                    String oldLine = line;
+                    UpdateLog updateLog = new UpdateLog(file).setPosition(StringUtils.leftPad(i + 1 + "", 3));
+
+                    for (String oldVar : variableMap.keySet()) {
+                        String newVar = variableMap.get(oldVar);
+
+                        // since we are supporting multiple file format, let's just handle all the variable
+                        // replacement as is (without prefixes or enclosure)
+
+                        if (StringUtils.contains(oldVar, "*")) {
+                            line = replaceWildcardVar(line, oldVar, newVar);
+                            continue;
+                        }
+
+                        String oldToken = TOKEN_START + oldVar + TOKEN_END;
+                        if (StringUtils.contains(line, oldToken)) {
+                            line = StringUtils.replace(line, oldToken, TOKEN_START + newVar + TOKEN_END);
+                        }
+
+                        if (StringUtils.equalsIgnoreCase(FilenameUtils.getExtension(file.getAbsolutePath()), "sql")) {
+                            line = replaceSqlVars(line, oldVar, newVar);
+                        }
+                    }
+                    if (!StringUtils.equals(oldLine, line)) { updated.add(updateLog.setChange(oldLine, line)); }
+
+                    replaced.append(line).append(sep);
+                }
+
+                if (!isDryRun) {
+                    FileUtils.writeStringToFile(file, StringUtils.removeEnd(replaced.toString(), sep), DEF_CHARSET);
+                }
+
+                log("processed", file);
+            } catch (IOException e) {
+                System.err.println("Unable to process " + file + " successfully: " + e.getMessage());
+            }
+        }
+    }
+
+    @NotNull
+    protected String replaceSqlVars(String line, String oldVar, String newVar) {
+        // special case for sql statements
+        String regexVarName = "^(--\\s?sentry:)(.*)";
+        if (RegexUtils.isExact(line, regexVarName)) {
+            line = RegexUtils.replace(line, regexVarName, "-- nexial:" + "$2");
+        }
+
+        regexVarName = "^(--\\s?nexial:)(" + oldVar + ")";
+        if (RegexUtils.isExact(line, regexVarName)) {
+            line = RegexUtils.replace(line, regexVarName, "$1" + newVar);
+        }
+        return line;
+    }
+
+    protected boolean updateDataVariableName(XSSFCell cell, UpdateLog updateLog) {
+        String cellValue = Excel.getCellValue(cell);
+        String replaced = replaceVarName(cellValue);
+
+        if (replaced == null) { return false; }
+
+        updated.add(updateLog.copy().setChange(cellValue, replaced));
+        if (isDryRun) { return false; }
+
+        cell.setCellValue(replaced);
+        return true;
     }
 
     /**
@@ -248,8 +432,7 @@ final public class DataVariableUpdater {
 
             dataFile.save();
         } catch (IOException e) {
-            System.err.println("FATAIL ERROR: " + e.getMessage());
-            // System.exit(RC_BAD_CLI_ARGS);
+            System.err.println("FATAL ERROR: " + e.getMessage());
         }
 
         log("processed", file);
@@ -285,16 +468,6 @@ final public class DataVariableUpdater {
         return hasUpdated.get();
     }
 
-    protected boolean updateDataVariableName(XSSFCell cell, UpdateLog updateLog) {
-        String replaced = replaceVarName(Excel.getCellValue(cell), updateLog);
-        if (replaced != null) {
-            cell.setCellValue(replaced);
-            return true;
-        } else {
-            return false;
-        }
-    }
-
     /**
      * replace old variable with new, for those expressed in the form of ${...} or KEYWORD(...)
      */
@@ -303,26 +476,66 @@ final public class DataVariableUpdater {
 
         // DO NOT TRIM! we should not change the data as found in artifact
         String cellValue = Excel.getCellValue(cell);
+        String oldCellValue = cellValue;
 
-        String cellValueModified = replaceVarTokens(cellValue, updateLog);
+        String cellValueModified = replaceVarTokens(cellValue);
         if (cellValueModified != null) {
             cellValue = cellValueModified;
             hasUpdate = true;
         }
 
-        cellValueModified = replaceVarsInKeywordWrapper(cellValue, updateLog);
+        cellValueModified = replaceVarsInKeywordWrapper(cellValue);
         if (cellValueModified != null) {
             cellValue = cellValueModified;
             hasUpdate = true;
         }
 
-        cellValueModified = replaceSqlVars(cellValue, updateLog);
-        if (!StringUtils.equals(cellValue, cellValueModified)) {
+        if (hasUpdate) {
+            updated.add(updateLog.copy().setChange(oldCellValue, cellValue));
+            if (isDryRun) { return false; }
+            cell.setCellValue(cellValue);
+        }
+
+        return hasUpdate;
+    }
+
+    protected boolean updateScriptCell(String file, XSSFCell cell, List<Integer> varIndices) {
+        if (cell == null || StringUtils.isBlank(cell.getRawValue())) { return false; }
+
+        String cellValue = Excel.getCellValue(cell);
+        String oldCellValue = cellValue;
+
+        if (StringUtils.isBlank(cellValue)) { return false; }
+
+        boolean hasUpdate = false;
+        UpdateLog updateLog = new UpdateLog(file).setPosition(cell.getAddress().formatAsString());
+
+        String cellValueModified = replaceVarTokens(cellValue);
+        if (cellValueModified != null) {
             cellValue = cellValueModified;
             hasUpdate = true;
         }
 
-        if (hasUpdate) { cell.setCellValue(cellValue); }
+        // search for var name
+        if (varIndices.contains(cell.getColumnIndex())) {
+            cellValueModified = replaceVarName(cellValue);
+            if (cellValueModified != null) {
+                cellValue = cellValueModified;
+                hasUpdate = true;
+            }
+        }
+
+        cellValueModified = replaceVarsInKeywordWrapper(cellValue);
+        if (cellValueModified != null) {
+            cellValue = cellValueModified;
+            hasUpdate = true;
+        }
+
+        if (hasUpdate) {
+            updated.add(updateLog.copy().setChange(oldCellValue, cellValue));
+            if (isDryRun) { return false; }
+            cell.setCellValue(cellValue);
+        }
 
         return hasUpdate;
     }
@@ -362,8 +575,7 @@ final public class DataVariableUpdater {
 
             saveExcel(file, script.getWorkbook());
         } catch (IOException | IllegalArgumentException e) {
-            System.err.println("FATAIL ERROR: " + e.getMessage());
-            // System.exit(RC_BAD_CLI_ARGS);
+            System.err.println("FATAL ERROR: " + e.getMessage());
         }
 
         log("processed", file);
@@ -374,8 +586,7 @@ final public class DataVariableUpdater {
         log("processing scenario", scenario);
 
         int lastCommandRow = worksheet.findLastDataRow(ADDR_COMMAND_START);
-        ExcelAddress addr = new ExcelAddress("" + COL_TEST_CASE + (ADDR_COMMAND_START.getRowStartIndex() + 1) +
-                                             ":" + COL_REASON + lastCommandRow);
+        ExcelAddress addr = new ExcelAddress(FIRST_STEP_ROW + ":" + COL_REASON + lastCommandRow);
         ExcelArea area = new ExcelArea(worksheet, addr, false);
 
         boolean hasUpdate = false;
@@ -401,164 +612,37 @@ final public class DataVariableUpdater {
         return hasUpdate;
     }
 
-    protected boolean updateScriptCell(String file, XSSFCell cell, List<Integer> varIndices) {
-        if (cell == null || StringUtils.isBlank(cell.getRawValue())) { return false; }
+    /** search-n-replace by exact match */
+    protected String replaceVarName(String cellValue) {
+        boolean cellHasUpdate = false;
 
-        String cellValue = Excel.getCellValue(cell);
-        if (StringUtils.isBlank(cellValue)) { return false; }
+        for (String varName : variableMap.keySet()) {
+            // search for var name
+            String newValue = variableMap.get(varName);
 
-        boolean hasUpdate = false;
-        UpdateLog updateLog = new UpdateLog(file).setPosition(cell.getAddress().formatAsString());
-
-        String cellValueModified = replaceVarTokens(cellValue, updateLog);
-        if (cellValueModified != null) {
-            cellValue = cellValueModified;
-            hasUpdate = true;
-        }
-
-        // search for var name
-        if (varIndices.contains(cell.getColumnIndex())) {
-            cellValueModified = replaceVarName(cellValue, updateLog);
-            if (cellValueModified != null) {
-                cellValue = cellValueModified;
-                hasUpdate = true;
-            }
-        }
-
-        cellValueModified = replaceVarsInKeywordWrapper(cellValue, updateLog);
-        if (cellValueModified != null) {
-            cellValue = cellValueModified;
-            hasUpdate = true;
-        }
-
-        cellValueModified = replaceSqlVars(cellValue, updateLog);
-        if (!StringUtils.equals(cellValue, cellValueModified)) {
-            cellValue = cellValueModified;
-            hasUpdate = true;
-        }
-
-        if (hasUpdate) { cell.setCellValue(cellValue); }
-
-        return hasUpdate;
-    }
-
-    /**
-     * Replaces all the keys in the properties file with the values specified in the variables. It also changes the
-     * expressions in the values accordingly.
-     */
-    protected void replaceProperties() {
-        List<File> props = FileUtil.listFiles(searchFrom, DEF_PROJECT_PROPS, true);
-
-        // there should only be 1 artifact/project.properties
-        if (CollectionUtils.isEmpty(props)) { return; }
-
-        File file = props.get(0);
-        log("processing", file);
-
-        try {
-            String content = FileUtils.readFileToString(file, DEF_CHARSET);
-            String sep = StringUtils.contains(content, "\r\n") ? "\r\n" : "\n";
-
-            StringBuilder replaced = new StringBuilder();
-
-            String[] lines = StringUtils.splitPreserveAllTokens(content, sep);
-            for (int i = 0; i < lines.length; i++) {
-                String line = lines[i];
-                UpdateLog updateLog = new UpdateLog(file).setPosition(StringUtils.leftPad(i + "", 3));
-
-                for (String oldVar : variableMap.keySet()) {
-                    String newVar = variableMap.get(oldVar);
-
-                    if (StringUtils.contains(oldVar, "*")) {
-                        line = replaceWildcardVar(line, oldVar, newVar, updateLog);
-                        continue;
-                    }
-
-                    // check var name first
-                    String regexVarName = "^(" + oldVar + ")(\\s*=\\s*.*)";
-                    if (RegexUtils.isExact(line, regexVarName)) {
-                        line = RegexUtils.replace(line, regexVarName, newVar + "$2");
-                        updated.add(updateLog.setChange(oldVar, newVar));
-                    }
-
-                    String oldToken = TOKEN_START + oldVar + TOKEN_END;
-                    if (StringUtils.contains(line, oldToken)) {
-                        line = StringUtils.replace(line, oldToken, TOKEN_START + newVar + TOKEN_END);
-                        updated.add(updateLog.setChange(oldToken, newVar));
+            if (StringUtils.contains(varName, "*")) {
+                Pair<String, String> regexes = varNameToRegex(varName, newValue);
+                if (regexes == null) {
+                    System.err.println("Invalid or erroneous wildcard references in either '" + varName +
+                                       "' or '" + newValue + "', skipping");
+                } else {
+                    String newCellValue = RegexUtils.replace(cellValue, regexes.getKey(), regexes.getValue());
+                    if (!StringUtils.equals(newCellValue, cellValue)) {
+                        cellValue = newCellValue;
+                        cellHasUpdate = true;
                     }
                 }
 
-                replaced.append(line).append(sep);
+                continue;
             }
 
-            FileUtils.writeStringToFile(file, StringUtils.removeEnd(replaced.toString(), sep), DEF_CHARSET);
-            log("processed", file);
-        } catch (IOException e) {
-            System.err.println("Unable to process " + file + " successfully: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Replaces all variables in the text file with the form of ${...}, or KEYWORD(...) or `-- sentry:*` (SQL file).
-     */
-    protected void replaceTextFiles() {
-        List<File> props = FileUtil.listFiles(searchFrom, "(?i).+\\.(txt|json|xml|sql|csv)", true);
-
-        // there should only be 1 artifact/project.properties
-        if (CollectionUtils.isEmpty(props)) { return; }
-
-        for (File file : props) {
-            log("processing", file);
-
-            try {
-                String content = FileUtils.readFileToString(file, DEF_CHARSET);
-                String sep = StringUtils.contains(content, "\r\n") ? "\r\n" : "\n";
-
-                StringBuilder replaced = new StringBuilder();
-
-                String[] lines = StringUtils.splitPreserveAllTokens(content, sep);
-                for (int i = 0; i < lines.length; i++) {
-                    String line = lines[i];
-                    UpdateLog updateLog = new UpdateLog(file).setPosition(StringUtils.leftPad(i + "", 3));
-
-                    for (String oldVar : variableMap.keySet()) {
-                        String newVar = variableMap.get(oldVar);
-
-                        // since we are supporting multiple file format, let's just handle all the variable
-                        // replacement as is (without prefixes or enclosure)
-
-                        if (StringUtils.contains(oldVar, "*")) {
-                            line = replaceWildcardVar(line, oldVar, newVar, updateLog);
-                            continue;
-                        }
-
-                        if (StringUtils.contains(line, oldVar)) {
-                            line = StringUtils.replace(line, oldVar, newVar);
-                            updated.add(updateLog.copy().setChange(oldVar, newVar));
-                        }
-
-                        line = replaceSqlVars(line, updateLog);
-                    }
-
-                    replaced.append(line).append(sep);
-                }
-
-                FileUtils.writeStringToFile(file, StringUtils.removeEnd(replaced.toString(), sep), DEF_CHARSET);
-                log("processed", file);
-            } catch (IOException e) {
-                System.err.println("Unable to process " + file + " successfully: " + e.getMessage());
+            if (StringUtils.equals(cellValue, varName)) {
+                cellValue = newValue;
+                cellHasUpdate = true;
             }
         }
-    }
 
-    @NotNull
-    protected String replaceSqlVars(String line, UpdateLog updateLog) {
-        // special case for sql statements
-        if (StringUtils.contains(line, "-- sentry:")) {
-            line = StringUtils.replace(line, "-- sentry:", "-- nexial:");
-            updated.add(updateLog.copy().setChange("-- sentry:", "-- nexial:"));
-        }
-        return line;
+        return cellHasUpdate ? cellValue : null;
     }
 
     @NotNull
@@ -578,66 +662,8 @@ final public class DataVariableUpdater {
         return varIndices;
     }
 
-    /** search-n-replace by exact match */
-    protected String replaceVarName(String cellValue, @NotNull UpdateLog updateLog) {
-        boolean cellHasUpdate = false;
-
-        for (String varName : variableMap.keySet()) {
-            // search for var name
-            String newValue = variableMap.get(varName);
-
-            if (StringUtils.contains(varName, "*")) {
-                Pair<String, String> regexes = varNameToRegex(varName, newValue);
-                if (regexes == null) {
-                    System.err.println("Invalid or erroneous wildcard references in either '" + varName +
-                                       "' or '" + newValue + "', skipping");
-                } else {
-                    String newCellValue = RegexUtils.replace(cellValue, regexes.getKey(), regexes.getValue());
-                    if (!StringUtils.equals(newCellValue, cellValue)) {
-                        updated.add(updateLog.copy().setChange(varName, newValue));
-                        cellValue = newCellValue;
-                        cellHasUpdate = true;
-                    }
-                }
-
-                continue;
-            }
-
-            if (StringUtils.equals(cellValue, varName)) {
-                updated.add(updateLog.copy().setChange(varName, newValue));
-                cellValue = newValue;
-                cellHasUpdate = true;
-            }
-        }
-
-        return cellHasUpdate ? cellValue : null;
-    }
-
-    @NotNull
-    protected static Pair<String, String> varNameToRegex(String varName, String replaceWith) {
-        int wildcardCount = StringUtils.countMatches(varName, "*");
-        if (wildcardCount < 1) { return null; }
-
-        int wildcardCount2 = StringUtils.countMatches(replaceWith, "*");
-        if (wildcardCount != wildcardCount2) {
-            System.err.println("Uneven number of wildcards found between '" + varName + "' and  '" + replaceWith + "'");
-            return null;
-        }
-
-        String regex = varName;
-        regex = StringUtils.replace(regex, ".", "\\.");
-        regex = StringUtils.replace(regex, "*", "(.+)");
-        // regex = "^" + regex + "$";
-
-        String replace = replaceWith;
-        int idx = 1;
-        while (StringUtils.contains(replace, "*")) { replace = StringUtils.replaceOnce(replace, "*", "$" + idx++); }
-
-        return new ImmutablePair<>(regex, replace);
-    }
-
     /** search-n-replace via the standard ${...} pattern. */
-    protected String replaceVarTokens(@NotNull String cellValue, @NotNull UpdateLog updateLog) {
+    protected String replaceVarTokens(@NotNull String cellValue) {
         boolean cellHasUpdate = false;
 
         for (String varName : variableMap.keySet()) {
@@ -652,7 +678,6 @@ final public class DataVariableUpdater {
                 } else {
                     String newCellValue = RegexUtils.replace(cellValue, regexes.getKey(), regexes.getValue());
                     if (!StringUtils.equals(newCellValue, cellValue)) {
-                        updated.add(updateLog.copy().setChange(varName, newValue));
                         cellValue = newCellValue;
                         cellHasUpdate = true;
                     }
@@ -666,7 +691,6 @@ final public class DataVariableUpdater {
                 String replaceBy = TOKEN_START + newValue + TOKEN_END;
                 String newCellValue = StringUtils.replace(cellValue, searchFor, replaceBy);
                 if (!StringUtils.equals(newCellValue, cellValue)) {
-                    updated.add(updateLog.copy().setChange(searchFor, replaceBy));
                     cellValue = newCellValue;
                     cellHasUpdate = true;
                 }
@@ -676,8 +700,29 @@ final public class DataVariableUpdater {
         return cellHasUpdate ? cellValue : null;
     }
 
+    protected static Pair<String, String> varNameToRegex(String varName, String replaceWith) {
+        int wildcardCount = StringUtils.countMatches(varName, "*");
+        if (wildcardCount < 1) { return null; }
+
+        int wildcardCount2 = StringUtils.countMatches(replaceWith, "*");
+        if (wildcardCount != wildcardCount2) {
+            System.err.println("Uneven number of wildcards found between '" + varName + "' and  '" + replaceWith + "'");
+            return null;
+        }
+
+        String regex = varName;
+        regex = StringUtils.replace(regex, ".", "\\.");
+        regex = StringUtils.replace(regex, "*", "(.+)");
+
+        String replace = replaceWith;
+        int idx = 1;
+        while (StringUtils.contains(replace, "*")) { replace = StringUtils.replaceOnce(replace, "*", "$" + idx++); }
+
+        return new ImmutablePair<>(regex, replace);
+    }
+
     /** search-n-replace via the KEYWORD(...) pattern */
-    protected String replaceVarsInKeywordWrapper(@NotNull String cellValue, @NotNull UpdateLog updateLog) {
+    protected String replaceVarsInKeywordWrapper(@NotNull String cellValue) {
         boolean cellHasUpdate = false;
 
         // search for var name in KEYWORD(...) form
@@ -686,10 +731,14 @@ final public class DataVariableUpdater {
                 // search for KEYWORD(var)
                 String newValue = variableMap.get(varName);
                 String searchFor = keyword + "(" + varName + ")";
+                String replacement = keyword + "(" + newValue + ")";
+                if (StringUtils.equals(keyword, "merge")) {
+                    searchFor = keyword + "(" + varName + ",";
+                    replacement = keyword + "(" + newValue + ",";
+                }
                 if (StringUtils.contains(cellValue, searchFor)) {
-                    String newCellValue = StringUtils.replace(cellValue, searchFor, keyword + "(" + newValue + ")");
+                    String newCellValue = StringUtils.replace(cellValue, searchFor, replacement);
                     if (!StringUtils.equals(newCellValue, cellValue)) {
-                        updated.add(updateLog.copy().setChange(varName, newValue));
                         cellValue = newCellValue;
                         cellHasUpdate = true;
                     }
@@ -716,24 +765,61 @@ final public class DataVariableUpdater {
         }
     }
 
-    private String replaceWildcardVar(String line, String oldVar, String newVar, UpdateLog updateLog) {
+    private static String reformatLines(String before, String after, int leftMargin) {
+        if (StringUtils.isBlank(before) && StringUtils.isBlank(after)) { return before + BECOME_SYMBOL + after; }
+
+        final StringBuilder lines = new StringBuilder();
+
+        if (StringUtils.contains(before, "\n")) {
+            toLines(before, leftMargin, lines);
+            lines.append(BECOME_SYMBOL).append("\n");
+        } else {
+            lines.append(before).append(BECOME_SYMBOL);
+        }
+
+        if (StringUtils.contains(after, "\n")) {
+            toLines(after, leftMargin, lines);
+        } else {
+            lines.append(after);
+        }
+
+        return lines.toString();
+    }
+
+    private static void toLines(String text, int leftMargin, StringBuilder newLines) {
+        text = StringUtils.remove(text, "\r");
+        List<String> lines = TextUtils.toList(text, "\n", false);
+
+        String margin = StringUtils.repeat(" ", leftMargin);
+        Objects.requireNonNull(lines).forEach(line -> {
+            if (newLines.length() > 0) { newLines.append(margin); }
+            newLines.append(line).append("\n");
+        });
+
+        newLines.deleteCharAt(newLines.length() - 1);
+    }
+
+    private String replaceWildcardVar(String line, String oldVar, String newVar) {
         Pair<String, String> regexes = varNameToRegex(oldVar, newVar);
         if (regexes == null) {
             System.err.println("Invalid or erroneous wildcard references in either '" + oldVar +
                                "' or '" + newVar + "', skipping");
         } else {
             String newLine = RegexUtils.replace(line, regexes.getKey(), regexes.getValue());
-            if (!StringUtils.equals(newLine, line)) {
-                updated.add(updateLog.setChange(oldVar, newVar));
-                line = newLine;
-            }
+            if (!StringUtils.equals(newLine, line)) { line = newLine; }
         }
+
         return line;
     }
 
     private static void log(String message) { System.out.println(" >> " + message); }
 
-    private static void log(String action, Object subject) {
-        System.out.println(" >> " + StringUtils.rightPad(action, 26) + " " + subject);
+    private static void log(String action, Object subject) { log(StringUtils.rightPad(action, 26) + " " + subject); }
+
+    private static String formatColumns(String file, String worksheet, String position, String updatingVars) {
+        return StringUtils.rightPad(file, COLUMN_1_WIDTH) +
+               StringUtils.rightPad(StringUtils.defaultIfEmpty(worksheet, ""), COLUMN_2_WIDTH) +
+               StringUtils.rightPad(position, COLUMN_3_WIDTH) +
+               updatingVars;
     }
 }

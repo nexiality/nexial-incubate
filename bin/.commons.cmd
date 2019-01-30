@@ -6,7 +6,7 @@
 
 
 :init
-	REM # utilities to be invokved by other frontend scripts
+	REM # utilities to be invoked by other frontend scripts
 	set PROJECT_BASE=%SystemDrive%\projects
 	set NEXIAL_HOME=%~dp0..
 	set NEXIAL_LIB=%NEXIAL_HOME%\lib
@@ -29,17 +29,14 @@
 		set DEFAULT_FIREFOX_BIN="%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe"
 	)
 
-	REM # setting Java runtissme options and classpath
-	set JAVA_OPT=%JAVA_OPT% -Xms256m
-	set JAVA_OPT=%JAVA_OPT% -Xmx1024m
+	REM # setting Java runtime options and classpath
 	set JAVA_OPT=%JAVA_OPT% -ea
+	set JAVA_OPT=%JAVA_OPT% -Xss24m
 	set JAVA_OPT=%JAVA_OPT% -Dfile.encoding=UTF-8
 	set JAVA_OPT=%JAVA_OPT% -Dnexial.home="%NEXIAL_HOME%"
 	set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.verbose=false
 	set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.silent=false
-	set JAVA_OPT=%JAVA_OPT% -Dwebdriver.ie.driver.loglevel=WARN
-REM set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.logpath=%TEMP%\winium-service.log
-REM set JAVA_OPT=%JAVA_OPT% -Dnexial.assistantMode=on
+    REM set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.logpath=%TEMP%\winium-service.log
 
 	goto :eof
 
@@ -48,11 +45,20 @@ REM # Make sure prerequisite environment variables are set
 :checkJava
 	if "%JAVA_HOME%"=="" (
 		if "%JRE_HOME%"=="" (
-			echo ERROR!!!
-		    echo Neither the JAVA_HOME nor the JRE_HOME environment variable is defined
-		    echo At least one of these environment variables is needed to run this program
-		    echo.
-		    exit /b -1
+            echo =WARNING========================================================================
+            echo Neither the JAVA_HOME nor the JRE_HOME environment variable is defined.
+            echo Nexial will use the JVM based on current PATH. Nexial requires Java 1.8
+            echo or above to run, so this might not work...
+            echo ================================================================================
+  		    echo.
+
+            set JAVA=
+            for /F "delims=" %%x in ('where java.exe') do (
+                if [%JAVA%]==[] (
+                    set JAVA="%%x"
+                    goto :eof
+                )
+            )
 		) else (
 			if EXIST "%JRE_HOME%\bin\java.exe" (
 				set JAVA="%JRE_HOME%\bin\java.exe"
@@ -75,6 +81,7 @@ REM # Make sure prerequisite environment variables are set
 			exit /b -1
 		)
 	)
+
 	REM echo setting JAVA as %JAVA%
 	goto :eof
 
@@ -106,6 +113,7 @@ REM # Make sure prerequisite environment variables are set
 	if NOT "%PROJECT_HOME%"=="" (
 		echo   PROJECT_HOME:   %PROJECT_HOME%
 	)
+	echo.
 	goto :eof
 
 

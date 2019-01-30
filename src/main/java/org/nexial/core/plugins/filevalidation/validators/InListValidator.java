@@ -24,6 +24,7 @@ import org.nexial.core.plugins.filevalidation.FieldBean;
 import org.nexial.core.plugins.filevalidation.config.ValidationConfig;
 import org.nexial.core.plugins.filevalidation.validators.ValidationsExecutor.Severity;
 import org.nexial.core.plugins.filevalidation.validators.ValidationsExecutor.ValidationType;
+
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 
@@ -46,6 +47,7 @@ public class InListValidator implements FieldValidator {
         for (ValidationConfig validationConfig : validationConfigs) {
             if (validationConfig.getType().equals(ValidationType.IN.toString())) {
                 JsonArray listValues = (JsonArray) validationConfig.getParams();
+                // accepting list values as only String type, for exact match
                 List<String> stringList = new Gson().fromJson(listValues, ArrayList.class);
                 String actual = field.getFieldValue().trim();
                 if (!actual.isEmpty() && !stringList.contains(actual)) {

@@ -21,11 +21,14 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
 import java.util.zip.ZipInputStream;
@@ -36,12 +39,10 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.filefilter.DirectoryFileFilter;
 import org.apache.commons.io.filefilter.IOFileFilter;
 import org.apache.commons.lang3.StringUtils;
+import org.nexial.core.utils.ConsoleUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.nexial.core.utils.ConsoleUtils;
-
-import static org.nexial.core.NexialConst.DEF_CHARSET;
 import static java.io.File.separator;
 import static org.apache.commons.io.comparator.LastModifiedFileComparator.LASTMODIFIED_COMPARATOR;
 import static org.apache.commons.io.comparator.LastModifiedFileComparator.LASTMODIFIED_REVERSE;
@@ -49,6 +50,8 @@ import static org.apache.commons.io.comparator.NameFileComparator.NAME_COMPARATO
 import static org.apache.commons.io.comparator.NameFileComparator.NAME_REVERSE;
 import static org.apache.commons.io.comparator.PathFileComparator.PATH_COMPARATOR;
 import static org.apache.commons.io.comparator.PathFileComparator.PATH_REVERSE;
+import static org.nexial.core.NexialConst.DEF_CHARSET;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
 /**
  *
@@ -71,6 +74,14 @@ public final class FileUtil {
         SortBy(Comparator<File> comparator) { this.comparator = comparator; }
 
         Comparator<File> getComparator() { return comparator; }
+    }
+
+    public interface LineTransformer<T> {
+        T transform(T line);
+    }
+
+    public interface LineFilter<T> {
+        boolean filter(T line);
     }
 
     private FileUtil() {}
@@ -235,30 +246,69 @@ public final class FileUtil {
 
     /** return true if {@code path} is a valid directory and readable by the current run user. */
     public static boolean isDirectoryReadable(String path) {
-        if (StringUtils.isBlank(path)) { return false; }
-        File dir = new File(path);
-        return dir.exists() && dir.isDirectory() && dir.canRead();
+        return !StringUtils.isBlank(path) && isDirectoryReadable(new File(path));
     }
+
+    public static boolean isDirectoryReadable(File dir) {
+        return dir != null && dir.exists() && dir.isDirectory() && dir.canRead();
+    }
+
+    /** return true if {@code path} is a valid directory and read/writable by the current run user. */
+    public static boolean isDirectoryReadWritable(String path) {
+        return !StringUtils.isBlank(path) && isDirectoryReadWritable(new File(path));
+    }
+
+    public static boolean isDirectoryReadWritable(File dir) {
+        return dir != null && dir.exists() && dir.isDirectory() && dir.canRead() && dir.canWrite();
+    }
+
+    public static boolean isFileReadable(File file, long minFileSize) {
+        return file != null &&
+               file.exists() &&
+               file.isFile() &&
+               file.canRead() &&
+               (minFileSize < 0 || file.length() >= minFileSize);
+    }
+
+    public static boolean isFileReadable(File file) { return isFileReadable(file, -1); }
 
     /**
      * return true if {@code file} is readable and larger than {@code minFileSize} bytes.  If {@code minFileSize}
      * is -1, then it's ignored.
      */
     public static boolean isFileReadable(String file, long minFileSize) {
-        if (StringUtils.isBlank(file)) { return false; }
-
-        File f = new File(file);
-        return f.exists() && f.isFile() && f.canRead() && (minFileSize < 0 || f.length() >= minFileSize);
+        return !StringUtils.isBlank(file) && isFileReadable(new File(file), minFileSize);
     }
 
     /** return true if {@code file} is readable. */
     public static boolean isFileReadable(String file) { return isFileReadable(file, -1); }
 
     public static boolean isFileExecutable(String file) {
-        if (StringUtils.isBlank(file)) { return false; }
+        return !StringUtils.isBlank(file) && isFileExecutable(new File(file));
+    }
 
-        File f = new File(file);
-        return f.exists() && f.isFile() && f.canRead() && f.canExecute();
+    public static boolean isFileExecutable(File file) {
+        return file != null && file.exists() && file.isFile() && file.canRead() && file.canExecute();
+    }
+
+    public static boolean isFileReadWritable(String file, int minFileSize) {
+        return FileUtil.isFileReadable(file, minFileSize) && new File(file).canWrite();
+    }
+
+    /**
+     * collect the content of {@literal file} via a {@literal filter} and a {@literal transformer}. Internally uses
+     * stream instead of full-read.
+     */
+    public static List<String> filterAndTransform(File file,
+                                                  LineFilter<String> filter,
+                                                  LineTransformer<String> transformer) throws IOException {
+
+        if (!FileUtil.isFileReadable(file, 1)) { return null; }
+        if (filter == null || transformer == null) { return FileUtils.readLines(file, DEF_FILE_ENCODING); }
+        return Files.lines(Paths.get(file.getAbsolutePath()))
+                    .filter(filter::filter)
+                    .map(transformer::transform)
+                    .collect(Collectors.toList());
     }
 
     public static List<File> unzip(File zip, File target) throws IOException {
@@ -323,6 +373,36 @@ public final class FileUtil {
                     ConsoleUtils.error("Error closing file input stream: " + e.getMessage());
                 }
             }
+        }
+    }
+
+    /**
+     * same as {@link #unzip(File, File)}, except this method verifies after unzipping {@code zip} that the
+     * {@code expected} exists and are readable (IOW, unsuccessfully unzipped). If any of the {@code expected} files
+     * are not found after unzip, {@link IOException} will be thrown
+     */
+    public static void unzip(File zip, File target, List<File> expected) throws IOException {
+        List<File> unzipped = unzip(zip, target);
+
+        if (CollectionUtils.isEmpty(expected)) { return; }
+
+        if (CollectionUtils.isEmpty(unzipped)) { throw new IOException("Unable to unzip any file from " + zip); }
+
+        List<String> expectedFiles = new ArrayList<>();
+        expected.forEach(file -> expectedFiles.add(file.getAbsolutePath()));
+
+        for (File uncompressed : unzipped) {
+            String uncompressedFile = uncompressed.getAbsolutePath();
+            if (expectedFiles.contains(uncompressedFile)) {
+                if (!FileUtil.isFileReadable(uncompressedFile)) {
+                    throw new IOException("Unable to unzip an usable " + uncompressedFile + " from " + zip);
+                }
+                expectedFiles.remove(uncompressedFile);
+            }
+        }
+
+        if (CollectionUtils.isNotEmpty(expectedFiles)) {
+            throw new IOException("After unzipping " + zip + " these files still unaccounted for: " + expectedFiles);
         }
     }
 
@@ -434,6 +514,9 @@ public final class FileUtil {
      */
     public static String extractFilename(String path) {
         if (StringUtils.isBlank(path)) { return ""; }
-        return StringUtils.substringAfterLast(StringUtils.replace(path, "\\", "/"), "/");
+
+        if (StringUtils.contains(path, "\\")) { path = StringUtils.replace(path, "\\", "/"); }
+        return !StringUtils.contains(path, "/") ? path : StringUtils.substringAfterLast(path, "/");
     }
+
 }

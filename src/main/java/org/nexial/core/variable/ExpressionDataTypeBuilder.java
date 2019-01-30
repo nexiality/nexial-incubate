@@ -26,7 +26,6 @@ import java.util.Map;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
@@ -65,6 +64,11 @@ final class ExpressionDataTypeBuilder {
             if (ex instanceof TypeConversionException) { throw (TypeConversionException) ex; }
             throw new TypeConversionException(dataType, value, ex.getMessage(), ex);
         }
+    }
+
+    Bai2DataType newBai2DataType(String value) throws TypeConversionException {
+        Bai2DataType data = resumeExpression(value, Bai2DataType.class);
+        return data != null ? data : new Bai2DataType(handleExternal("BAI2", value));
     }
 
     TextDataType newTextDataType(String value) throws TypeConversionException {

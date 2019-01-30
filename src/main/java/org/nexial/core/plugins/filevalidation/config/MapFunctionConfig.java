@@ -23,51 +23,42 @@ public class MapFunctionConfig {
     private String signField;
     private String function;
     private String mapTo;
+    private String condition;
 
-    private MapFunctionConfig(String fieldName, String signField, String function, String mapTo) {
+    private MapFunctionConfig(String fieldName, String signField, String function, String mapTo, String condition) {
         this.fieldName = fieldName;
         this.signField = signField;
         this.function = function;
         this.mapTo = mapTo;
+        this.condition = condition;
     }
 
     public static MapFunctionConfig newInstance(MapfunctionsBean function) {
         return new MapFunctionConfig(function.getFieldname(),
                                      function.getSignfield(),
                                      function.getFunction(),
-                                     function.getMapTo());
+                                     function.getMapTo(),
+                                     function.getCondition());
     }
 
     public String getSignField() {
         return signField;
     }
 
-    public void setSignField(String signField) {
-        this.signField = signField;
-    }
-
     public String getFunction() {
         return function;
-    }
-
-    public void setFunction(String function) {
-        this.function = function;
     }
 
     public String getMapTo() {
         return mapTo;
     }
 
-    public void setMapTo(String mapTo) {
-        this.mapTo = mapTo;
-    }
-
     public String getFieldName() {
         return fieldName;
     }
 
-    public void setFieldName(String fieldName) {
-        this.fieldName = fieldName;
+    public String getCondition() {
+        return condition;
     }
 
     @Override
@@ -76,6 +67,7 @@ public class MapFunctionConfig {
                ", signField='" + signField + '\'' +
                ", function='" + function + '\'' +
                ", mapTo='" + mapTo + '\'' +
+               ", condition='" + condition + '\'' +
                '}';
     }
 }

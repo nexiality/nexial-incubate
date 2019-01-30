@@ -17,12 +17,14 @@
 
 package org.nexial.core.reports;
 
-import org.apache.commons.lang3.StringUtils;
+import javax.validation.constraints.NotNull;
 
+import org.apache.commons.lang3.StringUtils;
 import org.nexial.core.model.ExecutionContext;
 
 import static org.nexial.core.NexialConst.Jenkins.*;
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.OPT_EXCEL_FILE;
+import static org.nexial.core.NexialConst.OPT_INPUT_EXCEL_FILE;
 
 /**
  *
@@ -51,8 +53,7 @@ public final class JenkinsVariables {
 
         // favor nexial.suite, then nexial.inputExcel, then nexial.excel
         // nexial.excel most likely modified to the output version by this point
-        testScript = System.getProperty(OPT_SUITE_PROP,
-                                        System.getProperty(OPT_INPUT_EXCEL_FILE, System.getProperty(OPT_EXCEL_FILE)));
+        testScript = System.getProperty(OPT_INPUT_EXCEL_FILE, System.getProperty(OPT_EXCEL_FILE));
 
         invokedFromJenkins = StringUtils.isNotBlank(buildUserId) &&
                              StringUtils.isNotBlank(buildUser) &&
@@ -60,6 +61,7 @@ public final class JenkinsVariables {
                              StringUtils.isNotBlank(buildUrl);
     }
 
+    @NotNull
     public static JenkinsVariables getInstance(ExecutionContext context) {
         if (self == null) { self = new JenkinsVariables(context); }
         return self;

@@ -19,8 +19,7 @@ package org.nexial.core.plugins.filevalidation.validators;
 
 import java.util.List;
 
-import org.apache.commons.lang.StringUtils;
-
+import org.apache.commons.lang3.StringUtils;
 import org.nexial.core.plugins.filevalidation.FieldBean;
 import org.nexial.core.plugins.filevalidation.config.FieldConfig;
 
@@ -43,7 +42,8 @@ final class ErrorMessage {
     public static String inCheckError(FieldBean field, List<String> expectedStringList, String actual) {
         return initErrorMessagePrefix(field.getConfig()) +
                "Failed Validation: " + IN + "; Field value: " +
-               "Expected '" + expectedStringList.toString().replaceAll(",", ":") + "' Actual '" + actual + "'";
+               "Expected '" + expectedStringList.toString() + "' Actual '" + actual + "'";
+
     }
 
     public static String compareEqualsError(FieldBean field, ValidationType type, String expected, String actual) {

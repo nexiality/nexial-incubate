@@ -21,9 +21,9 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
+import org.nexial.core.utils.ConsoleUtils;
 import org.openqa.selenium.WebElement;
 
-import org.nexial.core.utils.ConsoleUtils;
 import com.google.gson.ExclusionStrategy;
 import com.google.gson.FieldAttributes;
 import com.google.gson.Gson;
@@ -62,6 +62,8 @@ public class DesktopConst {
         CURRENT_DESKTOP_TABLE + "editable.column.name";
     public static final String CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_FOUND =
         CURRENT_DESKTOP_TABLE + "editable.column.found";
+    public static final String CURRENT_DESKTOP_TABLE_CLICK_BEFORE_EDIT = CURRENT_DESKTOP_TABLE + ".clickBeforeEdit";
+    public static final boolean DEF_DESKTOP_TABLE_CLICK_BEFORE_EDIT = true;
     public static final String CURRENT_DESKTOP_HIER_TABLE = NS_DESKTOP + "hiertable";
     public static final String CURRENT_DESKTOP_HIER_TABLE_NAME = NS_DESKTOP + "hiertable.name";
     public static final String DESKTOP_SCREENSHOT_FULLSCREEN = NS_DESKTOP + "fullScreenCapture";
@@ -232,11 +234,7 @@ public class DesktopConst {
         @Override
         public boolean shouldSkipClass(Class<?> clazz) { return false; }
     };
-    public static final Gson GSON = new GsonBuilder().setPrettyPrinting()
-                                                     .disableHtmlEscaping()
-                                                     .disableInnerClassSerialization()
-                                                     .setLenient()
-                                                     .create();
+
     public static final Gson GSON2 = new GsonBuilder().setPrettyPrinting()
                                                       .disableHtmlEscaping()
                                                       .disableInnerClassSerialization()

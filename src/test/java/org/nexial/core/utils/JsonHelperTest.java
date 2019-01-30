@@ -17,10 +17,15 @@
 
 package org.nexial.core.utils;
 
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.SystemUtils;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.After;
@@ -28,298 +33,245 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
-import org.nexial.commons.utils.DateUtility;
-import com.fasterxml.jackson.annotation.JsonFormat;
+import com.google.gson.JsonElement;
 
-/**
- *
- */
+import static java.io.File.separator;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.NexialConst.GSON_COMPRESSED;
+
 public class JsonHelperTest {
-	public static class Company {
-		String name;
-		String address;
-		String industry;
-		boolean publicallyTraded;
+    private String destinationBase;
 
-		public String getName() { return name; }
+    @Before
+    public void setUp() {
+        destinationBase = SystemUtils.getJavaIoTmpDir().getAbsolutePath() + separator + "JsonHelperTest" + separator;
+        new File(destinationBase).mkdirs();
+    }
 
-		public void setName(String name) { this.name = name; }
+    @After
+    public void tearDown() {
+        if (destinationBase != null) { FileUtils.deleteQuietly(new File(destinationBase)); }
+    }
 
-		public String getAddress() { return address; }
+    @Test
+    public void testRetrieveJSONObject() throws Exception {
+        Assert.assertNull(JsonHelper.retrieveJsonObject(JsonHelper.class, ""));
+        Assert.assertNull(JsonHelper.retrieveJsonObject(JsonHelper.class, null));
+        Assert.assertNull(JsonHelper.retrieveJsonObject(null, null));
 
-		public void setAddress(String address) { this.address = address; }
+        String fixture3 = "does_not_exists";
+        try {
+            JsonHelper.retrieveJsonObject(JsonHelper.class, fixture3);
+            Assert.fail("Should have failed since " + fixture3 + " does not exists");
+        } catch (IOException e) {
+            System.out.println("e.getMessage() = " + e.getMessage());
+        } catch (JSONException e) {
+            Assert.fail("Should have failed with IOException " + fixture3 + " does not exists");
+        }
 
-		public String getIndustry() { return industry; }
+        String fixture4 = "/org/nexial/core/utils/supportconfig.json";
+        try {
+            JSONObject json = JsonHelper.retrieveJsonObject(JsonHelper.class, fixture4);
+            Assert.assertNotNull(json);
+        } catch (IOException | JSONException e) {
+            Assert.fail("retrieve " + fixture4 + " failed with " + e);
+        }
+    }
 
-		public void setIndustry(String industry) { this.industry = industry; }
+    @Test
+    public void testFetchString() {
+        String fixture1 = "{ " +
+                          " \"a\": { \"b\": \"1234\" }," +
+                          " \"c\": 5," +
+                          " \"d\": \"hello\"," +
+                          " \"e\": null," +
+                          " \"f\": []," +
+                          " \"g\": [ \"cat\", \"dog\", \"mouse\" ]," +
+                          " \"h\": { \"i.j\": \"yoyoma\" }, " +
+                          " \"k\": { \"l\": { \"m\": \"n\" } } " +
+                          "}";
+        JSONObject json = new JSONObject(fixture1);
+        Assert.assertEquals("hello", JsonHelper.fetchString(json, "d"));
+        Assert.assertEquals("5", JsonHelper.fetchString(json, "c"));
+        Assert.assertEquals("{\"b\":\"1234\"}", JsonHelper.fetchString(json, "a"));
+        Assert.assertEquals("1234", JsonHelper.fetchString(json, "a.b"));
+        Assert.assertNull(JsonHelper.fetchString(json, "e"));
+        Assert.assertNull(JsonHelper.fetchString(json, "f"));
+        Assert.assertNull(JsonHelper.fetchString(json, "f[0]"));
+        Assert.assertNull(JsonHelper.fetchString(json, "f[1]"));
+        Assert.assertEquals("[\"cat\",\"dog\",\"mouse\"]", JsonHelper.fetchString(json, "g"));
+        Assert.assertEquals("cat", JsonHelper.fetchString(json, "g[0]"));
+        Assert.assertEquals("dog", JsonHelper.fetchString(json, "g[1]"));
+        Assert.assertEquals("mouse", JsonHelper.fetchString(json, "g[2]"));
+        Assert.assertNull(JsonHelper.fetchString(json, "g[3]"));
+        Assert.assertEquals("{\"i.j\":\"yoyoma\"}", JsonHelper.fetchString(json, "h"));
+        Assert.assertEquals("yoyoma", JsonHelper.fetchString(json, "h[\"i.j\"]"));
+        Assert.assertEquals("yoyoma", JsonHelper.fetchString(json, "h['i.j']"));
+        Assert.assertEquals("yoyoma", JsonHelper.fetchString(json, "h[i.j]"));
+        Assert.assertEquals("n", JsonHelper.fetchString(json, "k.l.m"));
+    }
 
-		public boolean isPublicallyTraded() { return publicallyTraded; }
+    @Test
+    public void fromCsv_simple() throws Exception {
 
-		public void setPublicallyTraded(boolean publicallyTraded) { this.publicallyTraded = publicallyTraded; }
-	}
+        List<List<String>> records = new ArrayList<>();
+        records.add(Arrays.asList("NAME", "ADDRESS", "AGE"));
+        records.add(Arrays.asList("Johnny", "123 Elm Street", "29"));
+        records.add(Arrays.asList("Sam", "#14 Sesame Street", "35"));
+        records.add(Arrays.asList("Shandra", "49 Mississippi Ave.", "7"));
 
-	public static class Person {
-		String name;
-		int age;
-		Company company;
-		double averageScore;
-		Person[] friends;
-		Date birthDate;
+        String destination = destinationBase + "fromCsv_simple.json";
+        FileWriter writer = new FileWriter(destination);
 
-		public String getName() { return name; }
+        JsonHelper.fromCsv(records, true, writer);
 
-		public void setName(String name) { this.name = name; }
+        Assert.assertEquals("[" +
+                            "{\"NAME\":\"Johnny\",\"ADDRESS\":\"123 Elm Street\",\"AGE\":\"29\"}," +
+                            "{\"NAME\":\"Sam\",\"ADDRESS\":\"#14 Sesame Street\",\"AGE\":\"35\"}," +
+                            "{\"NAME\":\"Shandra\",\"ADDRESS\":\"49 Mississippi Ave.\",\"AGE\":\"7\"}" +
+                            "]",
+                            readJsonContent(destination));
+    }
 
-		public int getAge() { return age; }
+    @Test
+    public void fromCsv_uneven_records() throws Exception {
+        List<List<String>> records = new ArrayList<>();
+        records.add(Arrays.asList("NAME", "ADDRESS", "AGE"));
+        records.add(Arrays.asList("Johnny", "123 Elm Street", "29"));
+        records.add(Arrays.asList("Sam", "#14 Sesame Street"));
+        records.add(Arrays.asList("Shandra", "49 Mississippi Ave.", "7", "123-ABC"));
 
-		public void setAge(int age) { this.age = age; }
+        String destination = destinationBase + "fromCsv_uneven_records.json";
+        FileWriter writer = new FileWriter(destination);
 
-		public Company getCompany() { return company; }
+        JsonHelper.fromCsv(records, true, writer);
 
-		public void setCompany(Company company) { this.company = company; }
+        Assert.assertEquals("[" +
+                            "{\"NAME\":\"Johnny\",\"ADDRESS\":\"123 Elm Street\",\"AGE\":\"29\"}," +
+                            "{\"NAME\":\"Sam\",\"ADDRESS\":\"#14 Sesame Street\"}," +
+                            "{\"NAME\":\"Shandra\",\"ADDRESS\":\"49 Mississippi Ave.\",\"AGE\":\"7\"}" +
+                            "]",
+                            readJsonContent(destination));
+    }
 
-		public double getAverageScore() { return averageScore; }
+    @Test
+    public void fromCsv_empty_records() throws Exception {
+        List<List<String>> records = new ArrayList<>();
+        records.add(Arrays.asList("NAME", "ADDRESS", "AGE"));
+        records.add(Arrays.asList("Johnny", "123 Elm Street", "29"));
+        records.add(Arrays.asList(""));
+        records.add(Arrays.asList("Shandra"));
+        records.add(Arrays.asList("     "));
 
-		public void setAverageScore(double averageScore) { this.averageScore = averageScore; }
+        String destination = destinationBase + "fromCsv_empty_records.json";
+        FileWriter writer = new FileWriter(destination);
 
-		public Person[] getFriends() { return friends; }
+        JsonHelper.fromCsv(records, true, writer);
 
-		public void setFriends(Person[] friends) { this.friends = friends; }
+        Assert.assertEquals("[" +
+                            "{\"NAME\":\"Johnny\",\"ADDRESS\":\"123 Elm Street\",\"AGE\":\"29\"}," +
+                            "{\"NAME\":\"\"}," +
+                            "{\"NAME\":\"Shandra\"}," +
+                            "{\"NAME\":\"     \"}" +
+                            "]",
+                            readJsonContent(destination));
 
-		@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd", timezone = "PST")
-		public Date getBirthDate() { return birthDate; }
+        records = new ArrayList<>();
+        records.add(Arrays.asList("Johnny", "123 Elm Street", "29"));
+        records.add(Arrays.asList(""));
+        records.add(Arrays.asList("Shandra"));
+        records.add(Arrays.asList("     "));
 
-		@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd", timezone = "PST")
-		public void setBirthDate(Date birthDate) { this.birthDate = birthDate; }
-	}
+        destination = destinationBase + "fromCsv_empty_records2.json";
+        writer = new FileWriter(destination);
 
-	@Before
-	public void setUp() { }
+        JsonHelper.fromCsv(records, false, writer);
 
-	@After
-	public void tearDown() { }
+        Assert.assertEquals("[" +
+                            "[\"Johnny\",\"123 Elm Street\",\"29\"]," +
+                            "[\"\"]," +
+                            "[\"Shandra\"]," +
+                            "[\"     \"]" +
+                            "]",
+                            readJsonContent(destination));
+    }
 
-	@Test
-	public void testRetrieveJSONObject() throws Exception {
-		String fixture1 = "";
-		Assert.assertNull(JsonHelper.retrieveJSONObject(JsonHelper.class, fixture1));
+    @Test
+    public void fromCsv_before_after() throws Exception {
+        List<List<String>> records = new ArrayList<>();
+        records.add(Arrays.asList("NAME", "ADDRESS", "AGE"));
+        records.add(Arrays.asList("Johnny", "123 Elm Street", "29"));
+        records.add(Arrays.asList("Sam", "#14 Sesame Street", "35"));
+        records.add(Arrays.asList("Shandra", "49 Mississippi Ave.", "7"));
 
-		String fixture2 = null;
-		Assert.assertNull(JsonHelper.retrieveJSONObject(JsonHelper.class, fixture2));
-		Assert.assertNull(JsonHelper.retrieveJSONObject(null, fixture2));
+        String destination = destinationBase + "fromCsv_simple.json";
+        FileWriter writer = new FileWriter(destination);
 
-		String fixture3 = "does_not_exists";
-		try {
-			JsonHelper.retrieveJSONObject(JsonHelper.class, fixture3);
-			Assert.fail("Should have failed since " + fixture3 + " does not exists");
-		} catch (IOException e) {
-			System.out.println("e.getMessage() = " + e.getMessage());
-		} catch (JSONException e) {
-			Assert.fail("Should have failed with IOException " + fixture3 + " does not exists");
-		}
+        JsonHelper.fromCsv(records,
+                           true,
+                           before -> before.write("{ \"version\": \"12.3401b\", \"details\": "),
+                           writer,
+                           after -> after.write("}"));
 
-		String fixture4 = "/TESTAPP/function1/supportconfig.json";
-		try {
-			JSONObject json = JsonHelper.retrieveJSONObject(JsonHelper.class, fixture4);
-			Assert.assertNotNull(json);
-		} catch (IOException | JSONException e) {
-			Assert.fail("retrieve " + fixture4 + " failed with " + e);
-		}
-	}
+        Assert.assertEquals("{" +
+                            "\"version\":\"12.3401b\"," +
+                            "\"details\":" +
+                            "[" +
+                            "{\"NAME\":\"Johnny\",\"ADDRESS\":\"123 Elm Street\",\"AGE\":\"29\"}," +
+                            "{\"NAME\":\"Sam\",\"ADDRESS\":\"#14 Sesame Street\",\"AGE\":\"35\"}," +
+                            "{\"NAME\":\"Shandra\",\"ADDRESS\":\"49 Mississippi Ave.\",\"AGE\":\"7\"}" +
+                            "]" +
+                            "}",
+                            readJsonContent(destination));
+    }
 
-	@Test
-	public void testFetchString() {
-		String fixture1 = "{ " +
-		                  " \"a\": { \"b\": \"1234\" }," +
-		                  " \"c\": 5," +
-		                  " \"d\": \"hello\"," +
-		                  " \"e\": null," +
-		                  " \"f\": []," +
-		                  " \"g\": [ \"cat\", \"dog\", \"mouse\" ]," +
-		                  " \"h\": { \"i.j\": \"yoyoma\" }, " +
-		                  " \"k\": { \"l\": { \"m\": \"n\" } } " +
-		                  "}";
-		JSONObject json = new JSONObject(fixture1);
-		Assert.assertEquals("hello", JsonHelper.fetchString(json, "d"));
-		Assert.assertEquals("5", JsonHelper.fetchString(json, "c"));
-		Assert.assertEquals("{\"b\":\"1234\"}", JsonHelper.fetchString(json, "a"));
-		Assert.assertEquals("1234", JsonHelper.fetchString(json, "a.b"));
-		Assert.assertNull(JsonHelper.fetchString(json, "e"));
-		Assert.assertNull(JsonHelper.fetchString(json, "f"));
-		Assert.assertNull(JsonHelper.fetchString(json, "f[0]"));
-		Assert.assertNull(JsonHelper.fetchString(json, "f[1]"));
-		Assert.assertEquals("[\"cat\",\"dog\",\"mouse\"]", JsonHelper.fetchString(json, "g"));
-		Assert.assertEquals("cat", JsonHelper.fetchString(json, "g[0]"));
-		Assert.assertEquals("dog", JsonHelper.fetchString(json, "g[1]"));
-		Assert.assertEquals("mouse", JsonHelper.fetchString(json, "g[2]"));
-		Assert.assertNull(JsonHelper.fetchString(json, "g[3]"));
-		Assert.assertEquals("{\"i.j\":\"yoyoma\"}", JsonHelper.fetchString(json, "h"));
-		Assert.assertEquals("yoyoma", JsonHelper.fetchString(json, "h[\"i.j\"]"));
-		Assert.assertEquals("yoyoma", JsonHelper.fetchString(json, "h['i.j']"));
-		Assert.assertEquals("yoyoma", JsonHelper.fetchString(json, "h[i.j]"));
-		Assert.assertEquals("n", JsonHelper.fetchString(json, "k.l.m"));
-	}
+    @Test
+    public void fromCsv_nested_before_after() throws Exception {
+        List<List<String>> records = new ArrayList<>();
+        records.add(Arrays.asList("NAME", "ADDRESS", "AGE"));
+        records.add(Arrays.asList("Johnny", "123 Elm Street", "29"));
+        records.add(Arrays.asList("Sam", "#14 Sesame Street", "35"));
+        records.add(Arrays.asList("Shandra", "49 Mississippi Ave.", "7"));
 
-	@Test
-	public void testToCompactString() {
-		// test empty
-		JSONObject fixture = new JSONObject("{}");
-		String testData = JsonHelper.toCompactString(fixture, true);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(testData);
-		Assert.assertTrue(!testData.isEmpty());
+        List<List<String>> records2 = new ArrayList<>();
+        records2.add(Arrays.asList("94", "Red", "29"));
+        records2.add(Arrays.asList("78", "Yellow", "35"));
+        records2.add(Arrays.asList("34.2", "Blue", "7"));
 
-		// test normal
-		fixture = new JSONObject(
-			                        "{\n" +
-			                        "\t\"requestTimestamp\": 5192309591209,\n" +
-			                        "\t\"userId\":           \"SYS\",\n" +
-			                        "\t\"fein\":             \"13-1898818\",\n" +
-			                        "\t\"stateCode\":        \"31\",\n" +
-			                        "\t\"taxTypes\":          [\"SIT\", \"SUI\"]\n" +
-			                        "}");
-		testData = JsonHelper.toCompactString(fixture, true);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(fixture);
-		Assert.assertTrue(!testData.isEmpty());
-		Assert.assertTrue(!testData.contains(" "));
+        String destination = destinationBase + "fromCsv_simple.json";
+        FileWriter writer = new FileWriter(destination);
 
-		// test normal with false flag for removeNullNameValuePair
-		fixture = new JSONObject(
-			                        "{\n" +
-			                        "\t\"requestTimestamp\": 5192309591209,\n" +
-			                        "\t\"userId\":           \"SYS\",\n" +
-			                        "\t\"fein\":             \"13-1898818\",\n" +
-			                        "\t\"stateCode\":        \"31\",\n" +
-			                        "\t\"taxTypes\":          [\"SIT\", \"SUI\"]\n" +
-			                        "}");
-		testData = JsonHelper.toCompactString(fixture, false);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(fixture);
-		Assert.assertTrue(!testData.isEmpty());
-		Assert.assertTrue(!testData.contains(" "));
+        JsonHelper.fromCsv(records,
+                           true,
+                           before -> before.write("{ \"version\": \"12.3401b\", \"details\": "),
+                           writer,
+                           after -> JsonHelper.fromCsv(records2,
+                                                       false,
+                                                       before -> before.write(",\"stats\":"),
+                                                       after,
+                                                       after2 -> after2.write(", \"complete\":true}")));
 
-		// test null value
-		fixture = new JSONObject(
-			                        "{\n" +
-			                        "\t\"requestTimestamp\": 5192309591209,\n" +
-			                        "\t\"userId\":           \"SYS\",\n" +
-			                        "\t\"fein\":             \"13-1898818\",\n" +
-			                        "\t\"stateCode\":        null,\n" +
-			                        "\t\"taxTypes\":          [\"SIT\", null]\n" +
-			                        "}");
-		testData = JsonHelper.toCompactString(fixture, true);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(fixture);
-		Assert.assertTrue(!testData.isEmpty());
-		Assert.assertTrue(testData.contains("\"userId\":\"SYS\""));
-		Assert.assertTrue(!testData.contains(" "));
-		Assert.assertTrue(!testData.contains("stateCode"));
-		// null array index not removed to ensure intended index positioning
-		Assert.assertFalse(testData.contains("taxTypes:[\"SIT\"]"));
+        Assert.assertEquals("{" +
+                            "\"version\":\"12.3401b\"," +
+                            "\"details\":[" +
+                            "{\"NAME\":\"Johnny\",\"ADDRESS\":\"123 Elm Street\",\"AGE\":\"29\"}," +
+                            "{\"NAME\":\"Sam\",\"ADDRESS\":\"#14 Sesame Street\",\"AGE\":\"35\"}," +
+                            "{\"NAME\":\"Shandra\",\"ADDRESS\":\"49 Mississippi Ave.\",\"AGE\":\"7\"}" +
+                            "]," +
+                            "\"stats\":[" +
+                            "[\"94\",\"Red\",\"29\"]," +
+                            "[\"78\",\"Yellow\",\"35\"]," +
+                            "[\"34.2\",\"Blue\",\"7\"]" +
+                            "]," +
+                            "\"complete\":true" +
+                            "}",
+                            readJsonContent(destination));
+    }
 
-		// test null
-		fixture = new JSONObject("{}");
-		testData = JsonHelper.toCompactString(fixture, true);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(testData);
-		Assert.assertTrue(!testData.isEmpty());
+    private String readJsonContent(String destination) throws IOException {
+        String content = FileUtils.readFileToString(new File(destination), DEF_FILE_ENCODING);
+        System.out.println(content);
+        return GSON_COMPRESSED.toJson(GSON_COMPRESSED.fromJson(content, JsonElement.class));
+    }
 
-		// test  null in the middle and at the end of json
-		fixture = new JSONObject(
-			                        "{\n" +
-			                        "\t\"requestTimestamp\": 5192309591209,\n" +
-			                        "\t\"userId\":           \"null\",\n" +
-			                        "\t\"fein\":             null,\n" +
-			                        "\t\"stateCode\":        null,\n" +
-			                        "\t\"taxTypes\":         [\"SIT\", \"SUI\"],\n" +
-			                        "\t\"taxTypes2\":        [],\n" +
-			                        "\t\"taxTypes3\":        null\n" +
-			                        "}");
-		testData = JsonHelper.toCompactString(fixture, true);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(fixture);
-		Assert.assertTrue(!testData.isEmpty());
-		Assert.assertTrue(!testData.contains(" "));
-
-		// test (again) null in the middle and at the end of json
-		fixture = new JSONObject("{\"key1\":\"myVal\",\"key2\":null,\"key3\":null}");
-		testData = JsonHelper.toCompactString(fixture, true);
-		System.out.println("testData = " + testData);
-		Assert.assertNotNull(fixture);
-		Assert.assertTrue(!testData.isEmpty());
-		Assert.assertTrue(!testData.contains(" "));
-	}
-
-	@Test
-	public void testLenientExtractTypedValue() {
-		String jsonString = "{ " +
-		                    "     \"name\"        : \"John Doe\", " +
-		                    "     \"age\"         : 29, " +
-		                    "     \"averageScore\": 34.351, " +
-		                    "     \"birthDate\"   : \"1985-04-11\", " +
-		                    "     \"company\"     : { " +
-		                    "          \"name\"            : \"Acme Inc.\", " +
-		                    "          \"address\"         : \" 1 Busy Street, Trouble Town\", " +
-		                    "          \"industry\"        : \"Import/Export\", " +
-		                    "          \"publicallyTraded\": false " +
-		                    "     }, " +
-		                    "     \"friends\"     : [ " +
-		                    "          { " +
-		                    "               \"name\"        : \"Jane Smith\", " +
-		                    "               \"age\"         : 23, " +
-		                    "               \"averageScore\": 19.353, " +
-		                    "               \"birthDate\"   : \"1991-11-04\", " +
-		                    "               \"company\"     : { " +
-		                    "                    \"name\"    : \"BubbleWrap R Us\", " +
-		                    "                    \"address\" : \"94 Dead End Drive, Gotham City\", " +
-		                    "                    \"industry\": \"Health Supply\" " +
-		                    "               } " +
-		                    "          }, " +
-		                    "          { " +
-		                    "               \"name\"        : \"Jimmy Crafty\", " +
-		                    "               \"age\"         : 31, " +
-		                    "               \"averageScore\": 39.93, " +
-		                    "               \"birthDate\"   : \"1983-07-24\" " +
-		                    "          } " +
-		                    "     ] " +
-		                    "} ";
-		JSONObject json = new JSONObject(jsonString);
-		Person subject = JsonHelper.lenientExtractTypedValue(json, Person.class, new SimpleDateFormat("yyyy-MM-dd"));
-		Assert.assertNotNull(subject);
-		Assert.assertEquals("John Doe", subject.getName());
-		Assert.assertEquals(29, subject.getAge());
-		Assert.assertEquals(34.351, subject.getAverageScore(), 0.001);
-		Assert.assertEquals(DateUtility.formatTo("1985-04-11", "yyyy-MM-dd"), subject.getBirthDate().getTime());
-
-		Company company = subject.getCompany();
-		Assert.assertNotNull(company);
-		Assert.assertEquals("Acme Inc.", company.getName());
-		Assert.assertEquals(" 1 Busy Street, Trouble Town", company.getAddress());
-		Assert.assertEquals("Import/Export", company.getIndustry());
-		Assert.assertFalse(company.isPublicallyTraded());
-
-		Assert.assertNotNull(subject.getFriends());
-		Assert.assertEquals(2, subject.getFriends().length);
-
-		Person friend = subject.getFriends()[0];
-		Assert.assertNotNull(friend);
-		Assert.assertEquals("Jane Smith", friend.getName());
-		Assert.assertEquals(23, friend.getAge());
-		Assert.assertEquals(19.353, friend.getAverageScore(), 0.001);
-		Assert.assertEquals(DateUtility.formatTo("1991-11-04", "yyyy-MM-dd"), friend.getBirthDate().getTime());
-
-		company = friend.getCompany();
-		Assert.assertNotNull(company);
-		Assert.assertEquals("BubbleWrap R Us", company.getName());
-		Assert.assertEquals("94 Dead End Drive, Gotham City", company.getAddress());
-		Assert.assertEquals("Health Supply", company.getIndustry());
-
-		friend = subject.getFriends()[1];
-		Assert.assertNotNull(friend);
-		Assert.assertEquals("Jimmy Crafty", friend.getName());
-		Assert.assertEquals(31, friend.getAge());
-		Assert.assertEquals(39.93, friend.getAverageScore(), 0.001);
-		Assert.assertEquals(DateUtility.formatTo("1983-07-24", "yyyy-MM-dd"), friend.getBirthDate().getTime());
-	}
 }

@@ -30,9 +30,9 @@ import java.util.Map;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
@@ -41,237 +41,266 @@ import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.variable.Expression.ExpressionFunction;
 
-import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 import static java.lang.System.lineSeparator;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
 public abstract class Transformer<T extends ExpressionDataType> {
-	private static final String REGEX_CAMEL_CASE = "([0-9a-z])([A-Z])";
+    private static final String REGEX_CAMEL_CASE = "([0-9a-z])([A-Z])";
 
-	public boolean isValidFunction(ExpressionFunction function) {
-		if (function == null) { return false; }
+    public boolean isValidFunction(ExpressionFunction function) {
+        if (function == null) { return false; }
 
-		Map<String, Integer> validFunctions = listSupportedFunctions();
-		if (MapUtils.isEmpty(validFunctions)) { return true; }
+        Map<String, Integer> validFunctions = listSupportedFunctions();
+        if (MapUtils.isEmpty(validFunctions)) { return true; }
 
-		if (!validFunctions.containsKey(function.getFunctionName())) { return false; }
+        if (!validFunctions.containsKey(function.getFunctionName())) { return false; }
 
-		// varargs means paramCount = -1
-		int paramCount = validFunctions.get(function.getFunctionName());
-		int functionParamCount = CollectionUtils.size(function.getParams());
-		return (paramCount == -1 && functionParamCount >= 0) || paramCount == functionParamCount;
-	}
+        // varargs means paramCount = -1
+        int paramCount = validFunctions.get(function.getFunctionName());
+        int functionParamCount = CollectionUtils.size(function.getParams());
 
-	ExpressionDataType transform(T data, ExpressionFunction function) throws ExpressionException {
-		if (data == null) { return data; }
-		if (function == null) { return data; }
+        if (paramCount == -1) { return functionParamCount >= 0; }
 
-		String typeName = data.getName();
-		String functionName = function.getFunctionName();
-		String msgPrefix = StringUtils.rightPad(data.getName() + " => " + functionName + " ", 20);
+        // if user specified too many params, then it's error -> so return false
+        if (paramCount < functionParamCount) { return false; }
 
-		if (!isValidFunction(function)) {
-			throw new ExpressionFunctionException(typeName, functionName, "Not valid function");
-		}
+        // if user didn't specify enough, then we can _supplement_ on behalf of user
+        // this technique will allow us to add more params in the future without creating new methods
+        if (paramCount > functionParamCount) {
+            for (int i = functionParamCount; i < paramCount; i++) { function.getParams().add(null); }
+        }
 
-		Method method = listSupportedMethods().get(functionName);
-		if (method == null) { throw new ExpressionFunctionException(typeName, functionName, "Function not found"); }
+        // either paramCount > functionParamCount or paramCount == functionParamCount -> both are now considered valid
+        return true;
 
-		int paramCount = listSupportedFunctions().get(functionName);
-		Object[] args;
-		if (paramCount == -1) {
-			// varargs means paramCount = -1
-			args = new Object[]{data, function.getParams().toArray(new String[function.getParams().size()])};
-		} else {
-			args = new Object[paramCount + 1];
-			args[0] = data;
-			List<String> params = function.getParams();
-			if (CollectionUtils.isNotEmpty(params)) {
-				for (int i = 0; i < params.size(); i++) { args[i + 1] = params.get(i); }
-			}
-		}
+    }
 
-		try {
-			Object outcome = method.invoke(this, args);
-			if (outcome == null) { return null; }
-			if (!(outcome instanceof ExpressionDataType)) {
-				throw new ExpressionFunctionException(typeName, functionName, "Invalid data type after transformation");
-			}
+    ExpressionDataType transform(T data, ExpressionFunction function) throws ExpressionException {
+        if (data == null) { return data; }
+        if (function == null) { return data; }
 
-			ExecutionContext context = ExecutionThread.get();
-			if (context == null || StringUtils.isBlank(context.getRunId()) || context.isVerbose()) {
-				ConsoleUtils.log(msgPrefix + outcome + lineSeparator());
-			}
+        String typeName = data.getName();
+        String functionName = function.getFunctionName();
+        String msgPrefix = StringUtils.rightPad(data.getName() + " => " + functionName + " ", 20);
 
-			return (ExpressionDataType) outcome;
-		} catch (IllegalAccessException | InvocationTargetException e) {
-			ConsoleUtils.error(msgPrefix + e.getMessage());
-			throw new ExpressionFunctionException(typeName, functionName, e.getMessage(), e);
-		}
-	}
+        if (!isValidFunction(function)) {
+            throw new ExpressionFunctionException(typeName, functionName, "Not valid function");
+        }
 
-	/**
-	 * a list of functions supported by this transformer, and the number of expected number of parameters per function.
-	 *
-	 * @return a map of function name (key) and the expected number of parameters (value)
-	 */
-	abstract Map<String, Integer> listSupportedFunctions();
+        Method method = listSupportedMethods().get(functionName);
+        if (method == null) { throw new ExpressionFunctionException(typeName, functionName, "Function not found"); }
 
-	abstract Map<String, Method> listSupportedMethods();
+        int paramCount = listSupportedFunctions().get(functionName);
+        Object[] args;
+        if (paramCount == -1) {
+            // varargs means paramCount = -1
+            args = new Object[]{data, function.getParams().toArray(new String[function.getParams().size()])};
+        } else {
+            args = new Object[paramCount + 1];
+            args[0] = data;
+            List<String> params = function.getParams();
+            if (CollectionUtils.isNotEmpty(params)) {
+                for (int i = 0; i < params.size(); i++) { args[i + 1] = params.get(i); }
+            }
+        }
 
-	protected ExpressionDataType save(ExpressionDataType data, String path) {
-		if (data == null || data.getValue() == null) { return data; }
-		if (StringUtils.isBlank(path)) { throw new IllegalArgumentException("path is empty/blank"); }
+        try {
+            Object outcome = method.invoke(this, args);
+            if (outcome == null) { return null; }
+            if (!(outcome instanceof ExpressionDataType)) {
+                throw new ExpressionFunctionException(typeName, functionName, "Invalid data type after transformation");
+            }
 
-		if (!FileUtil.isDirectoryReadable(path)) {
-			try {
-				FileUtils.forceMkdirParent(new File(path));
-			} catch (IOException e) {
-				throw new IllegalArgumentException("Unable to create directory for '" + path + "'");
-			}
-		}
+            ExecutionContext context = ExecutionThread.get();
+            if (context == null || StringUtils.isBlank(context.getRunId()) || context.isVerbose()) {
+                ConsoleUtils.log(msgPrefix + outcome + lineSeparator());
+            }
 
-		try {
-			FileUtils.writeStringToFile(new File(path), data.getTextValue(), DEF_FILE_ENCODING);
-			ConsoleUtils.log("content saved to '" + path + "'");
-			return data;
-		} catch (IOException e) {
-			throw new IllegalArgumentException("Unable to write to " + path + ": " + e.getMessage(), e);
-		}
-	}
+            return (ExpressionDataType) outcome;
+        } catch (IllegalAccessException | InvocationTargetException e) {
+            ConsoleUtils.error(msgPrefix + e.getMessage());
+            throw new ExpressionFunctionException(typeName, functionName, e.getMessage(), e);
+        }
+    }
 
-	protected TextDataType text(ExpressionDataType data) {
-		TextDataType returnType;
-		try {
-			returnType = new TextDataType("");
-		} catch (TypeConversionException e) {
-			throw new IllegalArgumentException("Unable to extract text: " + e.getMessage(), e);
-		}
+    /**
+     * a list of functions supported by this transformer, and the number of expected number of parameters per function.
+     *
+     * @return a map of function name (key) and the expected number of parameters (value)
+     */
+    abstract Map<String, Integer> listSupportedFunctions();
 
-		if (data == null || StringUtils.isBlank(data.getTextValue())) { return returnType; }
+    abstract Map<String, Method> listSupportedMethods();
 
-		returnType.setValue(data.getTextValue());
-		return returnType;
-	}
+    protected ExpressionDataType save(ExpressionDataType data, String path, String append) {
+        if (data == null || data.getValue() == null) { return data; }
+        if (StringUtils.isBlank(path)) { throw new IllegalArgumentException("path is empty/blank"); }
 
-	protected void snapshot(String var, ExpressionDataType data) {
-		if (data == null) { return; }
+        File target = new File(path);
+        if (!FileUtil.isDirectoryReadable(path)) {
+            try {
+                FileUtils.forceMkdirParent(target);
+            } catch (IOException e) {
+                throw new IllegalArgumentException("Unable to create directory for '" + path + "'");
+            }
+        }
 
-		if (StringUtils.isBlank(var)) { throw new IllegalArgumentException("var is empty/blank"); }
+        try {
+            boolean shouldAppend = BooleanUtils.toBoolean(append);
+            if (shouldAppend) {
+                saveContentAsAppend(data, target);
+            } else {
+                saveContentAsOverwrite(data, target);
+            }
 
-		ExecutionContext context = ExecutionThread.get();
-		if (context == null) { throw new IllegalStateException("Unable to reference execution context"); }
+            ConsoleUtils.log("content " + (shouldAppend ? "appended" : "saved") + " to '" + path + "'");
+            return data;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Unable to write to " + path + ": " + e.getMessage(), e);
+        }
+    }
 
-		context.setData(var, data.snapshot());
-	}
+    protected void saveContentAsAppend(ExpressionDataType data, File target) throws IOException {
+        FileUtils.writeStringToFile(target, data.getTextValue(), DEF_FILE_ENCODING, true);
+    }
 
-	protected static Map<String, Integer> convertFunctionParamMap(String mapping) {
-		Map<String, String> map = TextUtils.toMap(mapping, ",", "=");
-		Map<String, Integer> newMap = new HashMap<>();
-		map.forEach((function, paramCount) -> newMap.put(function, NumberUtils.toInt(paramCount)));
-		return newMap;
-	}
+    protected void saveContentAsOverwrite(ExpressionDataType data, File target) throws IOException {
+        FileUtils.writeStringToFile(target, data.getTextValue(), DEF_FILE_ENCODING);
+    }
 
-	protected static Map<String, Method> toFunctionMap(Map<String, Integer> functionToParamList,
-	                                                   Class<? extends Transformer> transformerClass,
-	                                                   Class<? extends ExpressionDataType> dataClass) {
+    protected TextDataType text(ExpressionDataType data) {
+        TextDataType returnType;
+        try {
+            returnType = new TextDataType("");
+        } catch (TypeConversionException e) {
+            throw new IllegalArgumentException("Unable to extract text: " + e.getMessage(), e);
+        }
 
-		Map<String, Method> methodMap = new HashMap<>();
+        if (data == null || StringUtils.isEmpty(data.getTextValue())) { return returnType; }
 
-		functionToParamList.forEach((functionName, paramCount) -> {
-			Class[] paramClasses;
-			if (paramCount == -1) {
-				// string varargs
-				paramClasses = new Class[]{dataClass, String[].class};
-			} else {
-				paramClasses = new Class[paramCount + 1];
-				paramClasses[0] = dataClass;
-				for (int i = 1; i <= paramCount; i++) { paramClasses[i] = String.class; }
-			}
+        returnType.setValue(data.getTextValue());
+        return returnType;
+    }
 
-			if (!StringUtils.contains(functionName, "-")) {
-				try {
-					Method method = transformerClass.getMethod(functionName, paramClasses);
-					if (method != null) {
-						methodMap.put(functionName, method);
-						methodMap.put(expandMethodName(functionName), method);
-					}
-				} catch (NoSuchMethodException e) {
-					String typeName = dataClass.getSimpleName();
-					String error = "Unable to resolve " + typeName + "." + functionName + "(): " + e.getMessage();
-					ConsoleUtils.log(error);
-					throw new IllegalArgumentException(error, e);
-				}
-			}
-		});
+    protected void snapshot(String var, ExpressionDataType data) {
+        if (data == null) { return; }
 
-		return methodMap;
-	}
+        if (StringUtils.isBlank(var)) { throw new IllegalArgumentException("var is empty/blank"); }
 
-	protected static Map<String, Integer> discoverFunctions(Class<? extends Transformer> transformerClass) {
-		if (transformerClass == null) { return null; }
+        ExecutionContext context = ExecutionThread.get();
+        if (context == null) { throw new IllegalStateException("Unable to reference execution context"); }
 
-		Class<ExpressionDataType> genericType = ExpressionDataType.class;
+        context.setData(var, data.snapshot());
+    }
 
-		Map<String, Integer> functions = new HashMap<>();
-		Arrays.stream(transformerClass.getMethods()).forEach(method -> {
-			// qualified method must be
-			// (1) public
-			// (2) return type must be a type of ExpressionDataType
-			// (3) at least 1 param
-			// (4) first param must be a type of ExpressionDataType
-			// (5) all other param must be string
-			if (isQualifiedMethod(method, genericType)) {
+    protected static Map<String, Integer> convertFunctionParamMap(String mapping) {
+        Map<String, String> map = TextUtils.toMap(mapping, ",", "=");
+        Map<String, Integer> newMap = new HashMap<>();
+        map.forEach((function, paramCount) -> newMap.put(function, NumberUtils.toInt(paramCount)));
+        return newMap;
+    }
 
-				String methodName = method.getName();
-				String expandedMethodName = expandMethodName(methodName);
+    protected static Map<String, Method> toFunctionMap(Map<String, Integer> functionToParamList,
+                                                       Class<? extends Transformer> transformerClass,
+                                                       Class<? extends ExpressionDataType> dataClass) {
 
-				if (isStringVarArgMethod(method)) {
-					functions.put(methodName, -1);
-					functions.put(expandedMethodName, -1);
-				} else {
-					boolean paramTypesAreString = true;
-					for (int i = 1; i < method.getParameterCount(); i++) {
-						if (method.getParameterTypes()[i] != String.class) {
-							paramTypesAreString = false;
-							break;
-						}
-					}
+        Map<String, Method> methodMap = new HashMap<>();
 
-					if (paramTypesAreString) {
-						functions.put(methodName, method.getParameterCount() - 1);
-						functions.put(expandedMethodName, method.getParameterCount() - 1);
-					}
-				}
-			}
-		});
+        functionToParamList.forEach((functionName, paramCount) -> {
+            Class[] paramClasses;
+            if (paramCount == -1) {
+                // string varargs
+                paramClasses = new Class[]{dataClass, String[].class};
+            } else {
+                paramClasses = new Class[paramCount + 1];
+                paramClasses[0] = dataClass;
+                for (int i = 1; i <= paramCount; i++) { paramClasses[i] = String.class; }
+            }
 
-		return functions;
-	}
+            if (!StringUtils.contains(functionName, "-")) {
+                try {
+                    Method method = transformerClass.getMethod(functionName, paramClasses);
+                    if (method != null) {
+                        methodMap.put(functionName, method);
+                        methodMap.put(expandMethodName(functionName), method);
+                    }
+                } catch (NoSuchMethodException e) {
+                    String typeName = dataClass.getSimpleName();
+                    String error = "Unable to resolve " + typeName + "." + functionName + "(): " + e.getMessage();
+                    ConsoleUtils.log(error);
+                    throw new IllegalArgumentException(error, e);
+                }
+            }
+        });
 
-	protected static String expandMethodName(String methodName) {
-		return StringUtils.isBlank(methodName) ?
-		       methodName :
-		       StringUtils.lowerCase(RegexUtils.replace(methodName, REGEX_CAMEL_CASE, "$1-$2"));
-	}
+        return methodMap;
+    }
 
-	protected static boolean isQualifiedMethod(Method method, Class<ExpressionDataType> genericType) {
-		if (!Modifier.isPublic(method.getModifiers()) || !genericType.isAssignableFrom(method.getReturnType())) {
-			return false;
-		}
+    protected static Map<String, Integer> discoverFunctions(Class<? extends Transformer> transformerClass) {
+        if (transformerClass == null) { return null; }
 
-		int parameterCount = method.getParameterCount();
-		Class<?>[] parameterTypes = method.getParameterTypes();
-		if (parameterCount <= 0 || !genericType.isAssignableFrom(parameterTypes[0])) { return false; }
+        Class<ExpressionDataType> genericType = ExpressionDataType.class;
 
-		if (isStringVarArgMethod(method)) {
-			if (parameterCount != 2) { return false; }
+        Map<String, Integer> functions = new HashMap<>();
+        Arrays.stream(transformerClass.getMethods()).forEach(method -> {
+            // qualified method must be
+            // (1) public
+            // (2) return type must be a type of ExpressionDataType
+            // (3) at least 1 param
+            // (4) first param must be a type of ExpressionDataType
+            // (5) all other param must be string
+            if (isQualifiedMethod(method, genericType)) {
+
+                String methodName = method.getName();
+                String expandedMethodName = expandMethodName(methodName);
+
+                if (isStringVarArgMethod(method)) {
+                    functions.put(methodName, -1);
+                    functions.put(expandedMethodName, -1);
+                } else {
+                    boolean paramTypesAreString = true;
+                    for (int i = 1; i < method.getParameterCount(); i++) {
+                        if (method.getParameterTypes()[i] != String.class) {
+                            paramTypesAreString = false;
+                            break;
+                        }
+                    }
+
+                    if (paramTypesAreString) {
+                        functions.put(methodName, method.getParameterCount() - 1);
+                        functions.put(expandedMethodName, method.getParameterCount() - 1);
+                    }
+                }
+            }
+        });
+
+        return functions;
+    }
+
+    protected static String expandMethodName(String methodName) {
+        return StringUtils.isBlank(methodName) ?
+               methodName :
+               StringUtils.lowerCase(RegexUtils.replace(methodName, REGEX_CAMEL_CASE, "$1-$2"));
+    }
+
+    protected static boolean isQualifiedMethod(Method method, Class<ExpressionDataType> genericType) {
+        if (!Modifier.isPublic(method.getModifiers()) || !genericType.isAssignableFrom(method.getReturnType())) {
+            return false;
+        }
+
+        int parameterCount = method.getParameterCount();
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        if (parameterCount <= 0 || !genericType.isAssignableFrom(parameterTypes[0])) { return false; }
+
+        if (isStringVarArgMethod(method)) {
+            if (parameterCount != 2) { return false; }
             return parameterTypes[1] == String[].class;
-		}
+        }
 
-		return true;
-	}
+        return true;
+    }
 
-	protected static boolean isStringVarArgMethod(Method method) {
-		return method.getParameterCount() == 2 && method.isVarArgs() && method.getParameterTypes()[1] == String[].class;
-	}
+    protected static boolean isStringVarArgMethod(Method method) {
+        return method.getParameterCount() == 2 && method.isVarArgs() && method.getParameterTypes()[1] == String[].class;
+    }
 }

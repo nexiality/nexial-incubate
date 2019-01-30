@@ -18,46 +18,44 @@
 package org.nexial.core.plugins.ws;
 
 import java.io.Serializable;
-import java.io.UnsupportedEncodingException;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpUriRequest;
-
 import org.nexial.core.model.ExecutionContext;
 
 public class GetRequest extends Request implements Serializable {
-	private String queryString;
-	private String payloadSaveTo;
+    private String queryString;
+    private String payloadLocation;
 
-	GetRequest(ExecutionContext context) {
-		super(context);
-		method = "GET";
-	}
+    GetRequest(ExecutionContext context) {
+        super(context);
+        method = "GET";
+    }
 
-	public String getQueryString() { return queryString; }
+    public String getQueryString() { return queryString; }
 
-	public void setQueryString(String queryString) { this.queryString = queryString; }
+    public void setQueryString(String queryString) { this.queryString = queryString; }
 
-	public String getPayloadSaveTo() { return payloadSaveTo; }
+    public String getPayloadLocation() { return payloadLocation; }
 
-	public void setPayloadSaveTo(String payloadSaveTo) { this.payloadSaveTo = payloadSaveTo; }
+    public void setPayloadLocation(String payloadLocation) { this.payloadLocation = payloadLocation; }
 
-	@Override
-	public String toString() {
-		return super.toString() + "; GetRequest{queryString='" + queryString + "'}";
-	}
+    @Override
+    public String toString() {
+        return super.toString() + "; GetRequest{queryString='" + queryString + "'}";
+    }
 
-	@Override
-	protected HttpUriRequest prepRequest(RequestConfig requestConfig) throws UnsupportedEncodingException {
-		if (StringUtils.isNotBlank(getQueryString())) { url += "?" + getQueryString(); }
+    @Override
+    protected HttpUriRequest prepRequest(RequestConfig requestConfig) {
+        if (StringUtils.isNotBlank(getQueryString())) { url += "?" + getQueryString(); }
 
-		HttpGet httpget = new HttpGet(url);
-		httpget.setConfig(requestConfig);
+        HttpGet httpget = new HttpGet(url);
+        httpget.setConfig(requestConfig);
 
-		setRequestHeaders(httpget);
+        setRequestHeaders(httpget);
 
-		return httpget;
-	}
+        return httpget;
+    }
 }

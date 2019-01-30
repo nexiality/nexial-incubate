@@ -17,6 +17,8 @@
 
 package org.nexial.core.variable;
 
+import java.math.BigDecimal;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 
@@ -65,11 +67,14 @@ public class NumberDataType extends ExpressionDataType<Number> {
         if (StringUtils.startsWithIgnoreCase(text, ".")) { text = "0" + text; }
         if (isNegative) { text = "-" + text; }
 
-        Number number = NumberUtils.createNumber(text);
-        if (number == null) { throw new TypeConversionException(getName(), text, "Can't convert " + textValue); }
+        if (StringUtils.contains(text, ".")) {
+            setValue(NumberUtils.createDouble(text));
+            setTextValue(BigDecimal.valueOf(value.doubleValue()).toPlainString());
+        } else {
+            setValue(NumberUtils.createLong(text));
+            setTextValue(text);
+        }
 
-        setValue(number);
-        setTextValue(number.toString());
     }
 
     private void setToZero() {

@@ -29,26 +29,11 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-import org.nexial.core.model.StepResult;
-import org.nexial.core.utils.OutputFileUtils;
-import org.openqa.selenium.By;
-import org.openqa.selenium.By.ByClassName;
-import org.openqa.selenium.By.ById;
-import org.openqa.selenium.By.ByName;
-import org.openqa.selenium.By.ByXPath;
-import org.openqa.selenium.NoSuchElementException;
-import org.openqa.selenium.Rectangle;
-import org.openqa.selenium.WebDriverException;
-import org.openqa.selenium.WebElement;
-import org.openqa.selenium.interactions.Actions;
-import org.openqa.selenium.support.ui.WebDriverWait;
-import org.openqa.selenium.winium.WiniumDriver;
-import org.uptospeed.seeknow.SeeknowData;
-
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ShutdownAdvisor;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.model.StepResult;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.plugins.CanLogExternally;
 import org.nexial.core.plugins.CanTakeScreenshot;
@@ -62,16 +47,30 @@ import org.nexial.core.plugins.desktop.ig.IgExplorerBar;
 import org.nexial.core.plugins.desktop.ig.IgRibbon;
 import org.nexial.core.utils.CheckUtils;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.OutputFileUtils;
+import org.nexial.seeknow.SeeknowData;
+import org.openqa.selenium.By;
+import org.openqa.selenium.By.ByClassName;
+import org.openqa.selenium.By.ById;
+import org.openqa.selenium.By.ByName;
+import org.openqa.selenium.By.ByXPath;
+import org.openqa.selenium.NoSuchElementException;
+import org.openqa.selenium.Rectangle;
+import org.openqa.selenium.WebDriverException;
+import org.openqa.selenium.WebElement;
+import org.openqa.selenium.interactions.Actions;
+import org.openqa.selenium.support.ui.WebDriverWait;
+import org.openqa.selenium.winium.WiniumDriver;
 
+import static java.io.File.separator;
+import static java.lang.Integer.MAX_VALUE;
+import static java.lang.System.lineSeparator;
 import static org.nexial.core.NexialConst.Data.*;
 import static org.nexial.core.plugins.desktop.DesktopConst.*;
 import static org.nexial.core.plugins.desktop.DesktopNotification.NotificationLevel.info;
 import static org.nexial.core.plugins.desktop.DesktopUtils.*;
 import static org.nexial.core.plugins.desktop.ElementType.*;
 import static org.nexial.core.utils.CheckUtils.*;
-import static java.io.File.separator;
-import static java.lang.Integer.MAX_VALUE;
-import static java.lang.System.lineSeparator;
 
 public class DesktopCommand extends BaseCommand
     implements RequireWinium, ForcefulTerminate, CanTakeScreenshot, CanLogExternally {
@@ -169,9 +168,9 @@ public class DesktopCommand extends BaseCommand
 
         if (context.isOutputToCloud()) {
             try {
-                return context.getS3Helper().importMedia(file);
+                return context.getOtc().importMedia(file);
             } catch (IOException e) {
-                log("Unable to save " + file + " to cloud storage due to " + e.getMessage());
+                log(toCloudIntegrationNotReadyMessage(file.toString()) + ": " + e.getMessage());
             }
         }
 
@@ -453,6 +452,12 @@ public class DesktopCommand extends BaseCommand
             String text = saveModalDialogText(modalDialog, var);
             return StepResult.success("Modal text found and saved to '" + var + "': " + text);
         }
+    }
+
+    public StepResult sendKeysToTextBox(String name, String text1, String text2, String text3, String text4) {
+        DesktopElement component = getRequiredElement(name, Textbox);
+        if (component == null) { return StepResult.fail("Unable to derive component via '" + name + "'"); }
+        return component.typeTextComponent(true, false, text1, text2, text3, text4);
     }
 
     public StepResult typeTextBox(String name, String text1, String text2, String text3, String text4) {
@@ -926,6 +931,7 @@ public class DesktopCommand extends BaseCommand
         return result;
     }
 
+    // todo: deprecated; removal candidate for v1.1
     public StepResult scanTable(String var, String name) { return useTable(var, name); }
 
     public StepResult assertTableRowContains(String row, String contains) {
@@ -943,7 +949,7 @@ public class DesktopCommand extends BaseCommand
         setTableFocus(table);
         boolean found = table.containsRowData(NumberUtils.toInt(row), criterion);
         return new StepResult(found,
-                                "Table row '" + row + "'" + (found ? "" : " DOES NOT ") + "contains '" + contains + "'",
+                              "Table row '" + row + "'" + (found ? "" : " DOES NOT ") + "contains '" + contains + "'",
                               null);
     }
 
@@ -960,8 +966,8 @@ public class DesktopCommand extends BaseCommand
         setTableFocus(table);
         boolean found = table.containsColumnData(column, criterion);
         return new StepResult(found,
-                                "Table column '" + column + "'" + (found ? "" : " DOES NOT ") + "contains '" +
-                                contains + "'",
+                              "Table column '" + column + "'" + (found ? "" : " DOES NOT ") + "contains '" +
+                              contains + "'",
                               null);
     }
 
@@ -1100,9 +1106,8 @@ public class DesktopCommand extends BaseCommand
         requires(StringUtils.contains(nameValues, "="), "Name-values MUST be in the form of name=value", nameValues);
 
         DesktopTable table = getCurrentTable();
-        setTableFocus(table);
         requiresNotNull(table, "No Table element referenced or scanned");
-
+        setTableFocus(table);
         return table.editCells(rowIndex, nameValuesToMap(nameValues));
     }
 
@@ -1144,44 +1149,38 @@ public class DesktopCommand extends BaseCommand
         return tableRow.getTable().editCells(tableRow, nameValuesToMap(nameValues));
     }
 
-    public StepResult getTableRows(String var, String beginRow, String endRow) {
+    public StepResult saveTableRowsRange(String var, String beginRow, String endRow) {
         requiresValidVariableName(var);
-        assert StringUtils.isNotBlank(beginRow);
-        assert StringUtils.isNotBlank(endRow);
-        DesktopTable table = getCurrentTable();
-        if (table == null) {
-            throw new IllegalArgumentException("ERROR: no Table object found. Make sure to run useTable() first");
-        }
-        setTableFocus(table);
+        requiresPositiveNumber(beginRow, "Invalid beginRow", beginRow);
+        requiresPositiveNumber(endRow, "Invalid beginRow", endRow);
+
         int beginRowNum = NumberUtils.toInt(beginRow);
         int endRowNum = NumberUtils.toInt(endRow);
         tableRowsRangeCheck(beginRowNum, endRowNum);
+
+        DesktopTable table = getCurrentTable();
+        if (table == null) {
+            throw new IllegalArgumentException("ERROR: no Table object found. Make sure to run useTable() first");
+        }
         setTableFocus(table);
 
         context.setData(var, table.fetch(beginRowNum, endRowNum));
+
         return StepResult.success("Table row data is saved to var " + var);
     }
 
-    public StepResult getRowCount(String var) {
+    // todo: deprecated; removal candidate for v1.1
+    public StepResult getRowCount(String var) { return saveRowCount(var); }
+
+    public StepResult saveRowCount(String var) {
         requiresValidVariableName(var);
         DesktopTable table = getCurrentTable();
-        setTableFocus(table);
         if (table == null) {
             throw new IllegalArgumentException("ERROR: no Table object found. Make sure to run useTable() first");
         }
+        setTableFocus(table);
         context.setData(var, table.getTableRowCount());
         return StepResult.success("Table row count is saved to var " + var);
-    }
-
-    public StepResult getTableRowsAll(String var) {
-        requiresValidVariableName(var);
-        DesktopTable table = getCurrentTable();
-        setTableFocus(table);
-        if (table == null) {
-            throw new IllegalArgumentException("ERROR: no Table object found. Make sure to run useTable() first");
-        }
-        context.setData(var, table.fetchAll());
-        return StepResult.success();
     }
 
     public StepResult useHierTable(String var, String name) { return saveHierTableMetaData(var, name); }
@@ -1334,6 +1333,11 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult closeApplication() {
+        if (context != null) {
+            CanTakeScreenshot agent = context.findCurrentScreenshotAgent();
+            if (agent instanceof DesktopCommand) { context.clearScreenshotAgent(); }
+        }
+
         DesktopSession session = getCurrentSession();
         requiresNotNull(session, "No active desktop session found");
 
@@ -1478,7 +1482,6 @@ public class DesktopCommand extends BaseCommand
     }
 
     protected Map<String, String> nameValuesToMap(String nameValues) {
-        nameValues = StringUtils.trim(nameValues);
         if (nameValues.isEmpty()) { return new HashMap<>(); }
         String pairDelim = "\n";
         if (!StringUtils.contains(nameValues, pairDelim) && !StringUtils.contains(nameValues, "\r")) {
@@ -1518,7 +1521,7 @@ public class DesktopCommand extends BaseCommand
         if (!context.hasData(CURRENT_DESKTOP_SESSION)) { return null; }
 
         Object sessionObj = context.getObjectData(CURRENT_DESKTOP_SESSION);
-        if (sessionObj == null || !(sessionObj instanceof DesktopSession)) {
+        if (!(sessionObj instanceof DesktopSession)) {
             context.removeData(CURRENT_DESKTOP_SESSION);
             return null;
         }
@@ -1539,7 +1542,7 @@ public class DesktopCommand extends BaseCommand
 
     protected DesktopElement getCurrentContainer() {
         Object obj = context.getObjectData(CURRENT_DESKTOP_CONTAINER);
-        return obj != null && obj instanceof DesktopElement ? (DesktopElement) obj : null;
+        return obj instanceof DesktopElement ? (DesktopElement) obj : null;
     }
 
     protected DesktopElement getRequiredElement(String name, ElementType expectedType) {
@@ -1855,7 +1858,7 @@ public class DesktopCommand extends BaseCommand
         return component.clear();
     }
 
-    protected String getText(String name) { return getRequiredElement(name, Any).getText(); }
+    protected String getText(String name) { return StringUtils.trim(getRequiredElement(name, Any).getText()); }
 
     protected String getAttribute(String locator, String attribute) {
         requires(StringUtils.isNotBlank(attribute), "invalid attribute", attribute);
@@ -1958,12 +1961,12 @@ public class DesktopCommand extends BaseCommand
 
     protected DesktopTable getCurrentTable() {
         Object obj = context.getObjectData(CURRENT_DESKTOP_TABLE);
-        return obj != null && obj instanceof DesktopTable ? (DesktopTable) obj : null;
+        return obj instanceof DesktopTable ? (DesktopTable) obj : null;
     }
 
     protected DesktopList getCurrentList() {
         Object obj = context.getObjectData(CURRENT_DESKTOP_LIST);
-        return obj != null && obj instanceof DesktopList ? (DesktopList) obj : null;
+        return obj instanceof DesktopList ? (DesktopList) obj : null;
     }
 
     protected StepResult saveListMetaData(String var, String name) {
@@ -2019,7 +2022,7 @@ public class DesktopCommand extends BaseCommand
 
     protected DesktopHierTable getCurrentHierTable() {
         Object obj = context.getObjectData(CURRENT_DESKTOP_HIER_TABLE);
-        return obj != null && obj instanceof DesktopHierTable ? (DesktopHierTable) obj : null;
+        return obj instanceof DesktopHierTable ? (DesktopHierTable) obj : null;
     }
 
     /**
@@ -2066,13 +2069,15 @@ public class DesktopCommand extends BaseCommand
 
     private void setTableFocus(DesktopTable table) {
         boolean isCurrentTable = table == context.getObjectData(CURRENT_DESKTOP_TABLE);
-        if (!isCurrentTable || (context.getObjectData(CURRENT_DESKTOP_TABLE_ROW)) == null) { return; }
+        if (!isCurrentTable || context.getObjectData(CURRENT_DESKTOP_TABLE_ROW) == null) { return; }
 
         DesktopTableRow tableRow = (DesktopTableRow) context.getObjectData(CURRENT_DESKTOP_TABLE_ROW);
+
         ConsoleUtils.log("shortcut key was pressed.. now setting focus back to table at " +
                          context.getStringData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_NAME));
-        WebElement editColumn = tableRow.getColumns().get(context
-                                                              .getStringData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_NAME));
+
+        WebElement editColumn = tableRow.getColumns()
+                                        .get(context.getStringData(CURRENT_DESKTOP_TABLE_EDITABLE_COLUMN_NAME));
         editColumn.click();
         context.removeData(CURRENT_DESKTOP_TABLE_ROW);
     }

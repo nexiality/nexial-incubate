@@ -42,8 +42,6 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.StatementCallback;
 import org.springframework.jdbc.core.support.JdbcDaoSupport;
 
-import com.Connx.jdbc.TCJdbc.TCJdbcStatement;
-
 import static org.nexial.core.NexialConst.*;
 
 /**
@@ -94,7 +92,7 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
                 result.setError("Unable to retrieve query result.  Statement is null");
                 return result;
             }
-            if (!(stmt instanceof TCJdbcStatement) && stmt.isClosed()) {
+            if (!StringUtils.equals(stmt.getClass().getSimpleName(), "TCJdbcStatement") && stmt.isClosed()) {
                 result.setError("Unable to retrieve query result since Statement is closed");
                 return result;
             }
@@ -178,18 +176,23 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
 
         sqls.forEach(sql -> {
             String query = sql.getSql();
+            String varName = sql.getVarName();
             if (StringUtils.isNotBlank(query)) {
-                if (context != null) { query = context.replaceTokens(query); }
 
-                ConsoleUtils.log("Executing '" + StringUtils.defaultIfEmpty(sql.getVarName(), "UNNAMED QUERY") +
+                if (context != null) {
+                    query = context.replaceTokens(query);
+                    varName = context.replaceTokens(varName);
+                }
+
+                ConsoleUtils.log("Executing '" + StringUtils.defaultIfEmpty(varName, "UNNAMED QUERY") +
                                  "' - " + query);
 
                 JdbcResult result = executeSql(query, null);
 
                 // set result to context now so we can use it right away
                 if (result != null) {
-                    if (context != null) { context.setData(sql.getVarName(), result); }
-                    outcome.addOutcome(sql.getVarName(), result);
+                    if (context != null) { context.setData(varName, result); }
+                    outcome.addOutcome(varName, result);
 
                     Type sqlType = result.getSqlType();
                     if (sqlType != null) {

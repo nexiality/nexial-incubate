@@ -19,19 +19,21 @@ package org.nexial.core.variable;
 
 import java.io.StringReader;
 import java.util.*;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.collections4.list.TreeList;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
-
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.plugins.io.CsvCommand;
 import org.nexial.core.utils.ConsoleUtils;
+
 import com.univocity.parsers.common.record.Record;
 import com.univocity.parsers.csv.CsvFormat;
 import com.univocity.parsers.csv.CsvParser;
+import com.univocity.parsers.csv.CsvParserSettings;
 
 import static java.lang.System.lineSeparator;
 
@@ -41,6 +43,8 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
     private String quote;
     private String recordDelim;
     private boolean header = true;
+    private boolean trimValue = true;
+    private int maxColumns;
     private CsvParser parser;
     private List<String> headers;
     private int columnCount;
@@ -58,32 +62,6 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
 
     @Override
     public String toString() { return getName() + "(" + lineSeparator() + getTextValue() + lineSeparator() + ")"; }
-
-    @Override
-    Transformer getTransformer() { return transformer; }
-
-    @Override
-    CsvDataType snapshot() {
-        CsvDataType snapshot = new CsvDataType();
-        snapshot.transformer = transformer;
-        snapshot.delim = delim;
-        snapshot.quote = quote;
-        snapshot.recordDelim = recordDelim;
-        snapshot.header = header;
-        snapshot.parser = parser;
-        if (CollectionUtils.isNotEmpty(headers)) { snapshot.headers = new ArrayList<>(headers); }
-        snapshot.rowCount = rowCount;
-        snapshot.columnCount = columnCount;
-        snapshot.indices = indices;
-        snapshot.flyweight = flyweight;
-        snapshot.readyToParse = readyToParse;
-        snapshot.textValue = textValue;
-        snapshot.value = value;
-        return snapshot;
-    }
-
-    @Override
-    protected void init() { parse(); }
 
     public List<String> getIndices() { return indices; }
 
@@ -103,37 +81,13 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
 
     public Record remove(String column, String value) {
         Record matched = retrieveFromCache(column, value);
-        if (matched == null) { return matched; }
+        if (matched == null) { return null; }
 
         ConsoleUtils.log("removing matched record");
         if (this.value.remove(matched)) { this.rowCount--; }
 
         ConsoleUtils.log("updating textValue due to record removal");
         resetTextValue();
-
-        // String recordDelim = csvFormat.getRecordSeparator();
-        // String delim = csvFormat.getDelimiter() + "";
-        // String recordDelim = parser.getDetectedFormat().getLineSeparatorString();
-        // int recordDelimLength = recordDelim.length();
-        // String delim = parser.getDetectedFormat().getDelimiter() + "";
-
-        // int posStart = textValue.indexOf(value);
-        // if (headers.contains(column) && posStart != -1) {
-        //     posStart = textValue.indexOf(delim + value) + delim.length();
-        //     for (int i = posStart; i >= recordDelimLength - 1; i--) {
-        //         int startFrom = i - recordDelimLength;
-        //         if (textValue.substring(startFrom, startFrom + recordDelimLength).equals(recordDelim)) {
-        //             posStart = startFrom + 1;
-        //             break;
-        //         }
-        //     }
-        // }
-        //
-        // if (posStart != -1) {
-        //     int posEnd = textValue.indexOf(recordDelim, posStart + 1);
-        //     textValue = textValue.substring(0, posStart - recordDelimLength) + textValue.substring(posEnd);
-        //     ConsoleUtils.log("updated textValue due to record removal");
-        // }
 
         return matched;
     }
@@ -169,6 +123,14 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
 
     public void setRecordDelim(String recordDelim) { this.recordDelim = recordDelim; }
 
+    public boolean isTrimValue() { return trimValue; }
+
+    public void setTrimValue(boolean trimValue) { this.trimValue = trimValue; }
+
+    public int getMaxColumns() { return maxColumns; }
+
+    public void setMaxColumns(int maxColumns) { this.maxColumns = maxColumns; }
+
     public void setReadyToParse(boolean readyToParse) { this.readyToParse = readyToParse; }
 
     public void reset(List<Record> records) {
@@ -202,6 +164,35 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
         resetTextValue();
     }
 
+    @NotNull
+    @Override
+    CsvTransformer getTransformer() { return transformer; }
+
+    @NotNull
+    @Override
+    CsvDataType snapshot() {
+        CsvDataType snapshot = new CsvDataType();
+        snapshot.transformer = transformer;
+        snapshot.delim = delim;
+        snapshot.quote = quote;
+        snapshot.recordDelim = recordDelim;
+        snapshot.header = header;
+        snapshot.maxColumns = maxColumns;
+        snapshot.parser = parser;
+        if (CollectionUtils.isNotEmpty(headers)) { snapshot.headers = new ArrayList<>(headers); }
+        snapshot.rowCount = rowCount;
+        snapshot.columnCount = columnCount;
+        snapshot.indices = indices;
+        snapshot.flyweight = flyweight;
+        snapshot.readyToParse = readyToParse;
+        snapshot.textValue = textValue;
+        snapshot.value = value;
+        return snapshot;
+    }
+
+    @Override
+    protected void init() { parse(); }
+
     protected void resetTextValue() {
         StringBuilder output = new StringBuilder();
 
@@ -224,7 +215,23 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
             value = null;
         }
 
-        parser = CsvCommand.newCsvParser(quote, delim, recordDelim, header);
+        CsvParserSettings settings = CsvCommand.newCsvParserSettings(delim, recordDelim, header, maxColumns);
+        settings.setQuoteDetectionEnabled(true);
+
+        if (StringUtils.isNotEmpty(quote)) {
+            settings.getFormat().setQuote(quote.charAt(0));
+            settings.setKeepQuotes(true);
+        }
+
+        if (!trimValue) {
+            settings.setIgnoreLeadingWhitespaces(false);
+            settings.setIgnoreLeadingWhitespacesInQuotes(false);
+            settings.setIgnoreTrailingWhitespaces(false);
+            settings.setIgnoreTrailingWhitespacesInQuotes(false);
+        }
+
+        parser = new CsvParser(settings);
+
         value = parser.parseAllRecords(new StringReader(textValue));
         rowCount = CollectionUtils.size(value);
         if (header) {
@@ -241,39 +248,6 @@ public class CsvDataType extends ExpressionDataType<List<Record>> {
         if (StringUtils.isEmpty(recordDelim)) { recordDelim = detectedFormat.getLineSeparatorString(); }
 
         resetTextValue();
-
-        // default config:
-        //  delimiter           = ,
-        //  quote               = "
-        //  recordDelim         = \r\n
-        //  ignoreEmptyLines    = false
-        //  allowMissingColumnNames = true
-        // csvFormat = EXCEL.withEscape('\\');
-        // textValue = enforceWindowsEOL(textValue);
-
-        // config override:
-        // csvFormat = header ? csvFormat.withFirstRecordAsHeader() : csvFormat.withSkipHeaderRecord(false);
-        // csvFormat = StringUtils.isNotEmpty(quote) ?
-        //             csvFormat.withQuote(quote.charAt(0)) : csvFormat.withQuote(null);
-        // if (StringUtils.isNotEmpty(delim)) { csvFormat = csvFormat.withDelimiter(delim.charAt(0)); }
-        // if (StringUtils.isNotEmpty(recordDelim)) {
-        //     csvFormat = csvFormat.withRecordSeparator(recordDelim);
-        //     if (StringUtils.equals(recordDelim, "\n")) { textValue = enforceUnixEOL(textValue); }
-        // }
-
-        // special treatment for end of line crap
-        // if (StringUtils.equals(csvFormat.getRecordSeparator(), "\r\n") && !StringUtils.contains(textValue, "\r\n")) {
-        //     we need to split by \r\n but none of such can be found in textValue.. so let's make it happen
-        // textValue = StringUtils.replace(textValue, "\n", "\r\n");
-        // } else if (StringUtils.equals(csvFormat.getRecordSeparator(), "\n") &&
-        //            StringUtils.contains(textValue, "\r\n")) {
-        //     we need to split by \n but textValue has \r\n... so we need to fool the system to think \r\n as \n
-        // textValue = StringUtils.replace(textValue, "\r\n", "\n");
-        // }
-
-        // parser = csvFormat.parse(new StringReader(textValue));
-        // headers = parser.getHeaderMap();
-        // value = parser.getRecords();
 
         if (CollectionUtils.isNotEmpty(indices) && CollectionUtils.isNotEmpty(headers)) {
             flyweight = new HashMap<>();

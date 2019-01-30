@@ -23,8 +23,10 @@ import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URLEncoder;
-import java.net.UnknownHostException;
 import java.util.*;
+import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.beanutils.BeanUtils;
 import org.apache.commons.beanutils.MethodUtils;
@@ -37,44 +39,53 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.xssf.usermodel.XSSFCell;
+import org.nexial.commons.utils.EnvUtils;
+import org.nexial.commons.utils.RegexUtils;
+import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.ExecutionEventListener;
+import org.nexial.core.MemManager;
+import org.nexial.core.TokenReplacementException;
+import org.nexial.core.aws.NexialS3Helper;
+import org.nexial.core.aws.SmsHelper;
+import org.nexial.core.excel.Excel;
+import org.nexial.core.excel.Excel.Worksheet;
+import org.nexial.core.excel.ExcelAddress;
+import org.nexial.core.excel.ext.CellTextReader;
+import org.nexial.core.interactive.InteractiveSession;
+import org.nexial.core.plugins.CanTakeScreenshot;
 import org.nexial.core.plugins.NexialCommand;
+import org.nexial.core.plugins.pdf.CommonKeyValueIdentStrategies;
+import org.nexial.core.plugins.sound.SoundMachine;
+import org.nexial.core.plugins.web.Browser;
+import org.nexial.core.plugins.web.WebDriverExceptionHelper;
+import org.nexial.core.reports.ExecutionMailConfig;
+import org.nexial.core.reports.NexialMailer;
+import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.ExecUtils;
+import org.nexial.core.utils.ExecutionLogger;
 import org.nexial.core.utils.OutputFileUtils;
+import org.nexial.core.utils.TrackTimeLogs;
+import org.nexial.core.variable.ExpressionException;
+import org.nexial.core.variable.ExpressionProcessor;
+import org.nexial.core.variable.Syspath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 
-import org.nexial.commons.javamail.MailObjectSupport;
-import org.nexial.commons.utils.EnvUtils;
-import org.nexial.commons.utils.RegexUtils;
-import org.nexial.commons.utils.TextUtils;
-import org.nexial.core.MemManager;
-import org.nexial.core.PluginManager;
-import org.nexial.core.TokenReplacementException;
-import org.nexial.core.aws.NexialS3Helper;
-import org.nexial.core.excel.Excel;
-import org.nexial.core.excel.Excel.Worksheet;
-import org.nexial.core.excel.ExcelAddress;
-import org.nexial.core.excel.ext.CellTextReader;
-import org.nexial.core.plugins.pdf.CommonKeyValueIdentStrategies;
-import org.nexial.core.reports.JenkinsVariables;
-import org.nexial.core.utils.ConsoleUtils;
-import org.nexial.core.utils.ExecutionLogger;
-import org.nexial.core.variable.ExpressionException;
-import org.nexial.core.variable.ExpressionProcessor;
-
-import static org.nexial.commons.utils.EnvUtils.enforceUnixEOL;
-import static org.nexial.core.NexialConst.*;
-import static org.nexial.core.NexialConst.Data.*;
-import static org.nexial.core.NexialConst.FlowControls.OPT_STEP_BY_STEP;
-import static org.nexial.core.NexialConst.Project.NEXIAL_HOME;
-import static org.nexial.core.excel.ext.CipherHelper.CRYPT_IND;
 import static java.io.File.separator;
 import static java.lang.System.lineSeparator;
 import static org.apache.commons.lang3.SystemUtils.IS_OS_WINDOWS;
 import static org.apache.commons.lang3.SystemUtils.USER_NAME;
+import static org.nexial.commons.utils.EnvUtils.enforceUnixEOL;
+import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.FlowControls.*;
+import static org.nexial.core.NexialConst.Project.NEXIAL_HOME;
+import static org.nexial.core.excel.ext.CipherHelper.CRYPT_IND;
 
 /**
  * represent the state of an test execution.  Differ from {@link ExecutionDefinition}, it contains the derived
@@ -82,6 +93,7 @@ import static org.apache.commons.lang3.SystemUtils.USER_NAME;
  * maintained.
  */
 public class ExecutionContext {
+    // data variables that are READ-ONLY and cannot be removed/altered
     private static final List<Class> SIMPLE_VALUES = Arrays.asList(Boolean.class, Byte.class, Short.class,
                                                                    Character.class, Integer.class, Long.class,
                                                                    Float.class, Double.class, String.class);
@@ -92,11 +104,26 @@ public class ExecutionContext {
     private static final String NON_DELIM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
     private static final String NAME_SPRING_CONTEXT = "nexialInternal.springContext";
     private static final String NAME_PLUGIN_MANAGER = "nexialInternal.pluginManager";
+    private static final String NAME_TRACK_TIME_LOGS = "nexialInternal.trackTimeLogs";
+
+    // function parsing
+    private static final String ESCAPED_DOLLAR = "\\$";
+    private static final String ESCAPED_OPEN_PARENTHESIS = "\\(";
+    private static final String ESCAPED_CLOSE_PARENTHESIS = "\\)";
+    private static final String ESCAPED_PIPE = "\\|";
+    private static final String ALT_DOLLAR = "__<~*~>__";
+    private static final String ALT_OPEN_PARENTHESIS = "__<?!?>__";
+    private static final String ALT_CLOSE_PARENTHESIS = "__<@*@>__";
+    private static final String ALT_PIPE = "__<%+%>__";
+    private static final String ALT_GML_CLOSE_TAG = "__#~~^~~#__";
+    private static final String ALT_GML_CLOSE_TAG2 = "__%&&*&&$__";
+    private static final String ESCAPED_TOKEN_START = "\\$\\{";
+    private static final String ESCAPED_TOKEN_END = "\\}";
 
     protected Logger logger = LoggerFactory.getLogger(getClass());
     protected ExecutionDefinition execDef;
     protected TestProject project;
-    protected File testScript;
+    protected Excel testScript;
     protected List<TestScenario> testScenarios;
     protected TestStep currentTestStep;
 
@@ -113,33 +140,98 @@ public class ExecutionContext {
     protected Map<String, Object> builtinFunctions;
     protected List<String> failfastCommands = new ArrayList<>();
     protected ExecutionLogger executionLogger;
-    protected MailObjectSupport mailer;
-    protected NexialS3Helper s3Helper;
+    // output-to-cloud (otc) via AWS S3
+    protected NexialS3Helper otc;
+    protected String otcNotReadyMessage;
+    protected SoundMachine dj;
+    protected SmsHelper smsHelper;
+    protected NexialMailer nexialMailer;
     protected Map<String, String> defaultContextProps;
-
+    protected List<String> readOnlyVars;
+    protected List<String> referenceDataForExecution = new ArrayList<>();
     protected ClassPathXmlApplicationContext springContext;
-    // protected WiniumDriver winiumDriver;
     protected PluginManager plugins;
     protected Map<String, Object> data = new ListOrderedMap<>();
     protected ExpressionProcessor expression;
+    protected ExecutionEventListener executionEventListener;
+    protected CanTakeScreenshot screenshotAgent;
+    protected Syspath syspath;
+    protected WebDriverExceptionHelper webDriverExceptionHelper;
+
+    // spring-managed map of webdriver related configs.
+    protected Map<BrowserType, String> webdriverHelperConfig;
+    private String iterationId;
+
+    class Function {
+        String functionName;
+        Object function;
+        String operation;
+        String[] parameters;
+
+        void parse(String token) {
+            // function object
+            functionName = StringUtils.substringBefore(token, TOKEN_PARAM_SEP);
+            Object functionObj = builtinFunctions.get(functionName);
+            if (functionObj == null) {
+                throw new IllegalArgumentException(functionName + " does not resolved to a function");
+            }
+
+            function = functionObj;
+
+            // operation
+            token = StringUtils.substringAfter(token, TOKEN_PARAM_SEP);
+            operation = StringUtils.substringBefore(token, TOKEN_PARAM_SEP);
+
+            // parameters
+            // could be 1 or more.
+            // e.g. a,b,c,d         => 1 param
+            // e.g. a,b,c,d|2       => 2 params
+            // e.g. a\|b\|\c|d|2|3  => 3 params, using pipe as nexial.textDelim
+
+            // get the rest of token after the first pipe.  this should represent the entirety of all params
+            token = replaceTokens(StringUtils.substringAfter(token, TOKEN_PARAM_SEP));
+
+            // compensate the use of TOKEN_PARAM_SEP as delimiter
+            String delim = getTextDelim();
+            boolean escapedDelim = false;
+            if (StringUtils.equals(delim, TOKEN_PARAM_SEP)) {
+                delim = ESCAPED_PIPE;
+                escapedDelim = true;
+            } else {
+                // if delim is not pipe, then we would want to preserve escaped pipe as part of argument
+                token = StringUtils.replace(token, ESCAPED_PIPE, ALT_PIPE);
+            }
+
+            // replace delim with magic delim (not found in token)
+            token = StringUtils.replace(token, delim, TOKEN_TEMP_DELIM);
+
+            List<String> paramList = TextUtils.toList(token, TOKEN_PARAM_SEP, false);
+            if (CollectionUtils.isEmpty(paramList)) {
+                throw new IllegalArgumentException("None or insufficient parameters found");
+            }
+
+            parameters = new String[paramList.size()];
+            for (int i = 0; i < paramList.size(); i++) {
+                String param = paramList.get(i);
+                // return the magic
+                param = StringUtils.replace(param, TOKEN_TEMP_DELIM, escapedDelim ? TOKEN_PARAM_SEP : delim);
+                param = StringUtils.replace(param, ALT_PIPE, "|");
+                param = StringUtils.replace(param, ESCAPED_DOLLAR, "$");
+                param = StringUtils.replace(param, ESCAPED_OPEN_PARENTHESIS, "(");
+                param = StringUtils.replace(param, ESCAPED_CLOSE_PARENTHESIS, ")");
+                parameters[i] = param;
+            }
+        }
+    }
 
     static final String KEY_COMPLEX = "__lAIxEn__";
     static final String DOT_LITERAL_REPLACER = "__53n7ry_4h34d__";
 
-    // support unit test and mocking
-    protected ExecutionContext() { }
-
-    public ExecutionContext(ExecutionDefinition execDef) { this(execDef, null); }
-
     public ExecutionContext(ExecutionDefinition execDef, Map<String, Object> intraExecutionData) {
         this.execDef = execDef;
         this.project = adjustPath(execDef);
-
-        try {
-            hostname = StringUtils.upperCase(EnvUtils.getHostName());
-        } catch (UnknownHostException e) {
-            throw new RuntimeException("Unable to determine host name of current host: " + e.getMessage());
-        }
+        this.hostname = StringUtils.upperCase(EnvUtils.getHostName());
+        setData(HOSTNAME, this.hostname, true);
 
         // init data map... something just doesn't make sense not to exist from the get-go
         data.put(OPT_LAST_OUTCOME, true);
@@ -147,29 +239,28 @@ public class ExecutionContext {
         if (MapUtils.isNotEmpty(intraExecutionData)) {
             // reuse existing spring context
             springContext = (ClassPathXmlApplicationContext) intraExecutionData.remove(NAME_SPRING_CONTEXT);
+            initSpringBeans();
+
             plugins = (PluginManager) intraExecutionData.remove(NAME_PLUGIN_MANAGER);
             plugins.setContext(this);
 
             data.putAll(intraExecutionData);
             data.remove(BREAK_CURRENT_ITERATION);
+            data.remove(LAST_ITERATION);
         } else {
             // init spring
-            springContext = new ClassPathXmlApplicationContext(
-                "classpath:" + System.getProperty(OPT_SPRING_XML, DEF_SPRING_XML));
+            springContext = new ClassPathXmlApplicationContext("classpath:" +
+                                                               System.getProperty(OPT_SPRING_XML, DEF_SPRING_XML));
+            initSpringBeans();
+
             // init plugins
             plugins = springContext.getBean("pluginManager", PluginManager.class);
             plugins.setContext(this);
             plugins.init();
         }
 
-        failfastCommands = springContext.getBean("failfastCommands", new ArrayList<String>().getClass());
-
-        // init built-in variables
-        builtinFunctions = springContext.getBean("builtinFunctions", new HashMap<String, Object>().getClass());
-
         // some data can be overridden by System property
         overrideIfSysPropFound(NEXIAL_HOME);
-        overrideIfSysPropFound(EXECUTION_MODE);
         overrideIfSysPropFound(ENABLE_EMAIL);
         overrideIfSysPropFound(OPT_OPEN_RESULT);
         overrideIfSysPropFound(ASSISTANT_MODE);
@@ -179,100 +270,28 @@ public class ExecutionContext {
         overrideIfSysPropFound(VERBOSE);
         overrideIfSysPropFound(TEXT_DELIM);
 
-        if (isEmailEnabled()) { mailer = springContext.getBean("mailer", MailObjectSupport.class); }
+        // initSpringBeans();
 
-        s3Helper = springContext.getBean("nexialS3Helper", NexialS3Helper.class);
-        s3Helper.setContext(this);
+        setData(ITERATION_ENDED, false);
+
         expression = new ExpressionProcessor(this);
-
-        defaultContextProps = springContext.getBean("defaultContextProps", new HashMap<String, String>().getClass());
+        executionLogger = new ExecutionLogger(this);
     }
 
-    /* todo: can't do this now... until execution interrupt clean up is done
+    // support unit test and mocking
+    protected ExecutionContext() { }
+
+    public ExecutionContext(ExecutionDefinition execDef) { this(execDef, null); }
+
+    public void setIterationId(String iterationId) { this.iterationId = iterationId; }
+
     public void useTestScript(Excel testScript) throws IOException {
-        if (testScript == null) { throw new IOException("test script is null!"); }
-
-        this.testScript = testScript.getFile();
-        setData(OPT_INPUT_EXCEL_FILE, this.testScript.getAbsoluteFile());
-
-        MDC.put(TEST_SUITE_NAME, getRunId());
-        MDC.put(TEST_NAME, getId());
-        if (logger.isInfoEnabled()) { logger.info("STARTS"); }
-
-        executionLogger = new ExecutionLogger(getRunId());
-
-        // parse merged test script
-
-        // 1. make range for data
-        Worksheet dataSheet = testScript.worksheet(SHEET_MERGED_DATA);
-
-        ExcelAddress addr = new ExcelAddress("A1");
-        XSSFCell firstCell = dataSheet.cell(addr);
-        if (firstCell == null || StringUtils.isBlank(firstCell.getStringCellValue())) {
-            throw new IllegalArgumentException("File (" + testScript + "), Worksheet (" + dataSheet.getName() +
-                                               "): no test data defined");
-        }
-
-        // 2. retrieve all data in range
-        int endRowIndex = dataSheet.findLastDataRow(addr) + 1;
-        for (int i = 1; i < endRowIndex; i++) {
-            ExcelAddress addrRow = new ExcelAddress("A" + i + ":B" + i);
-            List<XSSFCell> row = dataSheet.cells(addrRow).get(0);
-            String name = row.get(0).getStringCellValue();
-            String value = row.get(1).getStringCellValue();
-            if (StringUtils.isNotBlank(value)) { data.put(name, value); }
-        }
-
-        // 3. parse test scenarios
-        testScenarios = new ArrayList<>();
-        for (int i = 0; i < execDef.getScenarios().size(); i++) {
-            String scenario = execDef.getScenarios().get(i);
-            Worksheet worksheet = testScript.worksheet(scenario);
-            if (worksheet == null) {
-                throw new IOException("Specified scenario '" + scenario + "' not found");
-            } else {
-                testScenarios.add(new TestScenario(this, worksheet));
-            }
-        }
-
-        // 4. pdf specific parsing for custom key-value extraction strategy
-        CommonKeyValueIdentStrategies.harvestStrategy(this);
-
-        // 5. fill in to sys prop, if not defined - only for critical sys prop
-        Map<String, String> criticalProps =
-            TextUtils.toMap(ENABLE_EMAIL + "=" + DEF_ENABLE_EMAIL + "|" +
-                            ASSISTANT_MODE + "=" + DEF_OPEN_RESULT + "|" +
-                            OUTPUT_TO_CLOUD + "=" + DEF_OUTPUT_TO_CLOUD + "|" +
-                            OPT_CLOUD_OUTPUT_BASE + "=" + DEF_NEXIAL_OUTPUT_S3_BUCKET + "|" +
-                            GENERATE_EXEC_REPORT + "=" + DEF_GENERATE_EXEC_REPORT,
-                            "|", "=");
-        criticalProps.forEach((name, def) -> {
-            if (StringUtils.isBlank(System.getProperty(name))) {
-                String value = hasData(name) ? getStringData(name) : def;
-                if (StringUtils.isNotEmpty(value)) { System.setProperty(name, value); }
-            }
-        });
-
-        // support dynamic resolution of WPS executable path
-        String spreadsheetProgram = getSystemThenContextStringData(SPREADSHEET_PROGRAM, this, DEF_SPREADSHEET);
-        if (StringUtils.equals(spreadsheetProgram, SPREADSHEET_PROGRAM_WPS)) {
-            spreadsheetProgram = Excel.resolveWpsExecutablePath();
-        }
-
-        // DO NOT SET BROWSER TYPE TO SYSTEM PROPS, SINCE THIS WILL PREVENT ITERATION-LEVEL OVERRIDES
-        // System.setProperty(SPREADSHEET_PROGRAM, spreadsheetProgram);
-    }
-    */
-
-    public void useTestScript(File testScript) throws IOException {
         this.testScript = testScript;
-        setData(OPT_INPUT_EXCEL_FILE, testScript.getAbsoluteFile());
+        setData(OPT_INPUT_EXCEL_FILE, testScript.getFile().getAbsoluteFile());
 
         MDC.put(TEST_SUITE_NAME, getRunId());
         MDC.put(TEST_NAME, getId());
         if (logger.isInfoEnabled()) { logger.info("STARTS"); }
-
-        executionLogger = new ExecutionLogger(getRunId());
 
         // parse merged test script
         parse();
@@ -293,7 +312,7 @@ public class ExecutionContext {
         if (isVerbose()) {
             executionLogger.log(command, message);
         } else {
-            ConsoleUtils.log(command.toString(), message);
+            ConsoleUtils.log(command.getTarget(), message);
         }
     }
 
@@ -302,7 +321,7 @@ public class ExecutionContext {
     public String getRunId() { return execDef.getRunId(); }
 
     public String getId() {
-        return "[" + getRunId() + "][" + (testScript == null ? "UNKNOWN SCRIPT" : testScript.getName()) + "]";
+        return "[" + getRunId() + "][" + (testScript == null ? "UNKNOWN SCRIPT" : testScript.getFile().getName()) + "]";
     }
 
     public boolean isFailFastCommand(String target, String command) {
@@ -325,55 +344,111 @@ public class ExecutionContext {
 
     public long getEndTimestamp() { return endTimestamp; }
 
-    public MailObjectSupport getMailer() { return mailer; }
+    public Map<BrowserType, String> getWebdriverHelperConfig() { return webdriverHelperConfig; }
 
-    public NexialS3Helper getS3Helper() { return s3Helper; }
+    public WebDriverExceptionHelper getWebDriverExceptionHelper() { return webDriverExceptionHelper; }
+
+    public NexialS3Helper getOtc() throws IOException {
+        // check that the required properties are set
+        if (otc == null || !otc.isReadyForUse()) { throw new IOException(otcNotReadyMessage); }
+        return otc;
+    }
+
+    public SoundMachine getDj() {
+        if (dj == null) { initDj(); }
+        return dj;
+    }
+
+    public SmsHelper getSmsHelper() { return smsHelper; }
+
+    public NexialMailer getNexialMailer() { return nexialMailer; }
+
+    public boolean isPluginLoaded(String target) { return plugins.isPluginLoaded(target); }
 
     public NexialCommand findPlugin(String target) { return plugins.getPlugin(target); }
 
-    public File getTestScript() { return testScript; }
+    public Browser getBrowser() { return plugins.getBrowser(); }
+
+    @NotNull
+    public String getBrowserType() {
+        // gotta push default to context
+        // String browser = System.getProperty(BROWSER);
+        // String browser = StringUtils.remove(System.getProperty(BROWSER, getStringData(BROWSER, DEF_BROWSER)), ".");
+        // setData(BROWSER, browser);
+        // return browser;
+
+        // DO NOT SET BROWSER TYPE TO SYSTEM PROPS, SINCE THIS WILL PREVENT ITERATION-LEVEL OVERRIDES
+        // System.setProperty(BROWSER, browserType);
+
+        return StringUtils.remove(System.getProperty(BROWSER, getStringData(BROWSER, DEF_BROWSER)), ".");
+    }
+
+    public Excel getTestScript() { return testScript; }
 
     public List<TestScenario> getTestScenarios() { return testScenarios; }
 
-    public boolean isLocalExecution() {
-        return StringUtils.equals(getStringData(EXECUTION_MODE), EXECUTION_MODE_LOCAL);
-    }
-
-    public boolean isRemoteExecution() {
-        return StringUtils.equals(getStringData(EXECUTION_MODE), EXECUTION_MODE_REMOTE);
-    }
+    public ExecutionEventListener getExecutionEventListener() { return executionEventListener; }
 
     public boolean isScreenshotOnError() { return getBooleanData(OPT_SCREENSHOT_ON_ERROR, false); }
 
-    public boolean isInterativeMode() {
-        JenkinsVariables jv = JenkinsVariables.getInstance(this);
-        return getBooleanData(OPT_INTERACTIVE, false) && jv.isNotInvokedFromJenkins();
+    public void registerScreenshotAgent(CanTakeScreenshot agent) { screenshotAgent = agent; }
+
+    public void clearScreenshotAgent() { screenshotAgent = null; }
+
+    public CanTakeScreenshot findCurrentScreenshotAgent() { return screenshotAgent; }
+
+    public boolean isInteractiveMode() {
+        return getBooleanData(OPT_INTERACTIVE, false) && !ExecUtils.isRunningInZeroTouchEnv();
     }
 
-    public boolean isFailFast() { return getBooleanData(FAIL_FAST, DEF_FAIL_FAST); }
+    public boolean isFailFast() { return getBooleanData(FAIL_FAST, DEF_FAIL_FAST) && !isInteractiveMode(); }
 
-    /***
-     * Evaluate Page Source Stability Required
-     */
+    /** Evaluate Page Source Stability Required */
     public boolean isPageSourceStabilityEnforced() {
         return getBooleanData(ENFORCE_PAGE_SOURCE_STABILITY, DEF_ENFORCE_PAGE_SOURCE_STABILITY);
     }
 
-    /***
+    /**
      * increment current failure count and evaluate if execution failure should be declared since we've passed the
      * failAfter threshold
      */
-    public void incrementAndEvaluateFail() {
+    public void incrementAndEvaluateFail(StepResult result) {
+        // `isError()` ensure that the result is not SUCCESS, SKIP or WARN
+        if (!result.isError()) { return; }
+
         // increment execution fail count
         int execFailCount = getIntData(EXECUTION_FAIL_COUNT, 0) + 1;
         setData(EXECUTION_FAIL_COUNT, execFailCount);
 
-        // determine if fail-immediate is emminent
+        // determine if fail-immediate is eminent
         int failAfter = getFailAfter();
         if (failAfter != -1 && execFailCount >= failAfter) {
             ConsoleUtils.error("execution fail count (" + execFailCount + ") exceeds fail-after limit (" + failAfter +
                                "), setting fail-immediate to true");
             setFailImmediate(true);
+        }
+
+        // in effect, the `onError()` event works the same way as `pauseOnError`. Nexial supports both stylistic variety
+        executionEventListener.onError();
+
+        if (getBooleanData(OPT_PAUSE_ON_ERROR, DEF_PAUSE_ON_ERROR)) {
+            ConsoleUtils.doPause(this, "[ERROR #" + execFailCount + "]: Error found " +
+                                       ExecutionLogger.toHeader(getCurrentTestStep()) + " - " +
+                                       result.getMessage());
+        }
+    }
+
+    public void evaluateResult(StepResult result) {
+        if (result.isSkipped()) {
+            setData(EXECUTION_SKIP_COUNT, getIntData(EXECUTION_SKIP_COUNT, 0) + 1);
+            return;
+        }
+
+        setData(EXECUTION_EXEC_COUNT, getIntData(EXECUTION_EXEC_COUNT, 0) + 1);
+        if (result.isSuccess()) {
+            setData(EXECUTION_PASS_COUNT, getIntData(EXECUTION_PASS_COUNT, 0) + 1);
+        } else {
+            incrementAndEvaluateFail(result);
         }
     }
 
@@ -383,23 +458,17 @@ public class ExecutionContext {
 
     public boolean isVerbose() { return getBooleanData(VERBOSE); }
 
-    /**
-     * true if web element should be highlighted as it's being referenced durin testing.  ONLY APPLICABLE TO
-     * WEB APPLICATION.
-     */
-    public boolean isHighlightWebElementEnabled() { return getBooleanData(OPT_DEBUG_HIGHLIGHT, false); }
-
     public boolean isLenientStringCompare() { return getBooleanData(OPT_EASY_STRING_COMPARE, true); }
 
     public boolean isProxyRequired() { return getBooleanData(OPT_PROXY_REQUIRED, false); }
 
     public boolean isOutputToCloud() { return getBooleanData(OUTPUT_TO_CLOUD, DEF_OUTPUT_TO_CLOUD); }
 
-    public String getMailTo() { return getStringData(MAIL_TO); }
+    @NotNull
+    public String getTextDelim() { return getRawStringData(TEXT_DELIM, ","); }
 
-    public String getTextDelim() { return getStringData(TEXT_DELIM, ","); }
-
-    public String getNullValueToken() { return getStringData(NULL_VALUE, NULL); }
+    @NotNull
+    public String getNullValueToken() { return getRawStringData(NULL_VALUE, NULL); }
 
     public long getPollWaitMs() { return getIntData(POLL_WAIT_MS, DEF_POLL_WAIT_MS); }
 
@@ -407,17 +476,9 @@ public class ExecutionContext {
 
     public long getDelayBetweenStep() { return getIntData(DELAY_BETWEEN_STEPS_MS, DEF_DELAY_BETWEEN_STEPS_MS); }
 
-    public String getBrowserType() {
-        String browserType = StringUtils.remove(System.getProperty(BROWSER, getStringData(BROWSER, DEF_BROWSER)), ".");
-
-        // DO NOT SET BROWSER TYPE TO SYSTEM PROPS, SINCE THIS WILL PREVENT ITERATION-LEVEL OVERRIDES
-        // System.setProperty(BROWSER, browserType);
-
-        return browserType;
-    }
-
     public boolean hasData(String name) { return getObjectData(name) != null; }
 
+    @Nullable
     public Object getObjectData(String name) {
         if (StringUtils.isBlank(name)) { return null; }
         String sysProp = System.getProperty(name);
@@ -426,16 +487,15 @@ public class ExecutionContext {
     }
 
     public String getStringData(String name) {
-        // perhaps it's a system property?
-        String rawValue = System.getProperty(name, MapUtils.getString(data, name));
+        String rawValue = getRawStringData(name);
+        if (StringUtils.isBlank(rawValue)) { return rawValue; }
         String resolved = replaceTokens(rawValue);
         if (StringUtils.startsWith(rawValue, CRYPT_IND)) { CellTextReader.registerCrypt(name, rawValue, resolved); }
         return resolved;
     }
 
     public String getStringData(String name, String def) {
-        if (MapUtils.isEmpty(data) || StringUtils.isEmpty(name) || !data.containsKey(name)) { return def; }
-        return getStringData(name);
+        return StringUtils.isEmpty(name) ? def : StringUtils.defaultIfEmpty(getStringData(name), def);
     }
 
     public int getIntData(String name) {
@@ -496,63 +556,107 @@ public class ExecutionContext {
         return null;
     }
 
+    @NotNull
     public Map<String, String> getDataByPrefix(String prefix) {
         Map<String, String> props = new LinkedHashMap<>();
 
-        // data.keySet()
-        //     .stream()
-        //     .filter(key -> StringUtils.startsWith(key, prefix))
-        //     .forEach(key -> props.put(StringUtils.substringAfter(key, prefix),
-        //                               replaceTokens(MapUtils.getString(data, key))));
-        System.getProperties().forEach((key, value) -> {
-            String sKey = key.toString();
-            if (StringUtils.startsWith(sKey, prefix)) {
-                props.put(StringUtils.substringAfter(sKey, prefix), replaceTokens(Objects.toString(value)));
-            }
-        });
         data.forEach((key, value) -> {
             if (StringUtils.startsWith(key, prefix)) {
                 props.put(StringUtils.substringAfter(key, prefix), replaceTokens(Objects.toString(value)));
             }
         });
 
+        // scan system properties later so that they can override those also found in `data`
+        System.getProperties().forEach((key, value) -> {
+            String sKey = key.toString();
+            if (StringUtils.startsWith(sKey, prefix)) {
+                props.put(StringUtils.substringAfter(sKey, prefix), replaceTokens(Objects.toString(value)));
+            }
+        });
+
         return props;
     }
 
+    @NotNull
+    public Collection<String> getDataNames(String prefix) {
+        // ordered data names during collection; we have no way to predetermined the right order
+        Set<String> names = new TreeSet<>();
+
+        names.addAll(data.keySet()
+                         .stream()
+                         .filter(name -> StringUtils.isEmpty(prefix) || StringUtils.startsWith(name, prefix))
+                         .collect(Collectors.toList()));
+        names.addAll(System.getProperties()
+                           .stringPropertyNames()
+                           .stream()
+                           .filter(name -> StringUtils.isEmpty(prefix) || StringUtils.startsWith(name, prefix))
+                           .collect(Collectors.toList()));
+
+        return names;
+    }
+
+    @NotNull
+    public Collection<String> getDataNamesByRegex(String regex) {
+        // ordered data names during collection; we have no way to predetermined the right order
+        Set<String> names = new TreeSet<>();
+
+        names.addAll(data.keySet()
+                         .stream()
+                         .filter(name -> StringUtils.isEmpty(regex) || RegexUtils.match(name, regex))
+                         .collect(Collectors.toList()));
+        names.addAll(System.getProperties()
+                           .stringPropertyNames()
+                           .stream()
+                           .filter(name -> StringUtils.isEmpty(regex) || RegexUtils.match(name, regex))
+                           .collect(Collectors.toList()));
+
+        return names;
+    }
+
+    @NotNull
     public Map<String, Object> getObjectByPrefix(String prefix) {
-        // data.keySet()
-        //     .stream()
-        //     .filter(key -> StringUtils.startsWith(key, prefix))
-        //     .forEach(key -> props.put(key, data.get(key)));
-        Map<String, Object> props = new LinkedHashMap<>(getSysPropsByPrefix(prefix));
+        Map<String, Object> props = new LinkedHashMap<>(EnvUtils.getSysPropsByPrefix(prefix));
         data.forEach((key, value) -> {
             if (StringUtils.startsWith(key, prefix)) { props.put(StringUtils.substringAfter(key, prefix), value); }
         });
         return props;
     }
 
-    public static Map<String, String> getSysPropsByPrefix(String prefix) {
-        Map<String, String> props = new LinkedHashMap<>();
-        System.getProperties().forEach((key, value) -> {
-            String sKey = key.toString();
-            if (StringUtils.startsWith(sKey, prefix)) {
-                props.put(StringUtils.substringAfter(sKey, prefix), Objects.toString(value));
-            }
-        });
-        return props;
+    public boolean isReadOnlyData(String var) {
+        return StringUtils.isBlank(var) || readOnlyVars.contains(var) || StringUtils.startsWith(var, "java.");
     }
 
     /**
      * remove data variable both from context and system
      */
     public String removeData(String name) {
-        String removed = Objects.toString(data.remove(name));
+        if (isReadOnlyData(name)) {
+            ConsoleUtils.error("Removing READ-ONLY variable is not allowed: " + name);
+            return null;
+        }
+
+        return removeDataForcefully(name);
+    }
+
+    public String removeDataForcefully(String name) {
+        Object removedObj = data.remove(name);
+        String removed;
+        if (removedObj == null) {
+            removed = null;
+        } else {
+            removed = Objects.toString(removedObj);
+            // keep GC happy
+            removedObj = null;
+        }
+
         String removedFromSys = System.clearProperty(name);
         return StringUtils.isEmpty(removed) ? removedFromSys : removed;
     }
 
     public void setData(String name, String value) {
-        setData(name, value, false);
+        // some reference data are considered "special" and should be elevated to "execution" level so that they can be
+        // as such for Execution Dashboard
+        setData(name, value, referenceDataForExecution.contains(name));
     }
 
     public void setData(String name, String value, boolean updateSysProps) {
@@ -581,11 +685,16 @@ public class ExecutionContext {
         if (value == null) { data.remove(name); } else { data.put(name, value); }
     }
 
-    public boolean isNullValue(String value) { return StringUtils.equals(value, getNullValueToken()); }
+    public boolean isNullValue(String value) { return value == null || StringUtils.equals(value, getNullValueToken()); }
+
+    public boolean isEmptyValue(String value) {
+        return StringUtils.equals(value, "") || StringUtils.equals(value, EMPTY);
+    }
 
     public String replaceTokens(String text) {
         if (StringUtils.isBlank(text)) { return text; }
         if (StringUtils.equals(text, getNullValueToken())) { return null; }
+
         text = treatCommonValueShorthand(text);
         if (text == null) { return null; }
 
@@ -600,7 +709,16 @@ public class ExecutionContext {
         Map<String, Object> complexValues = new HashMap<>();
         Set<String> tokens = findTokens(text);
 
+        List<String> ignoredVars = TextUtils.toList(getRawStringData(OPT_VAR_EXCLUDE_LIST), getTextDelim(), false);
+        if (CollectionUtils.isNotEmpty(ignoredVars)) { tokens.removeAll(ignoredVars); }
+
         boolean allTokenResolvedToNull = CollectionUtils.isNotEmpty(tokens);
+        boolean unresolvedAsIs = DEF_VAR_DEFAULT_AS_IS;
+        if (hasData(OPT_VAR_DEFAULT_AS_IS)) {
+            Object config = getObjectData(OPT_VAR_DEFAULT_AS_IS);
+            if (config != null) { unresolvedAsIs = BooleanUtils.toBoolean(config.toString()); }
+        }
+
         for (String token : tokens) {
             Object value = getObjectData(token);
             String tokenized = TOKEN_START + token + TOKEN_END;
@@ -610,17 +728,15 @@ public class ExecutionContext {
                 // if data contains a key (token) with value `null`, then we should just return null as is.
                 if (data.containsKey(token)) {
                     // if this is the only token, then we are done
-                    if (tokens.size() == 1 && StringUtils.equals(text, tokenized)) {
-                        return null;
-                    }
+                    if (tokens.size() == 1 && StringUtils.equals(text, tokenized)) { return null; }
 
                     // if not, replace token with "" and continue.  Doesn't make sense to replace token with `null`
                     text = StringUtils.replace(text, tokenized, "");
                 } else {
                     // otherwise, this token is not defined in context nor system prop.
                     // so we'll replace it with empty string
-                    if (tokens.size() == 1 && StringUtils.equals(text, tokenized)) { return ""; }
-                    text = StringUtils.replace(text, tokenized, "");
+                    if (tokens.size() == 1 && StringUtils.equals(text, tokenized)) { return unresolvedAsIs ? text : "";}
+                    if (!unresolvedAsIs) { text = StringUtils.replace(text, tokenized, ""); }
                 }
 
                 // NO LONGER APPLIES!! SEE CODE ABOVE
@@ -648,7 +764,12 @@ public class ExecutionContext {
 
             Class valueType = value.getClass();
             if (valueType.isPrimitive() || SIMPLE_VALUES.contains(valueType)) {
+                // if there's substitution for ${...}[] and the `value` can be treated as list
+                // if (isListCompatible(value) && containListAccess(text, tokenized)) {
+                //     collectionValues.put(token, StringUtils.split(value.toString(), getTextDelim()));
+                // } else {
                 text = StringUtils.replace(text, tokenized, StringUtils.defaultString(getStringData(token)));
+                // }
             } else if (Collection.class.isAssignableFrom(valueType) || valueType.isArray()) {
                 collectionValues.put(token, value);
             } else {
@@ -692,7 +813,13 @@ public class ExecutionContext {
         try {
             return expression.process(text);
         } catch (ExpressionException e) {
-            ConsoleUtils.error(getRunId(), "Unable to process expression due to " + e.getMessage(), e);
+            String errorPrefix = "Unable to process expression due to ";
+            for (Throwable throwable : ExceptionUtils.getThrowableList(e.getCause())) {
+                if (throwable instanceof IOException) {
+                    throw new IllegalArgumentException(errorPrefix + throwable.getMessage());
+                }
+            }
+            ConsoleUtils.error(getRunId(), errorPrefix + e.getMessage(), e);
             return text;
         }
     }
@@ -712,10 +839,18 @@ public class ExecutionContext {
                 pathPart = StringUtils.substringBefore(pathPart, " ");
 
                 if (StringUtils.isNotBlank(pathPart)) {
+                    // need to skip `</...>` text for HTML/XML content
+                    text = StringUtils.replace(text, "</", ALT_GML_CLOSE_TAG);
+                    text = StringUtils.replace(text, "/>", ALT_GML_CLOSE_TAG2);
+
                     String pathPathReplace = IS_OS_WINDOWS ?
                                              StringUtils.replace(pathPart, "/", "\\") :
                                              StringUtils.replace(pathPart, "\\", "/");
                     text = StringUtils.replaceOnce(text, pathPart, pathPathReplace);
+
+                    // put `</...>` back for HTML/XML content
+                    text = StringUtils.replace(text, ALT_GML_CLOSE_TAG, "</");
+                    text = StringUtils.replace(text, ALT_GML_CLOSE_TAG2, "/>");
                 }
             }
 
@@ -731,29 +866,56 @@ public class ExecutionContext {
         return resolveRunModeSpecificUrl(file.getAbsolutePath());
     }
 
-    public String resolveRunModeSpecificUrl(String filename) {
-        if (StringUtils.isBlank(filename)) { return filename; }
-
-        if (StringUtils.startsWithIgnoreCase(filename, "https://") ||
-            StringUtils.startsWithIgnoreCase(filename, "http://")) { return filename; }
-
-        if (!isRemoteExecution()) { return filename; }
-
-        filename = encodeForUrl(filename);
-        // make sure serverUrl ends with /
-        String serverUrl = StringUtils.appendIfMissing(getStringData(OPT_REPORT_SERVER_URL), "/");
-
-        String serverUri = StringUtils.substringAfter(filename, getStringData(OPT_REPORT_SERVER_BASEDIR));
-        // make sure serverUri DOES NOT starts with /
-        serverUri = StringUtils.removeStart(StringUtils.replace(serverUri, "\\", "/"), "/");
-        return serverUrl + serverUri;
-    }
+    public String resolveRunModeSpecificUrl(String filename) { return filename; }
 
     public TestProject getProject() { return project; }
 
     public TestStep getCurrentTestStep() { return currentTestStep; }
 
     protected void setCurrentTestStep(TestStep testStep) { this.currentTestStep = testStep; }
+
+    @NotNull
+    public String generateTestStepOutput(String extension) {
+        if (syspath == null) { syspath = new Syspath(); }
+        return syspath.out("fullpath") + separator +
+               OutputFileUtils.generateOutputFilename(getCurrentTestStep(), extension);
+    }
+
+    public void adjustForInteractive(InteractiveSession session) {
+        String targetScenario = session.getScenario();
+        Collection<String> targetActivities = session.getActivities();
+
+        List<TestScenario> filteredScenarios = new ArrayList<>();
+        testScenarios.forEach(scenario -> {
+            if (StringUtils.equals(targetScenario, scenario.getName())) {
+                if (CollectionUtils.isNotEmpty(targetActivities)) {
+                    List<TestCase> filteredActivities = new ArrayList<>();
+                    List<TestCase> activities = scenario.getTestCases();
+                    targetActivities.forEach(targetActivity -> activities.forEach(activity -> {
+                        if (StringUtils.equals(targetActivity, activity.getName())) {
+                            filteredActivities.add(activity);
+                        }
+                    }));
+                    activities.clear();
+                    activities.addAll(filteredActivities);
+                }
+
+                filteredScenarios.add(scenario);
+            }
+        });
+
+        testScenarios = filteredScenarios;
+    }
+
+    public String getCurrentActivity() { return getStringData(OPT_CURRENT_ACTIVITY); }
+
+    public void setCurrentActivity(TestCase activity) {
+        if (activity == null) {
+            removeDataForcefully(OPT_CURRENT_ACTIVITY);
+        } else {
+            setData(OPT_CURRENT_ACTIVITY, activity.getName());
+        }
+    }
 
     public void fillIntraExecutionData(Map<String, Object> intraExecutionData) {
         intraExecutionData.putAll(getDataMap());
@@ -775,10 +937,26 @@ public class ExecutionContext {
 
     public void clearScriptRefData() { clearReferenceData(SCRIPT_REF_PREFIX); }
 
-    public void endIteration() {
-        testScript = null;
+    public void startIteration(int currIteration, boolean firstUse) {
+        getTrackTimeLogs();
 
-        if (testScenarios != null) {
+        // remember whether we want to track execution completion as a time-track event or not
+        System.setProperty(TRACK_EXECUTION, getStringData(TRACK_EXECUTION, DEF_TRACK_EXECUTION));
+
+        ExecutionEventListener eventListener = getExecutionEventListener();
+
+        // handling onExecutionStart
+        if (firstUse) { eventListener.onExecutionStart(); }
+
+        setData(CURR_ITERATION, currIteration);
+        if (currIteration == 1) { eventListener.onScriptStart(); }
+        eventListener.onIterationStart();
+    }
+
+    public void endIteration() {
+        if (getBooleanData(OPT_INTERACTIVE, false)) { return; }
+
+        if (CollectionUtils.isNotEmpty(testScenarios)) {
             for (TestScenario testScenario : testScenarios) {
                 ExecutionSummary executionSummary = testScenario.getExecutionSummary();
                 scriptStepCount += executionSummary.getTotalSteps();
@@ -786,9 +964,51 @@ public class ExecutionContext {
                 scriptWarnCount += executionSummary.getWarnCount();
                 scriptFailCount += executionSummary.getFailCount();
             }
+
+            testScenarios.forEach(TestScenario::close);
+            testScenarios.clear();
+            testScenarios = null;
         }
 
-        testScenarios = null;
+        currentTestStep = null;
+
+        getExecutionEventListener().onIterationComplete();
+        removeTrackTimeLogs();
+
+        if (testScript != null) {
+            try {
+                // (2018/12/16,automike): memory consumption precaution
+                testScript.close();
+            } catch (IOException e) {
+                ConsoleUtils.error("Unable to close Excel file (" + testScript + "): " + e.getMessage());
+            }
+
+            testScript = null;
+        }
+    }
+
+    public void endScript() {
+        if (getBooleanData(OPT_INTERACTIVE, false)) { return; }
+
+        execDef = null;
+
+        if (testScript != null) {
+            try {
+                testScript.close();
+            } catch (IOException e) {
+                ConsoleUtils.error("Unable to close script (" + testScript.getOriginalFile() + "): " + e.getMessage());
+            }
+
+            testScript = null;
+        }
+
+        if (CollectionUtils.isNotEmpty(testScenarios)) {
+            testScenarios.forEach(TestScenario::close);
+            testScenarios.clear();
+            testScenarios = null;
+        }
+
+        currentTestStep = null;
     }
 
     public int getScriptStepCount() { return scriptStepCount; }
@@ -810,14 +1030,31 @@ public class ExecutionContext {
     public void setEndImmediate(boolean endImmediate) { data.put(END_IMMEDIATE, endImmediate); }
 
     // support flow control - EndLoopIf()
-    public boolean isBreakCurrentIteration() { return getBooleanData(BREAK_CURRENT_ITERATION, false); }
+    public boolean isBreakCurrentIteration() {
+        return getBooleanData(BREAK_CURRENT_ITERATION, false) || isFailImmediate();
+    }
 
     public void setBreakCurrentIteration(boolean breakLoop) { setData(BREAK_CURRENT_ITERATION, breakLoop); }
 
+    @NotNull
+    public TrackTimeLogs getTrackTimeLogs() {
+        TrackTimeLogs trackTimeLogs = null;
+        Object obj = getObjectData(NAME_TRACK_TIME_LOGS);
+        if (obj instanceof TrackTimeLogs) { trackTimeLogs = (TrackTimeLogs) obj; }
+
+        if (trackTimeLogs == null) {
+            trackTimeLogs = new TrackTimeLogs();
+            setData(NAME_TRACK_TIME_LOGS, trackTimeLogs);
+        }
+
+        return trackTimeLogs;
+    }
+
+    public void removeTrackTimeLogs() { removeData(NAME_TRACK_TIME_LOGS); }
+
     /** iteration-scoped execution */
     public boolean execute() throws IOException {
-        startTimestamp = System.currentTimeMillis();
-        startDateTime = DF_TIMESTAMP.format(startTimestamp);
+        markExecutionStart();
 
         boolean allPass = true;
 
@@ -825,11 +1062,13 @@ public class ExecutionContext {
         // set back to its pre-execution state
         Map<String, String> ref = gatherScenarioReferenceData();
 
+        int scenarioSeqId = 0;
         for (TestScenario testScenario : testScenarios) {
-            // re-init scneario ref data
+            // re-init scenario ref data
             clearScenarioRefData();
             ref.forEach((name, value) -> data.put(SCENARIO_REF_PREFIX + name, replaceTokens(value)));
-
+            testScenario.setIterationId(iterationId);
+            testScenario.setScenarioSeqId(++scenarioSeqId);
             if (!testScenario.execute()) {
                 allPass = false;
 
@@ -857,12 +1096,21 @@ public class ExecutionContext {
             }
         }
 
-        endTimestamp = System.currentTimeMillis();
-        endDateTime = DF_TIMESTAMP.format(endTimestamp);
+        markExecutionEnd();
 
         MemManager.gc(this);
 
         return allPass;
+    }
+
+    public void markExecutionEnd() {
+        endTimestamp = System.currentTimeMillis();
+        endDateTime = DF_TIMESTAMP.format(endTimestamp);
+    }
+
+    public void markExecutionStart() {
+        startTimestamp = System.currentTimeMillis();
+        startDateTime = DF_TIMESTAMP.format(startTimestamp);
     }
 
     public static boolean getSystemThenContextBooleanData(String name, ExecutionContext context, boolean def) {
@@ -876,17 +1124,57 @@ public class ExecutionContext {
     }
 
     public static String getSystemThenContextStringData(String name, ExecutionContext context, String def) {
-        return System.getProperty(name, context == null ? def : context.getStringData(name, def));
+        if (System.getProperty(name) == null) {
+            String value = context == null ? def : context.getStringData(name, def);
+            System.setProperty(name, value);
+            return value;
+        } else {
+            return System.getProperty(name, def);
+        }
+    }
+
+    public static String unescapeToken(String text) {
+        return StringUtils.replace(StringUtils.replace(text, ESCAPED_TOKEN_START, TOKEN_START),
+                                   ESCAPED_TOKEN_END, TOKEN_END);
+    }
+
+    public static String escapeToken(String text) {
+        return StringUtils.replace(StringUtils.replace(text, TOKEN_START, ESCAPED_TOKEN_START),
+                                   TOKEN_END, ESCAPED_TOKEN_END);
+    }
+
+    /**
+     * perhaps it's a system property? first check System property, then internal map
+     */
+    protected String getRawStringData(String name) { return System.getProperty(name, MapUtils.getString(data, name)); }
+
+    protected String getRawStringData(String name, String def) {
+        return System.getProperty(name, MapUtils.getString(data, name, def));
+    }
+
+    protected boolean isListCompatible(Object value) {
+        return !Objects.isNull(value) && StringUtils.contains(value.toString(), getTextDelim());
+    }
+
+    protected boolean containListAccess(String text, String tokenized) {
+        if (StringUtils.isEmpty(text) || StringUtils.isEmpty(tokenized)) { return false; }
+        return RegexUtils.match(text, escapeToken(tokenized) + "\\[[0-9]+\\]", true);
+    }
+
+    protected void initDj() {
+        // text-to-speech (tts) via AWS Polly
+        dj = springContext.getBean("soundMachine", SoundMachine.class);
     }
 
     protected void clearReferenceData(String prefix) {
         Object[] deleteCandidates = data.keySet().stream().filter(key -> StringUtils.startsWith(key, prefix)).toArray();
         for (Object deleteCandidate : deleteCandidates) { data.remove(Objects.toString(deleteCandidate)); }
 
-        System.getProperties().keySet().forEach(key -> {
+        Object[] sysProps = System.getProperties().keySet().toArray();
+        for (Object key : sysProps) {
             String sKey = Objects.toString(key);
             if (StringUtils.startsWith(sKey, prefix)) { System.clearProperty(sKey); }
-        });
+        }
     }
 
     protected Map<String, String> gatherReferenceData(String prefix) { return getDataByPrefix(prefix); }
@@ -1017,15 +1305,12 @@ public class ExecutionContext {
         String postToken = data.get(NAME_POST_TOKEN);
 
         // if value is simple type, then no more introspection can be done.
-        if (isSimpleType(value)) {
-            // can't find the ${data}.xyz or ${data}.[xyz] pattern.  just replace ${data} with value stringified
-            return flattenAsString(text, token, value);
-        }
+        // can't find the ${data}.xyz or ${data}.[xyz] pattern.  just replace ${data} with value stringified
+        if (isSimpleType(value)) { return flattenAsString(text, token, value); }
 
         // special treatment for index-reference (list or array)
-        if ((value.getClass().isArray() || Collection.class.isAssignableFrom(value.getClass()))
-            && StringUtils.startsWith(postToken, TOKEN_ARRAY_START) && StringUtils.contains(postToken, TOKEN_ARRAY_END)
-            ) {
+        if ((value.getClass().isArray() || Collection.class.isAssignableFrom(value.getClass())) &&
+            StringUtils.startsWith(postToken, TOKEN_ARRAY_START) && StringUtils.contains(postToken, TOKEN_ARRAY_END)) {
 
             String propName = StringUtils.substring(postToken, 1, StringUtils.indexOf(postToken, TOKEN_ARRAY_END, 1));
             if (!NumberUtils.isDigits(propName)) { return flattenArrayOfObject(value, propName); }
@@ -1137,45 +1422,40 @@ public class ExecutionContext {
      * built-in function support; search for pattern of "blah|yada|stuff"
      */
     protected boolean isFunction(String token) {
-        List<String> groups = RegexUtils.collectGroups(token, REGEX_DYNAMIC_VARIABLE_VALUE);
-        boolean varMatch = CollectionUtils.isNotEmpty(groups) && StringUtils.isNotBlank(groups.get(0));
-        return varMatch && builtinFunctions.containsKey(groups.get(0));
+        if (StringUtils.isBlank(token)) { return false; }
+        List<String> groups = RegexUtils.collectGroups(token, REGEX_FUNCTION);
+        boolean match = CollectionUtils.isNotEmpty(groups) && StringUtils.isNotBlank(groups.get(0));
+        return match && builtinFunctions.containsKey(groups.get(0));
     }
 
     protected String invokeFunction(String token) {
-        if (StringUtils.countMatches(token, "|") < 1) {
+        if (StringUtils.countMatches(token, TOKEN_PARAM_SEP) < 1) {
             throw new IllegalArgumentException("reference to a built-in function NOT shown via the $(...|...) format");
         }
 
         String errorPrefix = "Invalid built-in function " + TOKEN_FUNCTION_START + token + TOKEN_FUNCTION_END;
 
-        String beanName = StringUtils.substringBefore(token, "|");
-        token = StringUtils.substringAfter(token, "|");
-
-        String methodName = StringUtils.substringBefore(token, "|");
-        token = StringUtils.substringAfter(token, "|");
-
-        token = replaceTokens(token);
-        String[] params = StringUtils.split(token, "|");
-
-        errorPrefix += " with " + ArrayUtils.getLength(params) + " parameters - ";
-
-        Object dynVarBean = builtinFunctions.get(beanName);
-        if (dynVarBean == null) { throw new IllegalArgumentException(errorPrefix + "cannot resolved."); }
+        Function f = null;
 
         try {
-            Object value = MethodUtils.invokeExactMethod(dynVarBean, methodName, params);
-            return Objects.toString(value, "");
+            f = new Function();
+            f.parse(token);
+
+            errorPrefix += " with " + ArrayUtils.getLength(f.parameters) + " parameter(s) - ";
+
+            return Objects.toString(MethodUtils.invokeExactMethod(f.function, f.operation, f.parameters), "");
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException(errorPrefix + "cannot be resolved", e);
         } catch (NoSuchMethodException e) {
-            throw new RuntimeException(errorPrefix + "invalid: '" + methodName + "'", e);
+            throw new RuntimeException(errorPrefix + "invalid: '" + f.operation + "'", e);
         } catch (IllegalAccessException e) {
-            throw new RuntimeException(errorPrefix + "inaccessible: '" + methodName + "'", e);
+            throw new RuntimeException(errorPrefix + "inaccessible: '" + f.operation + "'", e);
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause();
             if (cause != null) {
-                throw new RuntimeException(errorPrefix + "error on '" + methodName + "': " + cause.getMessage(), e);
+                throw new RuntimeException(errorPrefix + "error on '" + f.operation + "': " + cause.getMessage(), e);
             } else {
-                throw new RuntimeException(errorPrefix + "error on '" + methodName + "': " + e.getMessage(), e);
+                throw new RuntimeException(errorPrefix + "error on '" + f.operation + "': " + e.getMessage(), e);
             }
         }
     }
@@ -1184,15 +1464,22 @@ public class ExecutionContext {
     protected String nextFunctionToken(String text) {
         if (StringUtils.isBlank(text)) { return text; }
 
+        // circumvent the escaped conflicting character: $, ( and )
+        text = preFunctionParsing(text);
+
         if (!StringUtils.contains(text, TOKEN_FUNCTION_START)) { return null; }
 
         String tokenStart = StringUtils.substringAfterLast(text, TOKEN_FUNCTION_START);
         if (!StringUtils.contains(tokenStart, TOKEN_FUNCTION_END)) { return null; }
 
         String token = StringUtils.substringBefore(tokenStart, TOKEN_FUNCTION_END);
-        // String token = StringUtils.substringBetween(StringUtils.substring(text, startsFrom), TOKEN_FUNCTION_START, TOKEN_FUNCTION_END);
 
+        // if we found only `${ }` or `${<tab>}`, then forget it
         if (StringUtils.isBlank(token)) { return null; }
+
+        // put the alt-replaced characters back
+        token = postFunctionParsing(token);
+
         if (isFunction(token)) { return token; }
 
         // previously uncovered $(...) does not resolve to a function.
@@ -1207,13 +1494,13 @@ public class ExecutionContext {
 
     protected String resolveDeferredTokens(String text) {
         String nullValue = getNullValueToken();
-        String[] tokens = StringUtils.substringsBetween(text, DEFERED_TOKEN_START, DEFERED_TOKEN_END);
+        String[] tokens = StringUtils.substringsBetween(text, DEFERRED_TOKEN_START, DEFERRED_TOKEN_END);
 
         if (ArrayUtils.isEmpty(tokens)) { return text; }
 
         for (String token : tokens) {
             String replaceToken = TOKEN_START + token + TOKEN_END;
-            String searchToken = DEFERED_TOKEN_START + token + DEFERED_TOKEN_END;
+            String searchToken = DEFERRED_TOKEN_START + token + DEFERRED_TOKEN_END;
 
             String replace = StringUtils.equals(searchToken, nullValue) ? null : replaceTokens(replaceToken);
             if (replace == null) {
@@ -1252,7 +1539,7 @@ public class ExecutionContext {
                 String replacedBy = MapUtils.getString(data, var);
                 value = StringUtils.replace(value, searchFor, replacedBy);
             } else {
-                // mark the unreplaceable token so we can put things back later
+                // mark the irreplaceable token so we can put things back later
                 value = StringUtils.replace(value, searchFor, "~[[" + var + "]]~");
             }
 
@@ -1307,16 +1594,15 @@ public class ExecutionContext {
 
     protected void parse() throws IOException {
         // parse and collect all relevant test data so we can merge then into iteration-bound test script
-        Excel excel = new Excel(testScript);
 
         // 1. make range for data
-        Worksheet dataSheet = excel.worksheet(SHEET_MERGED_DATA);
+        Worksheet dataSheet = testScript.worksheet(SHEET_MERGED_DATA);
 
         ExcelAddress addr = new ExcelAddress("A1");
         XSSFCell firstCell = dataSheet.cell(addr);
-        if (firstCell == null || StringUtils.isBlank(firstCell.getStringCellValue())) {
-            throw new IllegalArgumentException("File (" + testScript + "), Worksheet (" + dataSheet.getName() +
-                                               "): no test data defined");
+        if (StringUtils.isBlank(Excel.getCellValue(firstCell))) {
+            throw new IllegalArgumentException("File (" + testScript + "), Worksheet (" + dataSheet.getName() + "): " +
+                                               "no test data defined");
         }
 
         // 2. retrieve all data in range
@@ -1324,16 +1610,20 @@ public class ExecutionContext {
         for (int i = 1; i < endRowIndex; i++) {
             ExcelAddress addrRow = new ExcelAddress("A" + i + ":B" + i);
             List<XSSFCell> row = dataSheet.cells(addrRow).get(0);
-            String name = row.get(0).getStringCellValue();
-            String value = row.get(1).getStringCellValue();
-            if (StringUtils.isNotBlank(value)) { data.put(name, value); }
+            String name = Excel.getCellValue(row.get(0));
+            String value = Excel.getCellValue(row.get(1));
+            // no longer checks for blank value, we'll accept data value as is since it's been dealt with in
+            // ExecutionThread.prep()
+            // if (StringUtils.isNotBlank(value)) {
+            data.put(name, value);
+            // }
         }
 
         // 3. parse test scenarios
         testScenarios = new ArrayList<>();
         for (int i = 0; i < execDef.getScenarios().size(); i++) {
             String scenario = execDef.getScenarios().get(i);
-            Worksheet worksheet = excel.worksheet(scenario);
+            Worksheet worksheet = testScript.worksheet(scenario);
             if (worksheet == null) {
                 throw new IOException("Specified scenario '" + scenario + "' not found");
             } else {
@@ -1353,13 +1643,70 @@ public class ExecutionContext {
         });
 
         // support dynamic resolution of WPS executable path
-        String spreadsheetProgram = getSystemThenContextStringData(SPREADSHEET_PROGRAM, this, DEF_SPREADSHEET);
-        if (StringUtils.equals(spreadsheetProgram, SPREADSHEET_PROGRAM_WPS)) {
-            spreadsheetProgram = Excel.resolveWpsExecutablePath();
+        String spreadsheetProgram = getStringData(SPREADSHEET_PROGRAM, DEF_SPREADSHEET);
+        if (StringUtils.equals(spreadsheetProgram, SPREADSHEET_PROGRAM_WPS) && IS_OS_WINDOWS) {
+            setData(WPS_EXE_LOCATION, Excel.resolveWpsExecutablePath());
+        }
+
+        if (StringUtils.isBlank(System.getProperty(OPT_OPEN_RESULT))) {
+            boolean openResult = MapUtils.getBoolean(data, OPT_OPEN_RESULT, BooleanUtils.toBoolean(DEF_OPEN_RESULT));
+            System.setProperty(OPT_OPEN_RESULT, openResult + "");
         }
 
         // DO NOT SET BROWSER TYPE TO SYSTEM PROPS, SINCE THIS WILL PREVENT ITERATION-LEVEL OVERRIDES
         // System.setProperty(SPREADSHEET_PROGRAM, spreadsheetProgram);
+
+        ExecutionMailConfig.configure(this);
+    }
+
+    private void initSpringBeans() {
+        readOnlyVars = springContext.getBean("readOnlyVars", new ArrayList<String>().getClass());
+        failfastCommands = springContext.getBean("failfastCommands", new ArrayList<String>().getClass());
+
+        // init built-in variables
+        builtinFunctions = springContext.getBean("builtinFunctions", new HashMap<String, Object>().getClass());
+
+        // otc=output-to-cloud (S3)
+        otc = springContext.getBean("otc", NexialS3Helper.class);
+        otc.setContext(this);
+        otcNotReadyMessage = springContext.getBean("otcNotReadyMessage", String.class);
+
+        // AWS SNS
+        smsHelper = springContext.getBean("smsHelper", SmsHelper.class);
+
+        // mail notifier
+        nexialMailer = springContext.getBean("nexialMailer", NexialMailer.class);
+        nexialMailer.setContext(this);
+
+        // event listener
+        executionEventListener = springContext.getBean("executionEventListener", ExecutionEventListener.class);
+        executionEventListener.setContext(this);
+
+        // default / reference
+        defaultContextProps = springContext.getBean("defaultContextProps", new HashMap<String, String>().getClass());
+        referenceDataForExecution =
+            TextUtils.toList(defaultContextProps.get("nexial.referenceDataForExecution"), ",", true);
+
+        // web driver
+        webdriverHelperConfig =
+            springContext.getBean("webdriverHelperConfig", new HashMap<BrowserType, String>().getClass());
+        webDriverExceptionHelper = springContext.getBean("webdriverExceptionHelper", WebDriverExceptionHelper.class);
+    }
+
+    @NotNull
+    private static String preFunctionParsing(String text) {
+        text = StringUtils.replace(text, ESCAPED_DOLLAR, ALT_DOLLAR);
+        text = StringUtils.replace(text, ESCAPED_OPEN_PARENTHESIS, ALT_OPEN_PARENTHESIS);
+        text = StringUtils.replace(text, ESCAPED_CLOSE_PARENTHESIS, ALT_CLOSE_PARENTHESIS);
+        return StringUtils.replace(text, ESCAPED_PIPE, ALT_PIPE);
+    }
+
+    @NotNull
+    private static String postFunctionParsing(String text) {
+        text = StringUtils.replace(text, ALT_PIPE, ESCAPED_PIPE);
+        text = StringUtils.replace(text, ALT_CLOSE_PARENTHESIS, ESCAPED_CLOSE_PARENTHESIS);
+        text = StringUtils.replace(text, ALT_OPEN_PARENTHESIS, ESCAPED_OPEN_PARENTHESIS);
+        return StringUtils.replace(text, ALT_DOLLAR, ESCAPED_DOLLAR);
     }
 
     private Map<String, Object> getDataMap() { return data; }
