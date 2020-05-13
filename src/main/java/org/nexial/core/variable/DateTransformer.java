@@ -32,7 +32,7 @@ public class DateTransformer<T extends DateDataType> extends Transformer {
     private static final Map<String, Integer> FUNCTION_TO_PARAM = discoverFunctions(DateTransformer.class);
     private static final Map<String, Method> FUNCTIONS =
         toFunctionMap(FUNCTION_TO_PARAM, DateTransformer.class, DateDataType.class);
-    private static final Date dateHelper = new Date();
+    private static final org.nexial.core.variable.Date dateHelper = new org.nexial.core.variable.Date();
 
     public TextDataType text(T data) { return super.text(data); }
 

@@ -17,17 +17,21 @@
 
 package org.nexial.core.model;
 
+import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.math.NumberUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.commons.lang3.time.StopWatch;
+import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Comment;
 import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.apache.poi.xssf.usermodel.XSSFCellStyle;
@@ -35,25 +39,26 @@ import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
-import org.nexial.core.excel.ExcelConfig;
+import org.nexial.core.excel.ExcelStyleHelper;
 import org.nexial.core.excel.ext.CellTextReader;
 import org.nexial.core.plugins.CanTakeScreenshot;
 import org.nexial.core.plugins.NexialCommand;
-import org.nexial.core.service.SQLiteManager;
-import org.nexial.core.utils.ConsoleUtils;
-import org.nexial.core.utils.ExecutionLogger;
-import org.nexial.core.utils.FlowControlUtils;
-import org.nexial.core.utils.MessageUtils;
-import org.nexial.core.utils.TrackTimeLogs;
+import org.nexial.core.plugins.web.WebCommand;
+import org.nexial.core.plugins.web.WebDriverExceptionHelper;
+import org.nexial.core.utils.*;
 import org.openqa.selenium.WebDriverException;
 
+import static java.io.File.separator;
 import static java.lang.System.lineSeparator;
 import static org.apache.commons.lang3.builder.ToStringStyle.SIMPLE_STYLE;
 import static org.nexial.commons.utils.EnvUtils.platformSpecificEOL;
+import static org.nexial.core.CommandConst.CMD_REPEAT_UNTIL;
+import static org.nexial.core.CommandConst.CMD_VERBOSE;
 import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Web.WEB_PERF_METRICS_ENABLED;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.nexial.core.excel.ExcelConfig.*;
-import static org.nexial.core.excel.ext.CipherHelper.CRYPT_IND;
 
 public class TestStep extends TestStepManifest {
     protected ExecutionContext context;
@@ -63,8 +68,9 @@ public class TestStep extends TestStepManifest {
     protected List<NestedMessage> nestedTestResults;
     protected boolean isCommandRepeater;
     protected CommandRepeater commandRepeater;
-    private String stepId;
-    private String activityId;
+
+    // support testing
+    protected TestStep() { }
 
     public TestStep(TestCase testCase, List<XSSFCell> row) {
         assert testCase != null;
@@ -74,7 +80,6 @@ public class TestStep extends TestStepManifest {
         this.row = row;
         this.worksheet = testCase.getTestScenario().getWorksheet();
         this.context = testCase.getTestScenario().getContext();
-        this.stepId = SQLiteManager.get();
 
         assert context != null && StringUtils.isNotBlank(context.getId());
         assert worksheet != null && worksheet.getFile() != null;
@@ -98,15 +103,6 @@ public class TestStep extends TestStepManifest {
         isCommandRepeater = StringUtils.equals(target + "." + command, CMD_REPEAT_UNTIL);
     }
 
-    public String getStepId() { return stepId; }
-
-    public String getActivityId() { return activityId; }
-
-    // support testing
-    protected TestStep() { }
-
-    public void setActivityId(String activityId) { this.activityId = activityId; }
-
     public Worksheet getWorksheet() { return worksheet; }
 
     public List<XSSFCell> getRow() { return row; }
@@ -118,6 +114,8 @@ public class TestStep extends TestStepManifest {
     public List<NestedMessage> getNestedTestResults() { return nestedTestResults; }
 
     public String showPosition() { return messageId; }
+
+    public ExecutionContext getContext() { return context; }
 
     @Override
     public String toString() {
@@ -144,6 +142,8 @@ public class TestStep extends TestStepManifest {
         nestedTestResults.add(new NestedScreenCapture(message, link, label));
     }
 
+    public void addStepOutput(String link, String label) { nestedTestResults.add(new StepOutput(label, link)); }
+
     /**
      * added semaphore-like marking as a strategy to avoid duplicating excel-logging when executing runClass().  When
      * commands are executed in a custom test class, some of the Nexial command will provide detailed logging where
@@ -163,7 +163,6 @@ public class TestStep extends TestStepManifest {
         tickTock.start();
 
         context.setCurrentTestStep(this);
-        boolean printStackTrace = context.getBooleanData(OPT_PRINT_ERROR_DETAIL, DEF_PRINT_ERROR_DETAIL);
 
         // delay is carried out here so that timespan is captured as part of execution
         waitFor(context.getDelayBetweenStep());
@@ -171,49 +170,20 @@ public class TestStep extends TestStepManifest {
         StepResult result = null;
         try {
             result = invokeCommand();
-        } catch (InvocationTargetException e) {
-            String error = e.getMessage();
-            Throwable cause = e.getCause();
-            if (cause != null) {
-                // assertion error are already account for.. so no need to increment fail test count
-                if (!(cause instanceof AssertionError)) { ConsoleUtils.error(cause.getMessage()); }
-                error = StringUtils.defaultString(cause.getMessage(), cause.toString());
-            }
-
-            if (printStackTrace) {
-                ConsoleUtils.error(context.getRunId(), error, e);
-            } else {
-                ConsoleUtils.error(error);
-            }
-
-            result = StepResult.fail(error);
-        } catch (WebDriverException e) {
-            String error = context.getWebDriverExceptionHelper().analyzeError(context, this, e);
-            ConsoleUtils.error(context.getRunId(), error);
-            result = StepResult.fail(error);
-            // } catch (NoSuchElementException e) {
-            //     String error = e.getMessage();
-            //     ConsoleUtils.error(error);
-            //     String[] messageLines = StringUtils.split(error, "\n");
-            //     if (ArrayUtils.getLength(messageLines) > 2) {
-            //         result = StepResult.fail(messageLines[0] + " " + messageLines[1]);
-            //     } else {
-            //         result = StepResult.fail(error);
-            //     }
         } catch (Throwable e) {
-            String error = e.getMessage();
-            if (printStackTrace) {
-                ConsoleUtils.error(context.getRunId(), error, e);
-            } else {
-                ConsoleUtils.error(error);
-            }
-            result = StepResult.fail(error);
+            result = toFailedResult(e);
         } finally {
             tickTock.stop();
             trackTimeLogs.checkEndTracking(context, this);
             if (this.isCommandRepeater()) { context.setCurrentTestStep(this); }
             postExecCommand(result, tickTock.getTime());
             FlowControlUtils.checkPauseAfter(context, this);
+
+            if (!ExecUtils.isRunningInZeroTouchEnv() &&
+                OnDemandInspectionDetector.getInstance(context).detectedPause()) {
+                ConsoleUtils.pauseAndInspect(context, ">>>>> On-Demand Inspection detected...", true);
+            }
+
             context.clearCurrentTestStep();
         }
 
@@ -227,7 +197,7 @@ public class TestStep extends TestStepManifest {
     public String generateFilename(String ext) {
         String filename = worksheet.getFile().getName() + "_"
                           + worksheet.getName() + "_"
-                          + getTestCase().getName() + "_"
+                          // + getTestCase().getName() + "_"
                           + getRow().get(0).getReference()
                           + (isExternalProgram() ? "_" + getParams().get(0) : "");
 
@@ -286,6 +256,40 @@ public class TestStep extends TestStepManifest {
         }
     }
 
+    protected StepResult toFailedResult(Throwable e) {
+        context.setData(OPT_LAST_OUTCOME, false);
+
+        // step 1: get truth! InvocationTargetException is masking real exception
+        if (e instanceof InvocationTargetException && e.getCause() != null) { e = e.getCause(); }
+
+        // step 2: print error to console
+        String error;
+        if (e instanceof WebDriverException) {
+            error = WebDriverExceptionHelper.analyzeError(context, this, (WebDriverException) e);
+        } else if (e instanceof ArrayIndexOutOfBoundsException) {
+            error = "position/index not found: " + StringUtils.defaultString(e.getMessage(), e.toString());
+        } else if (e instanceof NullPointerException) {
+            error = "null pointer exception";
+        } else {
+            error = StringUtils.defaultString(e.getMessage(), e.toString());
+        }
+
+        StepResult result = StepResult.fail(error);
+
+        // print a lot or a little
+        if (context.getBooleanData(OPT_PRINT_ERROR_DETAIL, getDefaultBool(OPT_PRINT_ERROR_DETAIL))) {
+            ConsoleUtils.error(ExecutionLogger.toHeader(this), error, e);
+        }
+
+        // step 3: write error to file for RCA
+        // determine the file to send log
+        String logFqn = OutputFileUtils.generateErrorLog(this, e);
+        if (StringUtils.isNotBlank(logFqn)) { result.setDetailedLogLink(logFqn); }
+
+        // step 4: return back the error message for FAIL result instance
+        return result;
+    }
+
     protected void waitFor(long waitMs) {
         if (waitMs < 100) { return; }
 
@@ -338,6 +342,15 @@ public class TestStep extends TestStepManifest {
             if (plugin instanceof CanTakeScreenshot) { context.registerScreenshotAgent((CanTakeScreenshot) plugin); }
             result = plugin.execute(command, args);
 
+            // web client perf. metrics collection
+            // only if the command is not "assert...", "wait...", "save...", etc.
+            if (context.getBooleanData(WEB_PERF_METRICS_ENABLED, getDefaultBool(WEB_PERF_METRICS_ENABLED)) &&
+                !context.isInteractiveMode() &&
+                StringUtils.equals("web", plugin.getTarget()) &&
+                !StringUtils.startsWithAny(command, "assert", "wait", "save", "verify")) {
+                ((WebCommand) plugin).collectClientPerfMetrics();
+            }
+
             // todo: resolve soon. we need to stop logging to excel when not running external program
             // if (isExternalProgram) {
             //	// stop excel logging
@@ -356,14 +369,16 @@ public class TestStep extends TestStepManifest {
         ExecutionLogger logger = context.getLogger();
         StringBuilder argText = new StringBuilder();
         for (String arg : args) {
-            argText.append(StringUtils.startsWith(arg, "$(execution") ? context.replaceTokens(arg) : arg).append(", ");
+            argText.append(StringUtils.startsWith(arg, "$(execution") ? context.replaceTokens(arg, true) : arg)
+                   .append(", ");
         }
-        logger.log(this, "executing " + command + "(" + StringUtils.removeEnd(argText.toString(), ", ") + ")");
+
+        // force console logging
+        logger.log(this, "executing " + command + "(" + StringUtils.removeEnd(argText.toString(), ", ") + ")", true);
     }
 
     protected void postExecCommand(StepResult result, long elapsedMs) {
         updateResult(result, elapsedMs);
-        SQLiteManager.updateDatabase(this, context);
 
         ExecutionSummary summary = testCase.getTestScenario().getExecutionSummary();
         if (result.isSkipped()) {
@@ -383,6 +398,9 @@ public class TestStep extends TestStepManifest {
             } else {
                 summary.incrementFail();
                 error(MessageUtils.renderAsFail(result.getMessage()));
+                if (StringUtils.isNotBlank(result.getDetailedLogLink())) {
+                    context.getLogger().error(this, "Error log: " + result.getDetailedLogLink());
+                }
             }
         }
 
@@ -397,7 +415,8 @@ public class TestStep extends TestStepManifest {
     protected void readTargetCell(List<XSSFCell> row) {
         XSSFCell cell = row.get(COL_IDX_TARGET);
         if (cell == null || StringUtils.isBlank(cell.toString())) {
-            throw new IllegalArgumentException(messageId + " no target specified");
+            throw new IllegalArgumentException(StringUtils.defaultString(messageId) + " no target specified" +
+                                               (cell != null ? " on ROW " + (cell.getRowIndex() + 1) : ""));
         }
         setTarget(cell.toString());
     }
@@ -405,7 +424,8 @@ public class TestStep extends TestStepManifest {
     protected void readCommandCell(List<XSSFCell> row) {
         XSSFCell cell = row.get(COL_IDX_COMMAND);
         if (cell == null || StringUtils.isBlank(cell.toString())) {
-            throw new IllegalArgumentException(messageId + " no command specified");
+            throw new IllegalArgumentException(StringUtils.defaultString(messageId) + " no command specified" +
+                                               (cell != null ? " on ROW " + (cell.getRowIndex() + 1) : ""));
         }
         setCommand(cell.toString());
     }
@@ -427,6 +447,8 @@ public class TestStep extends TestStepManifest {
     }
 
     protected String handleScreenshot(StepResult result) {
+        if (result == null) { return null; }
+
         // no screenshot specified and no error found (success or skipped)
         if (!captureScreen && (result.isSuccess() || result.isSkipped())) { return null; }
 
@@ -435,7 +457,10 @@ public class TestStep extends TestStepManifest {
 
         CanTakeScreenshot agent = context.findCurrentScreenshotAgent();
         if (agent == null) {
-            log("No screenshot capability available for command " + getCommandFQN() + "; no screenshot taken");
+            // No necessity of error log when screenshot-on-error is turned on for commands other than web and desktop
+            if (!context.isScreenshotOnError()) {
+                error("No screenshot capability available for command " + getCommandFQN() + "; no screenshot taken");
+            }
             return null;
         }
 
@@ -443,13 +468,16 @@ public class TestStep extends TestStepManifest {
         try {
             String screenshotPath = agent.takeScreenshot(this);
             if (StringUtils.isBlank(screenshotPath)) {
-                log("Unable to capture screenshot");
+                error("Unable to capture screenshot - " + result.getMessage());
                 return null;
             }
 
-            return context.resolveRunModeSpecificUrl(screenshotPath);
+            if (worksheet != null) {
+                Excel.setHyperlink(row.get(COL_IDX_CAPTURE_SCREEN), screenshotPath, MSG_SCREENCAPTURE);
+            }
+            return screenshotPath;
         } catch (Exception e) {
-            ConsoleUtils.error("Unable to capture screenshot: " + e.getMessage());
+            error("Unable to capture screenshot: " + e.getMessage());
             return null;
         }
     }
@@ -457,34 +485,22 @@ public class TestStep extends TestStepManifest {
     protected void updateResult(StepResult result, long elapsedMs) {
         String message = result.getMessage();
 
-        // test case
-        XSSFCell cellTestCase = row.get(COL_IDX_TESTCASE);
-        if (StringUtils.isNotBlank(Excel.getCellValue(cellTestCase))) {
-            ExcelConfig.formatActivityCell(worksheet, cellTestCase);
-        }
-
-        XSSFCell cellTarget = row.get(COL_IDX_TARGET);
-        ExcelConfig.formatTargetCell(worksheet, cellTarget);
-
-        XSSFCell cellCommand = row.get(COL_IDX_COMMAND);
-        ExcelConfig.formatCommandCell(worksheet, cellCommand);
+        ExcelStyleHelper.formatActivityCell(worksheet, row.get(COL_IDX_TESTCASE));
+        ExcelStyleHelper.formatTargetCell(worksheet, row.get(COL_IDX_TARGET));
+        ExcelStyleHelper.formatCommandCell(worksheet, row.get(COL_IDX_COMMAND));
 
         // description
         XSSFCell cellDescription = row.get(COL_IDX_DESCRIPTION);
         String description = Excel.getCellValue(cellDescription);
         if (StringUtils.startsWith(description, SECTION_DESCRIPTION_PREFIX)) {
-            ExcelConfig.formatSectionDescription(worksheet, cellDescription);
+            ExcelStyleHelper.formatSectionDescription(worksheet, cellDescription);
         } else if (StringUtils.contains(description, REPEAT_DESCRIPTION_PREFIX)) {
-            ExcelConfig.formatRepeatUntilDescription(worksheet, cellDescription);
+            ExcelStyleHelper.formatRepeatUntilDescription(worksheet, cellDescription);
         } else {
-            ExcelConfig.formatDescription(worksheet, cellDescription);
+            ExcelStyleHelper.formatDescription(worksheet, cellDescription);
         }
-        if (result.isError()) {
-            ExcelConfig.formatFailedStepDescription(this);
-            Excel.createComment(cellDescription, result.getMessage(), COMMENT_AUTHOR);
-        }
-        // if (result.isSkipped()) { ExcelConfig.formatSkippedStepDescription(this); }
-        cellDescription.setCellValue(context.replaceTokens(description));
+        cellDescription.setCellValue(context.containsCrypt(description) ?
+                                     CellTextReader.readValue(description) : context.replaceTokens(description, true));
 
         XSSFCellStyle styleTaintedParam = worksheet.getStyle(STYLE_TAINTED_PARAM);
         XSSFCellStyle styleParam = worksheet.getStyle(STYLE_PARAM);
@@ -492,6 +508,7 @@ public class TestStep extends TestStepManifest {
         // update the params that can be expressed as links (file or url)
         for (int i = 0; i < params.size(); i++) {
             String param = params.get(i);
+            if (StringUtils.isBlank(param)) { continue; }
 
             // could be literal syspath - e.g. $(syspath|out|fullpath)/...
             // could be data variable that reference syspath function
@@ -515,43 +532,89 @@ public class TestStep extends TestStepManifest {
         Object[] paramValues = result.getParamValues();
 
         // handle linkable params (first priority), verbose (second priority) and params (last)
-        for (int i = COL_IDX_PARAMS_START; i < COL_IDX_PARAMS_END; i++) {
+        for (int i = COL_IDX_PARAMS_START; i <= COL_IDX_PARAMS_END; i++) {
             int paramIdx = i - COL_IDX_PARAMS_START;
 
             String link = CollectionUtils.size(linkableParams) > paramIdx ? linkableParams.get(paramIdx) : null;
             XSSFCell paramCell = row.get(i);
             if (StringUtils.isNotBlank(link)) {
-                worksheet.setHyperlink(paramCell, link, context.replaceTokens(params.get(paramIdx)));
+                // support output to cloud:
+                // - if link is local resource but output-to-cloud is enabled, then copy resource to cloud and update link
+                boolean linkToCloud = false;
+                if (context.isOutputToCloud() &&
+                    !StringUtils.startsWithIgnoreCase(link, "http") &&
+                    !StringUtils.startsWithIgnoreCase(link, "file:")) {
+                    // create new local resource with name matching to current row, so that duplicate use of the
+                    // same name will not result in overriding cloud resource
+
+                    if (FileUtil.isFileReadable(link, 1)) {
+                        // target file should exist with at least 1 byte
+                        File tmpFile = new File(StringUtils.substringBeforeLast(link, separator) + separator +
+                                                row.get(COL_IDX_TESTCASE).getReference() + "_" +
+                                                StringUtils.substringAfterLast(link, separator));
+
+                        try {
+                            ConsoleUtils.log("copy local resource " + link + " to " + tmpFile);
+                            FileUtils.copyFile(new File(link), tmpFile);
+
+                            ConsoleUtils.log("output-to-cloud enabled; copying " + link + " cloud...");
+                            String cloudUrl = context.getOtc().importFile(tmpFile, true);
+                            context.setData(OPT_LAST_OUTPUT_LINK, cloudUrl);
+                            context.setData(OPT_LAST_OUTPUT_PATH, StringUtils.substringBeforeLast(cloudUrl, "/"));
+                            ConsoleUtils.log("output-to-cloud enabled; copied  " + link + " to " + cloudUrl);
+
+                            worksheet.setHyperlink(paramCell, cloudUrl, "(cloud) " + params.get(paramIdx));
+                            linkToCloud = true;
+                        } catch (IOException e) {
+                            ConsoleUtils.log("Unable to copy resource to cloud: " + e.getMessage());
+                            log(toCloudIntegrationNotReadyMessage(link + ": " + e.getMessage()));
+                        }
+                    } else {
+                        ConsoleUtils.log("output-to-cloud enabled; but file " + link + " is empty or unreadable");
+                    }
+                }
+
+                // if `link` contains double quote, it's likely not a link..
+                if (!linkToCloud && !StringUtils.containsAny(link, "\"")) {
+                    worksheet.setHyperlink(paramCell, link, context.replaceTokens(params.get(paramIdx)));
+                }
                 continue;
             }
 
             String origParamValue = Excel.getCellValue(paramCell);
+            if (StringUtils.isBlank(origParamValue)) {
+                paramCell.setCellType(CellType.BLANK);
+                continue;
+            }
 
             if (i == COL_IDX_PARAMS_START && StringUtils.equals(getCommandFQN(), CMD_VERBOSE)) {
-                if (hasCryptoIdent(origParamValue)) {
-                    paramCell.setCellComment(toSystemComment(paramCell, "detects crypto"));
+                if (context.containsCrypt(origParamValue)) {
+                    paramCell.setCellComment(toSystemComment(paramCell, "detected crypto"));
                 } else {
+                    message = platformSpecificEOL(message);
                     if (StringUtils.length(message) > MAX_VERBOSE_CHAR) {
                         message = StringUtils.truncate(message, MAX_VERBOSE_CHAR) + "…";
                     }
-                    paramCell.setCellValue(platformSpecificEOL(message));
+                    paramCell.setCellValue(message);
                     paramCell.setCellComment(toSystemComment(paramCell, origParamValue));
                 }
+
+                ExcelStyleHelper.handleTextWrap(paramCell);
                 continue;
             }
 
             Object value = ArrayUtils.getLength(paramValues) > paramIdx ? paramValues[paramIdx] : null;
             if (value != null) {
                 // respect the crypts... if value has crypt:, then keep it as is
-                if (hasCryptoIdent(origParamValue)) {
-                    paramCell.setCellComment(toSystemComment(paramCell, "crypto found; substitution cancelled"));
+                if (context.containsCrypt(origParamValue)) {
+                    paramCell.setCellComment(toSystemComment(paramCell, "detected crypto"));
                     continue;
                 }
 
                 String taintedValue = CellTextReader.getOriginal(origParamValue, Objects.toString(value));
                 boolean tainted = !StringUtils.equals(origParamValue, taintedValue);
                 if (tainted) {
-                    paramCell.setCellValue(StringUtils.truncate(taintedValue, MAX_VERBOSE_CHAR));
+                    paramCell.setCellValue(StringUtils.abbreviate(taintedValue, MAX_VERBOSE_CHAR));
                     if (StringUtils.isNotEmpty(origParamValue)) {
                         paramCell.setCellComment(toSystemComment(paramCell, origParamValue));
                     }
@@ -559,18 +622,17 @@ public class TestStep extends TestStepManifest {
                 } else {
                     paramCell.setCellStyle(styleParam);
                 }
+                ExcelStyleHelper.handleTextWrap(paramCell);
             }
         }
 
         // flow control
-        XSSFCell cellFlowControl = row.get(COL_IDX_FLOW_CONTROLS);
-        formatFlowControlCell(worksheet, cellFlowControl);
+        XSSFCell flowControlCell = row.get(COL_IDX_FLOW_CONTROLS);
+        ExcelStyleHelper.formatFlowControlCell(worksheet, flowControlCell);
+        if (StringUtils.isBlank(Excel.getCellValue(flowControlCell))) { flowControlCell.setCellType(CellType.BLANK); }
 
         // screenshot
-        String screenshotLink = handleScreenshot(result);
-        if (StringUtils.isNotBlank(screenshotLink)) {
-            worksheet.setScreenCaptureStyle(row.get(COL_IDX_CAPTURE_SCREEN), screenshotLink);
-        }
+        handleScreenshot(result);
 
         boolean pass = result.isSuccess();
 
@@ -585,31 +647,47 @@ public class TestStep extends TestStepManifest {
         }
 
         // result
-        boolean skipped = MessageUtils.isSkipped(message);
         XSSFCell cellResult = row.get(COL_IDX_RESULT);
         cellResult.setCellValue(StringUtils.left(MessageUtils.markResult(message, pass, true), 32767));
-        cellResult.setCellStyle(worksheet.getStyle(skipped ? STYLE_SKIPPED_RESULT :
-                                                   pass ? STYLE_SUCCESS_RESULT : STYLE_FAILED_RESULT));
 
-        // reason
-        Throwable exception = result.getException();
-        XSSFCell cellReason = row.get(COL_IDX_REASON);
-        if (cellReason != null && !pass && exception != null) {
-            String error = exception.getCause() != null ? exception.getCause().getMessage() : exception.getMessage();
-            cellReason.setCellValue(error);
-            cellReason.setCellStyle(worksheet.getStyle(STYLE_MESSAGE));
+        if (result.isError()) {
+            ExcelStyleHelper.formatFailedStepDescription(this);
+            Excel.createComment(cellDescription, cellResult.getStringCellValue(), COMMENT_AUTHOR);
         }
 
-        int numOfLines = NumberUtils.max(
-            StringUtils.countMatches(Excel.getCellValue(cellTestCase), '\n'),
-            StringUtils.countMatches(Excel.getCellValue(cellDescription), '\n'),
-            ArrayUtils.isNotEmpty(paramValues) ? StringUtils.countMatches(Objects.toString(paramValues[0]), '\n') : 0,
-            StringUtils.countMatches(Excel.getCellValue(cellFlowControl), '\n')) + 1;
-        worksheet.setMinHeight(cellDescription, numOfLines);
+        boolean skipped = MessageUtils.isSkipped(message);
+        if (skipped) {
+            // paint both result and description the same style to improve readability
+            cellResult.setCellStyle(worksheet.getStyle(STYLE_SKIPPED_RESULT));
+            cellDescription.setCellStyle(worksheet.getStyle(STYLE_SKIPPED_RESULT));
+            Excel.createComment(cellDescription, cellResult.getStringCellValue(), COMMENT_AUTHOR);
+        } else {
+            cellResult.setCellStyle(worksheet.getStyle(pass ? STYLE_SUCCESS_RESULT : STYLE_FAILED_RESULT));
+        }
+        ExcelStyleHelper.handleTextWrap(cellResult);
+
+        // reason
+        XSSFCell cellReason = row.get(COL_IDX_REASON);
+        if (cellReason != null && !pass) {
+            if (StringUtils.isNotBlank(result.getDetailedLogLink())) {
+                // currently support just 1 log link
+                String logLink = result.getDetailedLogLink();
+                if (StringUtils.isNotBlank(logLink)) {
+                    Excel.setHyperlink(cellReason, logLink, "details");
+                    ConsoleUtils.error("Check corresponding error log for details: " + logLink);
+                }
+            } else {
+                Throwable exception = result.getException();
+                if (exception != null) {
+                    Throwable rootCause = ExceptionUtils.getRootCause(exception);
+                    cellReason.setCellValue(rootCause == null ? exception.getMessage() : rootCause.getMessage());
+                    cellReason.setCellStyle(worksheet.getStyle(STYLE_MESSAGE));
+                }
+            }
+        }
 
         if (CollectionUtils.isNotEmpty(nestedTestResults)) {
-            TestStepManifest testStep = this.toTestStepManifest();
-            testStep.setRowIndex(row.get(0).getRowIndex());
+            TestStepManifest testStep = toTestStepManifest();
             testCase.getTestScenario().getExecutionSummary().addNestedMessages(testStep, nestedTestResults);
         }
     }
@@ -617,6 +695,7 @@ public class TestStep extends TestStepManifest {
     protected boolean updateElapsedTime(long elapsedTime, boolean violateSLA) {
         XSSFCell cellElapsedTime = row.get(COL_IDX_ELAPSED_MS);
         cellElapsedTime.setCellValue(elapsedTime);
+        context.setData(OPT_LAST_ELAPSED_TIME, elapsedTime);
         if (violateSLA) {
             cellElapsedTime.setCellStyle(worksheet.getStyle(STYLE_ELAPSED_MS_BAD_SLA));
             return false;
@@ -633,28 +712,36 @@ public class TestStep extends TestStepManifest {
 
     protected void error(String message) {
         if (StringUtils.isBlank(message)) { return; }
-        context.getLogger().log(this, message);
+        context.getLogger().error(this, message);
         logToTestScript(message);
     }
 
     protected void logToTestScript(String message) {
         if (!isLogToTestScript()) { return; }
 
-        if (MessageUtils.isTestResult(message)) {
-            if (context.isScreenshotOnError() && MessageUtils.isFail(message)) {
-                NexialCommand plugin = context.findPlugin(target);
-                if (plugin instanceof CanTakeScreenshot) {
-                    String screenshotPath = ((CanTakeScreenshot) plugin).takeScreenshot(this);
-                    if (StringUtils.isNotBlank(screenshotPath)) {
-                        addNestedScreenCapture(screenshotPath, message);
-                    } else {
-                        context.getLogger().error(this, "Unable to capture screenshot");
-                    }
-                }
-            }
-        } else {
+        if (!MessageUtils.isTestResult(message)) {
             addNestedMessage(message);
+            return;
         }
+
+        if (!context.isScreenshotOnError() || !MessageUtils.isFail(message)) {
+            addNestedMessage(message);
+            return;
+        }
+
+        NexialCommand plugin = context.findPlugin(target);
+        if (!(plugin instanceof CanTakeScreenshot)) {
+            context.getLogger().error(this, message);
+            return;
+        }
+
+        String screenshotPath = ((CanTakeScreenshot) plugin).takeScreenshot(this);
+        if (StringUtils.isBlank(screenshotPath)) {
+            context.getLogger().error(this, "Unable to capture screenshot - " + message);
+            return;
+        }
+
+        addNestedScreenCapture(screenshotPath, message);
     }
 
     protected TestStepManifest toTestStepManifest() {
@@ -676,17 +763,6 @@ public class TestStep extends TestStepManifest {
         return !StringUtils.startsWith(param, "[") &&
                StringUtils.countMatches(param, TOKEN_FUNCTION_START + "syspath|") == 1 &&
                StringUtils.countMatches(param, "|name" + TOKEN_FUNCTION_END) == 0;
-    }
-
-    private boolean hasCryptoIdent(String cellValue) {
-        if (StringUtils.contains(cellValue, CRYPT_IND)) { return true; }
-
-        if (TextUtils.isBetween(cellValue, TOKEN_START, TOKEN_END)) {
-            String value = context.getStringData(StringUtils.substringBetween(cellValue, TOKEN_START, TOKEN_END));
-            return StringUtils.contains(value, CRYPT_IND);
-        }
-
-        return false;
     }
 
     private Comment toSystemComment(XSSFCell paramCell, String message) {

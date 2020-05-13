@@ -19,6 +19,8 @@ package org.nexial.core.utils;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
@@ -28,6 +30,8 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.jetbrains.annotations.NotNull;
+import org.nexial.commons.utils.DateUtility;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.core.NexialConst.*;
@@ -35,6 +39,7 @@ import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.ExecutionDefinition;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.plugins.web.Browser;
+import org.nexial.core.variable.Syspath;
 
 import static java.io.File.separator;
 import static org.nexial.core.NexialConst.*;
@@ -163,52 +168,79 @@ public final class OutputFileUtils {
     }
 
     // todo: test for nested file reference - contentOrFile is a file whose content contains reference to another file
-    public static String resolveContent(String contentOrFile, ExecutionContext context, boolean compact)
-        throws IOException {
+    public static String resolveContent(String contentOrFile, ExecutionContext context, boolean compact) {
         return resolveContent(contentOrFile, context, compact, true);
     }
 
-    public static String resolveRawContent(String contentOrFile, ExecutionContext context) throws IOException {
+    public static String resolveRawContent(String contentOrFile, ExecutionContext context) {
         return resolveContent(contentOrFile, context, false, false);
     }
 
     public static String resolveContent(String contentOrFile,
                                         ExecutionContext context,
                                         boolean compact,
-                                        boolean replaceTokens) throws IOException {
+                                        boolean replaceTokens) {
+        return new OutputResolver(contentOrFile,
+                                  context,
+                                  true,
+                                  context.isResolveTextAsURL(),
+                                  replaceTokens,
+                                  false,
+                                  compact)
+                   .getContent();
 
-        if (StringUtils.isBlank(contentOrFile) || StringUtils.equals(contentOrFile, context.getNullValueToken())) {
-            return "";
-        }
-
-        // we can't have NL or CR or TAB character in filename
-        if (!FileUtil.isSuitableAsPath(contentOrFile) || !FileUtil.isFileReadable(contentOrFile)) {
-            // must be just content (not file)
-            String content = compact ? StringUtils.trim(contentOrFile) : contentOrFile;
-            return replaceTokens ? context.replaceTokens(content) : content;
-        }
-
-        File input = new File(contentOrFile);
-        String content;
-        if (compact) {
-            List<String> list = FileUtils.readLines(input, DEF_CHARSET);
-            StringBuilder buffer = new StringBuilder();
-            for (String line : list) { buffer.append(StringUtils.trim(line)); }
-            content = buffer.toString();
-        } else {
-            content = FileUtils.readFileToString(input, DEF_CHARSET);
-        }
-
-        return replaceTokens ? context.replaceTokens(content) : content;
+        // if (context.isNullOrEmptyValue(contentOrFile)) { return ""; }
+        //
+        // if (StringUtils.containsNone(contentOrFile, '\n', '\r', '\t') && ResourceUtils.isWebResource(contentOrFile)) {
+        //     String content;
+        //     if (resolveUrl) {
+        //         // must be HTTP-backed file
+        //         content = WsCommand.resolveWebContent(contentOrFile);
+        //         content = compact ? StringUtils.trim(content) : content;
+        //     } else {
+        //         content = contentOrFile;
+        //     }
+        //
+        //     return replaceTokens ? context.replaceTokens(content) : content;
+        // }
+        //
+        // if (!isContentReferencedAsFile(contentOrFile, context)) {
+        //     // must be just content (not file)
+        //     String content = compact ? StringUtils.trim(contentOrFile) : contentOrFile;
+        //     return replaceTokens ? context.replaceTokens(content) : content;
+        // }
+        //
+        // File input = new File(contentOrFile);
+        // String content;
+        // if (compact) {
+        //     List<String> list = FileUtils.readLines(input, DEF_CHARSET);
+        //     StringBuilder buffer = new StringBuilder();
+        //     for (String line : list) { buffer.append(StringUtils.trim(line)); }
+        //     content = buffer.toString();
+        // } else {
+        //     content = FileUtils.readFileToString(input, DEF_CHARSET);
+        // }
+        //
+        // return replaceTokens ? context.replaceTokens(content) : content;
     }
 
-    public static boolean isContentReferencedAsFile(String contentOrFile, ExecutionContext context) {
-        if (StringUtils.isBlank(contentOrFile) || StringUtils.equals(contentOrFile, context.getNullValueToken())) {
-            return false;
-        }
+    /**
+     * read {@literal contentOrFile} as raw file content (i.e. byte array) or, if it is not a file, just the
+     * content of {@code contentOrFile} as byte array.
+     */
+    public static byte[] resolveContentBytes(String contentOrFile, ExecutionContext context) throws IOException {
+        return StringUtils.isEmpty(contentOrFile) ?
+               new byte[0] :
+               isContentReferencedAsFile(contentOrFile, context) ?
+               FileUtils.readFileToByteArray(new File(contentOrFile)) :
+               contentOrFile.getBytes();
+    }
 
-        // we can't have NL or CR or TAB character in filename
-        return FileUtil.isSuitableAsPath(contentOrFile) && new File(contentOrFile).canRead();
+    /** we can't have NL or CR or TAB character in filename */
+    public static boolean isContentReferencedAsFile(String contentOrFile, ExecutionContext context) {
+        return !context.isNullOrEmptyOrBlankValue(contentOrFile) &&
+               FileUtil.isSuitableAsPath(contentOrFile) &&
+               new File(contentOrFile).canRead();
     }
 
     public static boolean isContentReferencedAsClasspathResource(String schemaLocation, ExecutionContext context) {
@@ -226,7 +258,7 @@ public final class OutputFileUtils {
     }
 
     /**
-     * Need to handle both types of file naming schemes (single run and test plan run).  The differentiator would
+     * Need to handle both types of file naming schemes (single run and test plan run).  The differentiators would
      * be the pattern recognized via the {@code file} parameter.
      * <br/><br/>
      * <b>Single Run:</b><br/>
@@ -278,7 +310,7 @@ public final class OutputFileUtils {
                 fp.stepIter = sanitize(data);
                 break;
             default:
-                throw new RuntimeException("Unsupport position for " + NAME + ": " + position);
+                throw new RuntimeException("Unsupported position for " + NAME + ": " + position);
         }
 
         return path +
@@ -341,8 +373,69 @@ public final class OutputFileUtils {
             case POS_EXT:
                 return fp.ext;
             default:
-                throw new RuntimeException("Unsupport position for " + NAME + ": " + position);
+                throw new RuntimeException("Unsupported position for " + NAME + ": " + position);
         }
+    }
+
+    @NotNull
+    public static String generateErrorLog(TestStep testStep, Throwable e) {
+        File log = OutputFileUtils.generateErrorFile(testStep, e);
+        String logFqn = log.getAbsolutePath();
+        ExecutionContext context = testStep.getContext();
+        if (context.isOutputToCloud() && FileUtil.isFileReadable(log, 1)) {
+            try {
+                ConsoleUtils.log("output-to-cloud enabled; copying " + logFqn + " cloud...");
+                logFqn = context.getOtc().importFile(log, true);
+            } catch (IOException ex) {
+                // unable to send log to cloud...
+                ConsoleUtils.log("Unable to copy resource to cloud: " + e.getMessage());
+                context.getLogger().log(testStep, toCloudIntegrationNotReadyMessage(logFqn + ": " + e.getMessage()));
+            }
+        }
+        return logFqn;
+    }
+
+    @NotNull
+    public static File generateErrorFile(TestStep testStep, Throwable e) {
+        Syspath syspath = new Syspath();
+        String logPath = syspath.log("fullpath") + separator + generateOutputFilename(testStep, ".log");
+        File log = new File(logPath);
+        int currentCounter = 1;
+        do {
+            if (log.exists() && log.canRead() && log.length() > 5) {
+                if (currentCounter == 1) {
+                    logPath = StringUtils.replace(logPath, ".log", currentCounter + ".log");
+                } else {
+                    logPath = StringUtils.replace(logPath, (currentCounter - 1) + ".log", currentCounter + ".log");
+                }
+                currentCounter++;
+                log = new File(logPath);
+            }
+        } while (currentCounter > 10);
+
+        // build error content
+        StringBuilder buffer = new StringBuilder();
+        buffer.append("Nexial Version:    ").append(ExecUtils.NEXIAL_MANIFEST).append(NL)
+              .append("Current Timestamp: ").append(DateUtility.formatLog2Date(System.currentTimeMillis())).append(NL)
+              .append("Test Step:         ").append(testStep.getMessageId()).append(NL)
+              .append(StringUtils.repeat("-", 80)).append(NL);
+
+        if (e instanceof AssertionError || e instanceof IllegalArgumentException) {
+            buffer.append(e.getMessage()).append(NL);
+        } else {
+            StringWriter writer = new StringWriter();
+            PrintWriter printWriter = new PrintWriter(writer);
+            e.printStackTrace(printWriter);
+            buffer.append(writer.getBuffer().toString()).append(NL);
+            printWriter.close();
+        }
+
+        try {
+            FileUtils.writeStringToFile(log, buffer.toString(), DEF_FILE_ENCODING);
+        } catch (IOException ex) {
+            ConsoleUtils.error("Unable to create log file (" + log + ") for the exception thrown: " + ex.getMessage());
+        }
+        return log;
     }
 
     /** could be timestamp, browser or step-n-iteration */

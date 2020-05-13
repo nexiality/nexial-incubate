@@ -28,13 +28,14 @@ import org.apache.commons.lang3.StringUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.plugins.io.CsvExtendedComparison.ReportFormat;
 
+import static org.nexial.core.NexialConst.NL;
 import static org.nexial.core.plugins.io.CsvExtendedComparison.ReportFormat.*;
 
 public class CsvComparisonResult {
-    private List<String> expectedHeaders;
-    private List<String> actualHeaders;
-    private List<String> identityFields;
-    private List<String> displayFields;
+    private List<String> expectedHeaders = new ArrayList<>();
+    private List<String> actualHeaders = new ArrayList<>();
+    private List<String> identityFields = new ArrayList<>();
+    private List<String> displayFields = new ArrayList<>();
     private String mismatchedField = "MISMATCHED FIELD";
     private String expectedField = "EXPECTED";
     private String actualField = "ACTUAL";
@@ -95,14 +96,12 @@ public class CsvComparisonResult {
         discrepancies.add(newDiscrepancy(record, field, expected, actual));
     }
 
-    public void addMissingExpected(String[] actualRecord) {
-        discrepancies.add(
-            newDiscrepancy(actualRecord, "RECORD MISSING in '" + expectedField + "'", "", actualRecord[0]));
+    public void addMissingExpected(String[] actual) {
+        discrepancies.add(newDiscrepancy(actual, "RECORD MISSING in '" + expectedField + "'", "", actual[0]));
     }
 
-    public void addMissingActual(String[] expectedRecord) {
-        discrepancies.add(
-            newDiscrepancy(expectedRecord, "RECORD MISSING in '" + actualField + "'", expectedRecord[0], ""));
+    public void addMissingActual(String[] expected) {
+        discrepancies.add(newDiscrepancy(expected, "RECORD MISSING in '" + actualField + "'", expected[0], ""));
     }
 
     @Override
@@ -111,19 +110,19 @@ public class CsvComparisonResult {
                                  CollectionUtils.isNotEmpty(failedIdentities);
         String readyVerbiage = readyForReport ? "READY" : "none";
 
-        return "expectedHeaders=" + expectedHeaders + "\n" +
-               "actualHeaders=" + actualHeaders + "\n" +
-               "displayFields=" + displayFields + "\n" +
-               "identityFields=" + identityFields + "\n" +
-               "failedIdentities=<" + CollectionUtils.size(failedIdentities) + " found>\n" +
-               "failCount=" + getFailCount() + "\n" +
-               "expectedRowCount=" + expectedRowCount + "\n" +
-               "actualRowCount=" + actualRowCount + "\n" +
-               "successRate=" + getSuccessRate() + "\n" +
-               "reportAsHTML=<" + readyVerbiage + ">\n" +
-               "reportAsText=<" + readyVerbiage + ">\n" +
-               "reportAsCSV=<" + readyVerbiage + ">\n" +
-               "reportAsCSVWithQuotes=<" + readyVerbiage + ">\n";
+        return "expectedHeaders=" + expectedHeaders + NL +
+               "actualHeaders=" + actualHeaders + NL +
+               "displayFields=" + displayFields + NL +
+               "identityFields=" + identityFields + NL +
+               "failedIdentities=<" + CollectionUtils.size(failedIdentities) + " found>" + NL +
+               "failCount=" + getFailCount() + NL +
+               "expectedRowCount=" + expectedRowCount + NL +
+               "actualRowCount=" + actualRowCount + NL +
+               "successRate=" + getSuccessRate() + NL +
+               "reportAsHTML=<" + readyVerbiage + ">" + NL +
+               "reportAsText=<" + readyVerbiage + ">" + NL +
+               "reportAsCSV=<" + readyVerbiage + ">" + NL +
+               "reportAsCSVWithQuotes=<" + readyVerbiage + ">" + NL;
     }
 
     public String reportAsHTML() { return externalizeReport(HTML); }
@@ -135,9 +134,6 @@ public class CsvComparisonResult {
     public String reportAsCSVWithQuotes() { return externalizeReport(CSV_DOUBLE_QUOTES); }
 
     protected String externalizeReport(ReportFormat format) {
-
-        String content = null;
-
         switch (format) {
             case CSV:
                 return toCSV(false);
@@ -148,16 +144,15 @@ public class CsvComparisonResult {
             case PLAIN:
                 return toPlain();
         }
-
-        return content;
+        return null;
     }
 
     protected String toPlain() {
-        return TextUtils.createAsciiTable(resolveDisplyableHeaders(), discrepancies, List::get);
+        return TextUtils.createAsciiTable(resolveDisplayableHeaders(), discrepancies, List::get);
     }
 
     protected String toCSV(boolean wrapValueWithDoubleQuote) {
-        return TextUtils.createCsv(resolveDisplyableHeaders(),
+        return TextUtils.createCsv(resolveDisplayableHeaders(),
                                    discrepancies,
                                    "\r\n",
                                    ",",
@@ -165,11 +160,11 @@ public class CsvComparisonResult {
     }
 
     protected String toHTML() {
-        return TextUtils.createHtmlTable(resolveDisplyableHeaders(), discrepancies, "compare-extended-result-table");
+        return TextUtils.createHtmlTable(resolveDisplayableHeaders(), discrepancies, "compare-extended-result-table");
     }
 
     @NotNull
-    private List<String> resolveDisplyableHeaders() {
+    private List<String> resolveDisplayableHeaders() {
         List<String> headers = new ArrayList<>(displayFields);
         headers.add(mismatchedField);
         headers.add(expectedField);
@@ -190,7 +185,7 @@ public class CsvComparisonResult {
         displayFields.forEach(display -> {
             int displayIndex = headers.indexOf(display);
             // not found -> display empty string
-            discrepancy.add(displayIndex == -1 ? "" : record[displayIndex + 1]);
+            discrepancy.add(displayIndex == -1 ? "" : record.length > displayIndex + 1 ? record[displayIndex + 1] : "");
         });
         discrepancy.add(field);
         discrepancy.add(expected);

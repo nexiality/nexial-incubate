@@ -19,12 +19,18 @@ package org.nexial.core.utils;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Array;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.nexial.commons.utils.FileUtil;
+import org.nexial.commons.utils.ResourceUtils;
 import org.nexial.commons.utils.TextUtils;
 
 import static java.lang.Integer.MIN_VALUE;
@@ -40,7 +46,9 @@ public class CheckUtils {
     }
 
     public static void fail(String message) {
-        ConsoleUtils.error(message);
+        // use `.log()` to comply with quiet mode when activated
+        // no need to log here. the assertion error will force system error print out anyways..
+        // ConsoleUtils.log(message);
         throw new AssertionError(message);
     }
 
@@ -68,6 +76,16 @@ public class CheckUtils {
         return true;
     }
 
+    public static boolean requiresNotEmpty(String notBlank, String errorMessage, Object... params) {
+        if (StringUtils.isEmpty(notBlank)) { fail(errorMessage + ": " + ArrayUtils.toString(params)); }
+        return true;
+    }
+
+    public static boolean requiresNotEmpty(List<?> list, String errorMessage, Object... params) {
+        if (CollectionUtils.isEmpty(list)) { fail(errorMessage + ": " + ArrayUtils.toString(params)); }
+        return true;
+    }
+
     public static boolean requiresValidVariableName(String var) {
         requires(isValidVariable(var), "Invalid variable name", var);
         return true;
@@ -86,7 +104,7 @@ public class CheckUtils {
     public static boolean requiresReadableDirectory(String path, String message, Object... params) {
         requiresNotBlank(path, message, params);
 
-        String msgParams = ArrayUtils.toString(params);
+        String msgParams = Objects.toString(Array.get(params, 0), "");
 
         File dir = new File(path);
         if (!dir.exists()) {
@@ -108,6 +126,10 @@ public class CheckUtils {
         if (!dir.canWrite()) { fail(message + ": " + ArrayUtils.toString(params)); }
 
         return true;
+    }
+
+    public static boolean requiresReadableFileOrValidUrl(String resource) {
+        return ResourceUtils.isWebResource(resource) || requiresReadableFile(resource);
     }
 
     public static boolean requiresPositiveNumber(String number, String message, Object... params) {
@@ -135,5 +157,15 @@ public class CheckUtils {
 
         for (Class type : types) { if (type != required) { return false;} }
         return true;
+    }
+
+    public static boolean requireOneOf(String option, String... options) {
+        if (requiresNotEmpty(option, "Invalid value", option)) {
+            List<String> optionList = Arrays.asList(options);
+            if (!optionList.contains(option)) { fail("Invalid value: " + option + ". Must be one of " + optionList); }
+            return true;
+        } else {
+            return false;
+        }
     }
 }

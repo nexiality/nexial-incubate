@@ -23,7 +23,7 @@ open class ExecutionOutput {
     var executed = 0
     var iterations = mutableListOf<IterationOutput>()
 
-    fun readExecutionSummary(dirPath: String): ExecutionOutput {
+    fun readExecutionSummary(dirPath: String): ExecutionOutput{
 
         val filePath = "$dirPath${File.separator}$executionSummaryFile"
         CheckUtils.requiresReadableFile(filePath)

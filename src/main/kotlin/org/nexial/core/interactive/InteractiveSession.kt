@@ -20,8 +20,10 @@ import org.apache.commons.collections4.BidiMap
 import org.apache.commons.collections4.bidimap.DualLinkedHashBidiMap
 import org.apache.commons.lang3.StringUtils
 import org.apache.commons.lang3.SystemUtils.USER_NAME
+import org.apache.commons.lang3.math.NumberUtils
 import org.nexial.commons.utils.EnvUtils
 import org.nexial.commons.utils.FileUtil
+import org.nexial.core.ExecutionThread
 import org.nexial.core.NexialConst.Data.DEF_OPEN_EXCEL_AS_DUP
 import org.nexial.core.excel.Excel
 import org.nexial.core.excel.ExcelAddress
@@ -32,6 +34,7 @@ import org.nexial.core.model.ExecutionDefinition
 import org.nexial.core.model.StepResult
 import org.nexial.core.model.TestProject
 import org.nexial.core.model.TestScenario
+import org.nexial.core.plugins.base.BaseCommand
 import org.nexial.core.utils.ConsoleUtils
 import org.nexial.core.utils.ExecUtils
 import org.nexial.core.utils.ExecUtils.IGNORED_CLI_OPT
@@ -42,11 +45,12 @@ import java.util.*
 data class InteractiveSession(val context: ExecutionContext) {
 
     init {
-        System.getProperties().forEach { name, value ->
+        System.getProperties().toMap().forEach { (name, _) ->
             val n = name.toString()
-            val v = value.toString()
-            if (IGNORED_CLI_OPT.none { StringUtils.startsWith(n, it) }) context.setData(n, v)
+            if (IGNORED_CLI_OPT.none { StringUtils.startsWith(n, it) }) context.setData(n, System.getProperty(n))
         }
+
+        ExecutionThread.set(context)
     }
 
     // system
@@ -55,7 +59,13 @@ data class InteractiveSession(val context: ExecutionContext) {
     val user: String = USER_NAME
     var excel: Excel? = null
 
+    // helpers
+    private val baseCommand = context.findPlugin("base") as BaseCommand
+    val executionInspector = ExecutionInspector(baseCommand)
+    val executionRecorder = ExecutionRecorder(baseCommand)
+
     var executionDefinition: ExecutionDefinition? = null
+        @Throws(IllegalArgumentException::class)
         set(value) {
             if (value == null) throw IllegalArgumentException("ExecutionDefinition MUST not be null")
 
@@ -105,7 +115,7 @@ data class InteractiveSession(val context: ExecutionContext) {
 
     private fun loadTestScript(reloadExcel: Boolean) {
         if (reloadExcel) {
-            excel = Excel(File(script), DEF_OPEN_EXCEL_AS_DUP, false)
+            excel = Excel(File(script!!), DEF_OPEN_EXCEL_AS_DUP, false)
             inflightScript = null
         }
 
@@ -134,7 +144,7 @@ data class InteractiveSession(val context: ExecutionContext) {
         val projectHome = executionDefinition?.project?.projectHome
         if (projectHome != null) {
             executionDefinition?.project?.projectHome = projectHome
-            TestProject.listProjectPropertyKeys().forEach { key: String? ->
+            TestProject.listProjectPropertyKeys().forEach { key ->
                 System.setProperty(key, TestProject.getProjectProperty(key))
             }
         }
@@ -146,7 +156,7 @@ data class InteractiveSession(val context: ExecutionContext) {
                 field = value
                 loadDataFile()
             } else {
-                ConsoleUtils.error("Invalid data file specified: $dataFile")
+                ConsoleUtils.error("Invalid data file specified: $value")
             }
         }
 
@@ -155,14 +165,23 @@ data class InteractiveSession(val context: ExecutionContext) {
 
         val execDef = executionDefinition!!
 
-        val dataFileObj = File(dataFile)
+        val dataFileObj = File(dataFile!!)
         val dataFileOfValue = dataFileObj.absolutePath
         if (execDef.dataFile == null || !StringUtils.equals(execDef.dataFile.absolutePath, dataFileOfValue)) {
             execDef.dataFile = dataFileObj
         }
 
         execDef.getTestData(true)
-        this.iteration = if (this.iteration == 0) execDef.testData.iteration else this.iteration
+        this.iteration = if (this.iteration == 0) {
+            val iterationValue = execDef.testData.iteration
+            if (NumberUtils.isDigits(iterationValue)) {
+                NumberUtils.toInt(iterationValue)
+            } else {
+                NumberUtils.toInt(StringUtils.substringBefore(iterationValue, "-"))
+            }
+        } else {
+            this.iteration
+        }
     }
 
     fun reloadDataFile() {
@@ -202,19 +221,29 @@ data class InteractiveSession(val context: ExecutionContext) {
         val stepArea = ExcelAddress("$FIRST_STEP_ROW:$COL_REASON$lastCommandRow")
         val area = ExcelArea(worksheet, stepArea, false)
 
+        val scenarioRef = "Error found in [${worksheet.file.name}][${worksheet.name}]"
+
         var currentActivity = ""
         var i = 0
         while (i < area.wholeArea.size) {
             val row = area.wholeArea[i]
+            val errorPrefix = "$scenarioRef[${row[COL_IDX_TESTCASE].reference}]: "
             val activityName = Excel.getCellValue(row[COL_IDX_TESTCASE])
             if (i == 0 && StringUtils.isBlank(activityName)) {
-                ConsoleUtils.error("first row in Scenario '$scenario' must contain a valid activity name!")
-                break
+                throw RuntimeException("$errorPrefix Invalid format; First row must contain valid activity name")
+            }
+
+            if (StringUtils.isNotEmpty(activityName) && StringUtils.isAllBlank(activityName)) {
+                throw RuntimeException("$errorPrefix Found invalid, space-only activity name")
             }
 
             val currentRow = "" + (row[COL_IDX_COMMAND].rowIndex + 1)
 
             if (StringUtils.isNotBlank(activityName)) {
+                if (allActivities.containsValue(activityName)) {
+                    throw RuntimeException("$errorPrefix Found duplicate activity name '$activityName'")
+                }
+
                 allActivities[allActivities.size + 1] = activityName
 
                 if (StringUtils.isEmpty(currentActivity)) {
@@ -243,9 +272,9 @@ data class InteractiveSession(val context: ExecutionContext) {
                 val testData = executionDefinition!!.testData
 
                 val data = TreeMap(testData.getAllValue(iteration))
-                testData.allSettings.forEach { key, testValue -> data[key] = testValue }
+                testData.allSettings.forEach { (key, testValue) -> data[key] = testValue }
                 data.putAll(ExecUtils.deriveJavaOpts())
-                data.forEach { key, dataValue -> context.setData(key, dataValue) }
+                data.forEach { (key, dataValue) -> context.setData(key, dataValue) }
             }
         }
 
@@ -325,7 +354,7 @@ data class InteractiveSession(val context: ExecutionContext) {
     //    private fun formatActivity(activity: Entry<Int, String>) = "${activity.key}/${activity.value}"
     //    fun formatActivities(activities: MutableMap<Int, String>) = activities.map { activity -> formatActivity(activity) }
     fun formatActivities(activities: MutableList<String>) =
-        activities.map { activity -> "${allActivities.getKey(activity)}/$activity" }
+            activities.map { activity -> "${allActivities.getKey(activity)}/$activity" }
 
     private val activityStepMap: MutableMap<String, MutableList<String>> = mutableMapOf()
 

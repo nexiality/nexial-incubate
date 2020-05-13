@@ -20,9 +20,11 @@ package org.nexial.core.plugins.io;
 import java.io.File;
 import java.io.IOException;
 import java.io.StringReader;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import javax.validation.constraints.NotNull;
+import java.util.Optional;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
@@ -34,14 +36,16 @@ import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.OutputFileUtils;
+import org.nexial.core.utils.OutputResolver;
 
 import com.univocity.parsers.csv.CsvParser;
-import com.univocity.parsers.csv.CsvParserSettings;
 
+import static org.nexial.core.NexialConst.CSV_MAX_COLUMNS;
+import static org.nexial.core.NexialConst.CSV_MAX_COLUMN_WIDTH;
+import static org.nexial.core.plugins.io.CsvExtendedComparison.CSV_EXT_COMP_HEADER;
 import static org.nexial.core.plugins.io.IoCommand.CompareMode.FAIL_FAST;
 import static org.nexial.core.plugins.io.IoCommand.CompareMode.THOROUGH;
 import static org.nexial.core.utils.CheckUtils.*;
-import static org.nexial.core.variable.CsvTransformer.DEF_MAX_COLUMNS;
 
 public class CsvCommand extends IoCommand {
     private ExcelHelper excelHelper;
@@ -68,58 +72,70 @@ public class CsvCommand extends IoCommand {
     }
 
     public StepResult compareExtended(String var, String profile, String expected, String actual) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(profile, "Missing profile for compareExtended");
 
-        // expected can either be a file or content
-        String expectedContent;
-        try {
-            expectedContent = OutputFileUtils.resolveContent(expected, context, false);
-        } catch (IOException e) {
-            return StepResult.fail("Unable to retrieve content from " + expected + ": " + e.getMessage());
-        }
-        requiresNotBlank(expectedContent, "No content found for expected", expected);
-
-        // actual can either be a file or content
-        String actualContent;
-        try {
-            actualContent = OutputFileUtils.resolveContent(actual, context, false);
-        } catch (IOException e) {
-            return StepResult.fail("Unable to retrieve content from " + actual + ": " + e.getMessage());
-        }
-        requiresNotBlank(actualContent, "No content found for actual", actual);
-
         String configKey = profile + ".compareExt.";
-        String textDelim = context.getTextDelim();
 
         CsvExtendedComparison comparison = new CsvExtendedComparison();
-        comparison.setDelimiter(textDelim);
+        comparison.setDelimiter(context.getTextDelim());
+        comparison.setMaxColumns(context.getIntData(CSV_MAX_COLUMNS, -1));
+        comparison.setMaxColumnWidth(context.getIntData(CSV_MAX_COLUMN_WIDTH, -1));
 
-        comparison.setExpectedContent(expectedContent);
-        comparison.setActualContent(actualContent);
+        // expected can either be a file or content
+        if (BooleanUtils.toBoolean(collectConfig(configKey + "expected.readAsIs").orElse("false"))) {
+            File file = OutputResolver.resolveFile(expected);
+            requiresNotNull(file, "Unable to resolve 'expected' as a file");
+            ConsoleUtils.log(CSV_EXT_COMP_HEADER + "read from expected: " + file.length() + " bytes read");
+            comparison.setExpectedFile(file);
+        } else {
+            try {
+                String content = new OutputResolver(expected, context, true, true, false, false, false)
+                                     .getContent();
+                requiresNotBlank(content, "No content found for expected", expected);
+                ConsoleUtils.log(CSV_EXT_COMP_HEADER + "read from expected: " + content.length() + " bytes read");
+                comparison.setExpectedContent(content);
+            } catch (Throwable e) {
+                return StepResult.fail("Unable to retrieve content from " + expected + ": " + e.getMessage());
+            }
+        }
+
+        // actual can either be a file or content
+        if (BooleanUtils.toBoolean(collectConfig(configKey + "actual.readAsIs").orElse("false"))) {
+            File file = OutputResolver.resolveFile(actual);
+            ConsoleUtils.log(CSV_EXT_COMP_HEADER + "read from actual:   " + file.length() + " bytes read");
+            comparison.setActualFile(file);
+        } else {
+            try {
+                String content = new OutputResolver(actual, context, true, true, false, false, false)
+                                     .getContent();
+                requiresNotBlank(content, "No content found for actual", actual);
+                ConsoleUtils.log(CSV_EXT_COMP_HEADER + "read from actual:   " + content.length() + " bytes read");
+                comparison.setActualContent(content);
+            } catch (Throwable e) {
+                return StepResult.fail("Unable to retrieve content from " + actual + ":   " + e.getMessage());
+            }
+        }
 
         // identity column(s) is used to identity the records on both expected and actual CSV file
         // this means that even if the content aren't matching line by line, we can use the identity column(s)
         // to "line them up".. good feature when the expected and actual content aren't sorted the same way.
-        comparison.setExpectedIdentityColumns(
-            TextUtils.toList(context.getStringData(configKey + "expected.identity"), textDelim, true));
-        comparison.setActualIdentityColumns(
-            TextUtils.toList(context.getStringData(configKey + "actual.identity"), textDelim, true));
+        collectFields(configKey + "expected.identity").ifPresent(comparison::setExpectedIdentityColumns);
+        collectFields(configKey + "actual.identity").ifPresent(comparison::setActualIdentityColumns);
 
         // define what fields to display in case mismatches are found.  The display fields provide additional
         // context to the mismatch event so that reader can correctly and easily associate the mismatched records.
-        comparison.setDisplayFields(
-            TextUtils.toList(context.getStringData(configKey + "output.display"), textDelim, true));
+        collectFields(configKey + "output.display").ifPresent(comparison::setDisplayFields);
 
         // labels of the mismatched information
-        comparison.setMismatchedField(context.getStringData(configKey + "output.MISMATCHED"));
-        comparison.setExpectedField(context.getStringData(configKey + "output.EXPECTED"));
-        comparison.setActualField(context.getStringData(configKey + "output.ACTUAL"));
+        collectConfig(configKey + "output.MISMATCHED").ifPresent(comparison::setMismatchedField);
+        collectConfig(configKey + "output.EXPECTED").ifPresent(comparison::setExpectedField);
+        collectConfig(configKey + "output.ACTUAL").ifPresent(comparison::setActualField);
 
         // defines which field(s) to match on.  If none specified, then match on all fields.
         Map<String, String> mapping = context.getDataByPrefix(configKey + "match.");
         if (MapUtils.isEmpty(mapping)) {
-            ConsoleUtils.log("No mapping found; ASSUME THE EXACT SAME COLUMNS FOR EXPECTED AND ACTUAL");
+            ConsoleUtils.log(CSV_EXT_COMP_HEADER + "No mapping found; ASSUME SAME COLUMNS FOR EXPECTED AND ACTUAL");
         } else {
             comparison.setFieldMapping(mapping);
         }
@@ -129,14 +145,19 @@ public class CsvCommand extends IoCommand {
         // instead of declaring the mapping of each and every field between expected and actual CSV file, one can
         // define just the few fields that are to be ignored.
         // the 'ignore' fields are assumed to be found on expected CSV.
-        List<String> ignoreFields = TextUtils.toList(context.getStringData(configKey + "ignore"), textDelim, true);
-        if (CollectionUtils.isNotEmpty(ignoreFields)) { comparison.setIgnoreFields(ignoreFields); }
+        collectFields(configKey + "ignore").ifPresent(comparison::setIgnoreFields);
+        collectFields(configKey + "matchAsNumber").ifPresent(comparison::setNumberFields);
+        collectFields(configKey + "matchCaseInsensitive").ifPresent(comparison::setCaseInsensitiveFields);
+        collectFields(configKey + "matchAutoTrim").ifPresent(comparison::setAutoTrimFields);
+
+        // support comparing field content as list (ordered or unordered)
+        collectConfig(configKey + "list.delim").ifPresent(comparison::setListDelim);
+        collectFields(configKey + "matchAsOrderedList").ifPresent(comparison::setOrderedListFields);
+        collectFields(configKey + "matchAsUnorderedList").ifPresent(comparison::setUnorderedListFields);
 
         // specifies the delimiter used for identity fields for BOTH the expected and actual CSV files
         // if not specified, then '^' is assumed.
-        if (context.hasData(configKey + "identity.delim")) {
-            comparison.setIdentSeparator(context.getStringData(configKey + "identity.delim"));
-        }
+        collectConfig(configKey + "identity.delim").ifPresent(comparison::setIdentSeparator);
 
         try {
             CsvComparisonResult result = comparison.compare();
@@ -149,10 +170,8 @@ public class CsvCommand extends IoCommand {
     }
 
     public StepResult convertExcel(String excel, String worksheet, String csvFile) {
-        String msg = getTarget() + " » convertExcel() is DEPRECATED. PLEASE CONSIDER USING " +
-                     getTarget() + " » fromExcel() INSTEAD";
-        ConsoleUtils.log(msg);
-        log(msg);
+        logDeprecated(getTarget() + " » convertExcel(excel,worksheet,csvFile)",
+                      getTarget() + " » fromExcel(excel,worksheet,csvFile)");
         return fromExcel(excel, worksheet, csvFile);
     }
 
@@ -168,83 +187,119 @@ public class CsvCommand extends IoCommand {
         return excelHelper.saveCsvToFile(excelFile, worksheet, csvFile);
     }
 
-    public static CsvParser newCsvParser(String quote,
-                                         String delim,
-                                         String lineSeparator,
-                                         boolean hasHeader,
-                                         int maxColumns) {
-        return newCsvParser(quote, delim, lineSeparator, hasHeader, true, maxColumns);
-    }
+    public StepResult toExcel(String csvFile, String excel, String worksheet, String startCell) {
+        requiresNotBlank(excel, "invalid excel file", excel);
+        requiresNotBlank(worksheet, "invalid worksheet", worksheet);
+        requiresNotBlank(csvFile, "invalid CSV destination", csvFile);
 
-    public static CsvParser newCsvParser(String quote,
-                                         String delim,
-                                         String lineSeparator,
-                                         boolean hasHeader,
-                                         boolean keepQuote,
-                                         int maxColumns) {
-        return new CsvParser(newCsvParserSetting(quote, delim, lineSeparator, hasHeader, keepQuote, maxColumns));
-    }
+        try {
+            String csvContent = OutputFileUtils.resolveContent(csvFile, context, false, true);
+            if (StringUtils.isBlank(csvContent)) { return StepResult.fail("No content found in '" + csvFile + "'"); }
 
-    public static CsvParserSettings newCsvParserSettings(String delim,
-                                                         String lineSeparator,
-                                                         boolean hasHeader,
-                                                         int maxColumns) {
-        /*
-        withDelimiter(',')
-        withQuote('"')
-        withRecordSeparator("\r\n")
-        withIgnoreEmptyLines(false)
-        withAllowMissingColumnNames(true)
-        */
-        CsvParserSettings settings = new CsvParserSettings();
-        settings.setHeaderExtractionEnabled(hasHeader);
-        settings.setSkipEmptyLines(false);
-        settings.setEmptyValue("");
-        settings.setNullValue("");
-        // settings.setKeepEscapeSequences(true);
-        // settings.setEscapeUnquotedValues(true);
-
-        settings.setLineSeparatorDetectionEnabled(true);
-        if (StringUtils.isNotEmpty(lineSeparator)) { settings.getFormat().setLineSeparator(lineSeparator); }
-
-        if (StringUtils.isNotEmpty(delim)) {
-            settings.getFormat().setDelimiter(delim.charAt(0));
-            settings.setDelimiterDetectionEnabled(false);
-        } else {
-            settings.setDelimiterDetectionEnabled(true);
+            // convert content to list-list-string
+            List<List<String>> rowsAndColumns = new ArrayList<>();
+            parseAsCSV(csvContent, false).forEach(record -> rowsAndColumns.add(Arrays.asList(record)));
+            ExcelHelper.csv2xlsx(excel, worksheet, startCell, rowsAndColumns);
+            return StepResult.success("Successfully saved content from '" + csvFile + "' to '" + excel + "'");
+        } catch (IOException e) {
+            return StepResult.fail("Unable to save '" + csvFile + "' to '" + excel + "': " + e.getMessage());
         }
-
-        if (maxColumns > DEF_MAX_COLUMNS) { settings.setMaxColumns(maxColumns); }
-        return settings;
     }
 
-    @NotNull
-    public static CsvParserSettings newCsvParserSetting(String quote,
-                                                        String delim,
-                                                        String lineSeparator,
-                                                        boolean hasHeader,
-                                                        boolean keepQuote,
-                                                        int maxColumns) {
-        CsvParserSettings settings = newCsvParserSettings(delim, lineSeparator, hasHeader, maxColumns);
+    // public static CsvParser newCsvParser(String quote,
+    //                                      String delim,
+    //                                      String lineSeparator,
+    //                                      boolean hasHeader,
+    //                                      int maxColumns) {
+    //     return newCsvParser(quote, delim, lineSeparator, hasHeader, true, maxColumns);
+    // }
+    //
+    // public static CsvParser newCsvParser(String quote,
+    //                                      String delim,
+    //                                      String lineSeparator,
+    //                                      boolean hasHeader,
+    //                                      boolean keepQuote,
+    //                                      int maxColumns) {
+    //     return new CsvParser(newCsvParserSetting(quote, delim, lineSeparator, hasHeader, keepQuote, maxColumns));
+    // }
+    //
+    // public static CsvParserSettings newCsvParserSettings(String delim,
+    //                                                      String lineSeparator,
+    //                                                      boolean hasHeader,
+    //                                                      int maxColumns) {
+    //     /*
+    //     withDelimiter(',')
+    //     withQuote('"')
+    //     withRecordSeparator("\r\n")
+    //     withIgnoreEmptyLines(false)
+    //     withAllowMissingColumnNames(true)
+    //     */
+    //     CsvParserSettings settings = new CsvParserSettings();
+    //     settings.setHeaderExtractionEnabled(hasHeader);
+    //     settings.setSkipEmptyLines(false);
+    //     settings.setEmptyValue("");
+    //     settings.setNullValue("");
+    //     // settings.setKeepEscapeSequences(true);
+    //     // settings.setEscapeUnquotedValues(true);
+    //
+    //     settings.setLineSeparatorDetectionEnabled(true);
+    //     if (StringUtils.isNotEmpty(lineSeparator)) { settings.getFormat().setLineSeparator(lineSeparator); }
+    //
+    //     if (StringUtils.isNotEmpty(delim)) {
+    //         settings.getFormat().setDelimiter(delim.charAt(0));
+    //         settings.setDelimiterDetectionEnabled(false);
+    //     } else {
+    //         settings.setDelimiterDetectionEnabled(true);
+    //     }
+    //
+    //     if (maxColumns > 0) { settings.setMaxColumns(maxColumns); }
+    //     return settings;
+    // }
+    //
+    // @NotNull
+    // public static CsvParserSettings newCsvParserSetting(String quote,
+    //                                                     String delim,
+    //                                                     String lineSeparator,
+    //                                                     boolean hasHeader,
+    //                                                     boolean keepQuote,
+    //                                                     int maxColumns) {
+    //     CsvParserSettings settings = newCsvParserSettings(delim, lineSeparator, hasHeader, maxColumns);
+    //
+    //     settings.setQuoteDetectionEnabled(true);
+    //     if (StringUtils.isNotEmpty(quote)) {
+    //         settings.getFormat().setQuote(quote.charAt(0));
+    //         settings.setKeepQuotes(keepQuote);
+    //     }
+    //
+    //     return settings;
+    // }
 
-        settings.setQuoteDetectionEnabled(true);
-        if (StringUtils.isNotEmpty(quote)) {
-            settings.getFormat().setQuote(quote.charAt(0));
-            settings.setKeepQuotes(keepQuote);
-        }
+    protected Optional<List<String>> collectFields(String config) {
+        String textDelim = context.getTextDelim();
+        List<String> fields = TextUtils.toList(context.getStringData(config), textDelim, true);
+        return CollectionUtils.isEmpty(fields) ? Optional.empty() : Optional.of(fields);
+    }
 
-        return settings;
+    protected Optional<String> collectConfig(String config) {
+        return context.hasData(config) ? Optional.of(context.getStringData(config)) : Optional.empty();
     }
 
     protected List<String[]> parseAsCSV(File file) {
-        CsvParser parser = newCsvParser(null, null, null, false, -1);
+        CsvParser parser = new CsvParserBuilder().setHasHeader(false)
+                                                 .setMaxColumns(context.getIntData(CSV_MAX_COLUMNS, -1))
+                                                 .setMaxColumnWidth(context.getIntData(CSV_MAX_COLUMN_WIDTH, -1))
+                                                 .build();
         List<String[]> records = parser.parseAll(file);
         log("found " + records.size() + " line(s) from '" + file + "'");
         return records;
     }
 
     protected List<String[]> parseAsCSV(String content, boolean hasHeader) {
-        CsvParser parser = newCsvParser(null, null, null, hasHeader, -1);
+        CsvParser parser = new CsvParserBuilder().setHasHeader(hasHeader)
+                                                 .setMaxColumns(context.getIntData(CSV_MAX_COLUMNS, -1))
+                                                 .setMaxColumnWidth(context.getIntData(CSV_MAX_COLUMN_WIDTH, -1))
+                                                 .setQuote("\"")
+                                                 .build();
         List<String[]> records = parser.parseAll(new StringReader(content));
         log("found " + records.size() + " line(s)");
         return records;

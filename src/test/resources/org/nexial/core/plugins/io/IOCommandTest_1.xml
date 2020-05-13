@@ -51,8 +51,7 @@
                                     &lt;sec:applicationResourceIdentifier&gt;&lt;/sec:applicationResourceIdentifier&gt;&#xd;
                                     &lt;/sec:authorizeApplicationForUser&gt;&#xd;
                                     &lt;/soapenv:Body&gt;&#xd;
-                                    &lt;/soapenv:Envelope&gt;
-                                </stringProp>
+                                    &lt;/soapenv:Envelope&gt;</stringProp>
                                 <stringProp name="Argument.metadata">=</stringProp>
                             </elementProp>
                         </collectionProp>
@@ -80,7 +79,7 @@
                         </elementProp>
                         <elementProp name="" elementType="Header">
                             <stringProp name="Header.name">SOAPAction</stringProp>
-                            <stringProp name="Header.value">&quot;urn:authorizeApplicationForUser&quot;</stringProp>
+                            <stringProp name="Header.value">&quot;urn:authorizeApplicationForUser&quot; </stringProp>
                         </elementProp>
                     </collectionProp>
                 </HeaderManager>
@@ -160,8 +159,7 @@
                                     &lt;sec:username&gt;&lt;/sec:username&gt;&#xd;
                                     &lt;/sec:getListOfApplicationForUser&gt;&#xd;
                                     &lt;/soapenv:Body&gt;&#xd;
-                                    &lt;/soapenv:Envelope&gt;
-                                </stringProp>
+                                    &lt;/soapenv:Envelope&gt;</stringProp>
                                 <stringProp name="Argument.metadata">=</stringProp>
                             </elementProp>
                         </collectionProp>
@@ -189,7 +187,7 @@
                         </elementProp>
                         <elementProp name="" elementType="Header">
                             <stringProp name="Header.name">SOAPAction</stringProp>
-                            <stringProp name="Header.value">&quot;urn:getListOfApplicationForUser&quot;</stringProp>
+                            <stringProp name="Header.value">&quot;urn:getListOfApplicationForUser&quot; </stringProp>
                         </elementProp>
                     </collectionProp>
                 </HeaderManager>

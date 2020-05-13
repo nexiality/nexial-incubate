@@ -24,16 +24,17 @@ import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.ExecutionDefinition;
 import org.nexial.core.model.TestCase;
-import org.nexial.core.model.TestScenario;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.utils.ConsoleUtils;
-import org.nexial.core.utils.ExecUtils;
 
 import static org.apache.commons.lang3.SystemUtils.JAVA_VERSION;
 import static org.apache.commons.lang3.SystemUtils.USER_NAME;
-import static org.nexial.core.NexialConst.Data.CURR_ITERATION;
+import static org.nexial.core.NexialConst.Iteration.CURR_ITERATION;
 import static org.nexial.core.NexialConst.Data.ITERATION_ENDED;
 import static org.nexial.core.NexialConst.OPT_INPUT_EXCEL_FILE;
+import static org.nexial.core.NexialConst.OPT_INPUT_PLAN_FILE;
+import static org.nexial.core.NexialConst.Project.SCRIPT_FILE_EXT;
+import static org.nexial.core.utils.ExecUtils.NEXIAL_MANIFEST;
 
 /**
  * built-in function to expose execution level meta data.  This function expose the "current" or runtime
@@ -58,7 +59,9 @@ public class Execution {
         // elapsed, passed, failed, skipped, success
     }
 
-    enum Artifact {script, iteration, scenario, activity, step}
+    enum Artifact {plan, script, iteration, scenario, activity, step}
+
+    public String plan(String scope) { return evaluateExecutionData(Artifact.plan, Metadata.valueOf(scope)); }
 
     public String script(String scope) { return evaluateExecutionData(Artifact.script, Metadata.valueOf(scope)); }
 
@@ -71,7 +74,7 @@ public class Execution {
     public String iteration(String scope) { return evaluateExecutionData(Artifact.iteration, Metadata.valueOf(scope)); }
 
     public String meta(String type) {
-        if (StringUtils.equalsIgnoreCase(type, "nexial")) { return ExecUtils.deriveJarManifest(); }
+        if (StringUtils.equalsIgnoreCase(type, "nexial")) { return NEXIAL_MANIFEST; }
         if (StringUtils.equalsIgnoreCase(type, "java")) { return "Java " + JAVA_VERSION; }
         if (StringUtils.equalsIgnoreCase(type, "user")) { return USER_NAME; }
         ConsoleUtils.log("Unknown 'type': " + type);
@@ -88,7 +91,8 @@ public class Execution {
         boolean iterationEnded = context.getTestScript() == null || context.getBooleanData(ITERATION_ENDED, false);
         TestStep currentStep = context.getCurrentTestStep();
 
-        if (iterationEnded && currentStep == null) {
+        if (iterationEnded && currentStep == null &&
+            (Artifact.step == scope || Artifact.activity == scope || Artifact.iteration == scope)) {
             ConsoleUtils.log("Iteration ended; unable to determine " + metaRequest);
             return "N/A";
         }
@@ -107,7 +111,7 @@ public class Execution {
                         return (currentStep.getRowIndex() + 1) + "";
                     case name:
                         return "[" + resolveScriptName(context) + "]" +
-                               "[" + resolveScenario(currentStep) + "]" +
+                               "[" + resolveScenario(context) + "]" +
                                "[" + resolveActivity(currentStep) + "]" +
                                "[ROW " + (currentStep.getRowIndex() + 1) + "]";
                     case script:
@@ -115,7 +119,7 @@ public class Execution {
                     case iteration:
                         return context.getIntData(CURR_ITERATION) + "";
                     case scenario:
-                        return resolveScenario(currentStep);
+                        return resolveScenario(context);
                     case activity:
                         return resolveActivity(currentStep);
                     case description:
@@ -144,7 +148,7 @@ public class Execution {
                     case iteration:
                         return context.getIntData(CURR_ITERATION) + "";
                     case scenario:
-                        return resolveScenario(currentStep);
+                        return resolveScenario(context);
                     case fullpath:
                     case index:
                     case activity:
@@ -157,7 +161,7 @@ public class Execution {
             }
 
             case scenario: {
-                String scenarioName = resolveScenario(currentStep);
+                String scenarioName = resolveScenario(context);
                 if (StringUtils.isBlank(scenarioName)) {
                     ConsoleUtils.error(error + " current scenario cannot be determined");
                     return "";
@@ -165,7 +169,7 @@ public class Execution {
 
                 switch (metadata) {
                     case name:
-                        return resolveScenario(currentStep);
+                        return resolveScenario(context);
                     case script:
                         return resolveScriptName(context);
                     case iteration:
@@ -221,9 +225,47 @@ public class Execution {
                         return "";
                 }
             }
+
+            case plan: {
+                switch (metadata) {
+                    case name:
+                        return resolvePlanName(context);
+                    case fullpath: {
+                        String excelFile = context.getStringData(OPT_INPUT_PLAN_FILE);
+                        if (StringUtils.isNotEmpty(excelFile)) { return new File(excelFile).getAbsolutePath(); }
+                    }
+                    case index: {
+                        ExecutionDefinition execDef = context.getExecDef();
+                        if (execDef == null) { return ""; }
+
+                        int planSequence = execDef.getPlanSequence();
+                        return (planSequence < 1) ? "" : planSequence + "";
+                    }
+                    case script:
+                    case iteration:
+                    case scenario:
+                    case activity:
+                    case description:
+                    case command:
+                    default:
+                        ConsoleUtils.error(error);
+                        return "";
+                }
+            }
         }
 
         return null;
+    }
+
+    @NotNull
+    private String resolvePlanName(ExecutionContext context) {
+        ExecutionDefinition execDef = context.getExecDef();
+        if (execDef == null) { return ""; }
+
+        String planFile = execDef.getPlanFile();
+        if (planFile == null) { return ""; }
+
+        return StringUtils.removeEndIgnoreCase(new File(planFile).getName(), SCRIPT_FILE_EXT);
     }
 
     @NotNull
@@ -234,17 +276,11 @@ public class Execution {
         String testScript = execDef.getTestScript();
         if (testScript == null) { return ""; }
 
-        return StringUtils.removeEndIgnoreCase(new File(testScript).getName(), ".xlsx");
+        return StringUtils.removeEndIgnoreCase(new File(testScript).getName(), SCRIPT_FILE_EXT);
     }
 
     @NotNull
-    private String resolveScenario(TestStep step) {
-        TestCase activity = resolveEnclosedActivity(step);
-        if (activity == null) { return ""; }
-
-        TestScenario scenario = activity.getTestScenario();
-        return scenario == null ? "" : scenario.getName();
-    }
+    private String resolveScenario(ExecutionContext context) { return context.getCurrentScenario(); }
 
     @NotNull
     private String resolveActivity(TestStep step) {

@@ -17,25 +17,27 @@
 
 package org.nexial.core.plugins.base;
 
-import java.awt.*;
 import java.awt.image.*;
 import java.io.File;
-import java.io.IOException;
 import javax.imageio.ImageIO;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.model.TestStep;
+import org.nexial.core.plugins.web.WebDriverExceptionHelper;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.ExecutionLogger;
 import org.openqa.selenium.Rectangle;
 import org.openqa.selenium.TakesScreenshot;
 import org.openqa.selenium.UnhandledAlertException;
 import org.openqa.selenium.WebDriverException;
 
-import static org.nexial.core.NexialConst.OPT_LAST_SCREENSHOT_NAME;
-import static org.nexial.core.NexialConst.SCREENSHOT_EXT;
+import static org.nexial.core.NexialConst.Data.QUIET;
 import static org.openqa.selenium.OutputType.BASE64;
 
 public class ScreenshotUtils {
@@ -55,81 +57,124 @@ public class ScreenshotUtils {
                                                       Math.max(rect.getY(), 0),
                                                       Math.min(rect.getWidth(), image.getWidth()),
                                                       Math.min(rect.getHeight(), image.getHeight()));
-            if (ImageIO.write(cropped, ext, output)) {
-                return output;
-            } else {
-                ConsoleUtils.error("Unable to save cropped screen capture successfully");
-                return imageFile;
-            }
+            if (ImageIO.write(cropped, ext, output)) { return output; }
+
+            error("Unable to save cropped screen capture successfully");
+            return imageFile;
         } catch (Exception e) {
-            ConsoleUtils.error("failed to capture screen capture to '" + filename + "': " + e.getMessage());
+            error("failed to capture screen capture to '" + filename + "': " + e.getMessage());
             return imageFile;
         }
     }
 
-    public static File saveDesktopScreenshot(String filename) {
-        if (filename == null) { throw new IllegalArgumentException("filename is null"); }
-        File output = new File(filename);
-
-        try {
-            BufferedImage image =
-                new Robot().createScreenCapture(new java.awt.Rectangle(Toolkit.getDefaultToolkit().getScreenSize()));
-            ImageIO.write(image, StringUtils.removeStart(SCREENSHOT_EXT, "."), output);
-            return output;
-        } catch (HeadlessException | AWTException | IOException e) {
-            ConsoleUtils.error("failed to save screen capture to '" + filename + "': " + e.getMessage());
-            return null;
-        }
-    }
+    // public static File saveDesktopScreenshot(String filename) {
+    //     if (filename == null) { throw new IllegalArgumentException("filename is null"); }
+    //
+    //     File output = prepScreenshotFile(filename);
+    //
+    //     try {
+    //         BufferedImage image =
+    //             new Robot().createScreenCapture(new java.awt.Rectangle(Toolkit.getDefaultToolkit().getScreenSize()));
+    //         ImageIO.write(image, StringUtils.removeStart(SCREENSHOT_EXT, "."), output);
+    //         ExecutionContext context = ExecutionThread.get();
+    //         if (context != null) { context.setData(OPT_LAST_SCREENSHOT_NAME, output.getName()); }
+    //         return output;
+    //     } catch (HeadlessException | AWTException | IOException e) {
+    //         error("failed to save screen capture to '" + filename + "': " + e.getMessage());
+    //         return null;
+    //     }
+    // }
 
     public static File saveScreenshot(TakesScreenshot screenshot, String filename) {
         if (screenshot == null) { throw new IllegalArgumentException("screenshot object is null"); }
         if (filename == null) { throw new IllegalArgumentException("filename is null"); }
 
-        File f = new File(filename);
-        File dir = f.getParentFile();
-        if (dir != null && !dir.exists() && !dir.mkdirs()) {
-            log("directory creation failed for '" + dir.getAbsolutePath() + "'... this might not work...");
-        }
+        File output = prepScreenshotFile(filename);
 
         String screen;
         try {
             // if (screenshot instanceof RemoteWebDriver) { ((RemoteWebDriver) screenshot).manage().window().fullscreen();}
             screen = screenshot.getScreenshotAs(BASE64);
         } catch (WebDriverException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof UnhandledAlertException) {
-                log("screen capture not support when Javascript alert present");
+            if (e instanceof UnhandledAlertException) {
+                error("screen capture not support when Javascript alert present");
             } else {
-                log("Error when performing screen capture: " + e.getMessage());
+                error("Error when performing screen capture - " + WebDriverExceptionHelper.resolveErrorMessage(e));
             }
+            return null;
+        } catch (Throwable e) {
+            error("Error when performing screen capture: " + e.getMessage());
             return null;
         }
 
         if (screen == null) {
-            log("Failed to capture screenshot - null returned.");
+            error("Failed to capture screenshot - null returned.");
             return null;
         }
 
         try {
-            FileUtils.writeByteArrayToFile(f, Base64.decodeBase64(screen.getBytes()));
-            ExecutionContext context = ExecutionThread.get();
-            if (context != null) { context.setData(OPT_LAST_SCREENSHOT_NAME, f.getName(), true); }
-            //log("screen captured to '" + filename + "'");
-            return f;
+            FileUtils.writeByteArrayToFile(output, Base64.decodeBase64(screen.getBytes()));
+            return output;
         } catch (Exception e) {
             ConsoleUtils.error("failed to save screen capture to '" + filename + "': " + e.getMessage());
             return null;
         }
     }
 
-    protected static void log(String message) {
+    @NotNull
+    protected static File prepScreenshotFile(String filename) {
+        File output = new File(filename);
+        File dir = output.getParentFile();
+        if (dir != null && !dir.exists() && !dir.mkdirs()) {
+            log("directory creation failed for '" + dir.getAbsolutePath() + "'... this might not work...");
+        }
+        return output;
+    }
+
+    private static void log(String message) {
         if (StringUtils.isBlank(message)) { return; }
+        if (BooleanUtils.toBoolean(System.getProperty(QUIET))) { return; }
+
         ExecutionContext context = ExecutionThread.get();
-        if (context != null) {
-            context.getLogger().log(context, message);
-        } else {
+        if (context == null) {
             ConsoleUtils.log(message);
+            return;
+        }
+
+        ExecutionLogger logger = context.getLogger();
+        if (logger == null) {
+            ConsoleUtils.log(message);
+            return;
+        }
+
+        TestStep currentTestStep = context.getCurrentTestStep();
+        if (currentTestStep == null) {
+            logger.log(context, message);
+        } else {
+            logger.log(currentTestStep, message);
+        }
+    }
+
+    private static void error(String message) {
+        if (StringUtils.isBlank(message)) { return; }
+
+        ExecutionContext context = ExecutionThread.get();
+        if (context == null) {
+            ConsoleUtils.error(message);
+            return;
+        }
+
+        ExecutionLogger logger = context.getLogger();
+        if (logger == null) {
+            ConsoleUtils.error(message);
+            return;
+        }
+
+        TestStep currentTestStep = context.getCurrentTestStep();
+        if (currentTestStep == null) {
+            logger.error(context, message);
+        } else {
+            logger.error(currentTestStep, message);
         }
     }
 }

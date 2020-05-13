@@ -1,0 +1,1 @@
+metrics.FirstInteractive = formatPerfNum(JSON.parse(localStorage.getItem('n')).map(x => x.domInteractive - x.responseEnd).pop());

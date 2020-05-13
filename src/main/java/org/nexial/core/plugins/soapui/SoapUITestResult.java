@@ -32,9 +32,6 @@ import org.nexial.core.NexialConst.SoapUI;
 
 import static org.nexial.core.NexialConst.SoapUI.*;
 
-/**
- *
- */
 public class SoapUITestResult {
     private String testSuiteName;
     private int testCount;
@@ -167,7 +164,7 @@ public class SoapUITestResult {
     protected static List<String> parseErrors(String errors) {
         List<String> parsed = new ArrayList<>();
 
-        String[] lines = StringUtils.split(errors, "\n\r");
+        String[] lines = StringUtils.split(errors, "\r\n");
         String currentError = "";
         for (String line : lines) {
             if (StringUtils.startsWith(line, "[")) {

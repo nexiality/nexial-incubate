@@ -29,14 +29,19 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.http.cookie.Cookie;
 import org.apache.http.impl.cookie.BasicClientCookie;
 import org.nexial.commons.utils.DateUtility;
+import org.nexial.core.ExecutionThread;
+import org.nexial.core.model.ExecutionContext;
 
-import static org.nexial.core.NexialConst.COOKIE_DATE_FORMAT;
-import static org.nexial.core.NexialConst.COOKIE_DATE_FORMAT2;
+import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.MAX_CONSOLE_DISPLAY;
+import static org.nexial.core.SystemVariables.getDefaultInt;
 
 public class Response implements Serializable {
     protected int returnCode;
     protected String statusText;
     protected byte[] rawBody;
+    protected long requestTime;
+    protected long ttfb;
     protected long elapsedTime;
     protected long contentLength;
     protected Map<String, String> headers = new HashMap<>();
@@ -56,6 +61,14 @@ public class Response implements Serializable {
     public byte[] getRawBody() { return rawBody; }
 
     public void setRawBody(byte[] rawBody) { this.rawBody = rawBody; }
+
+    public long getRequestTime() { return requestTime; }
+
+    public void setRequestTime(long requestTime) { this.requestTime = requestTime; }
+
+    public long getTtfb() { return ttfb; }
+
+    public void setTtfb(long ttfb) { this.ttfb = ttfb; }
 
     public long getElapsedTime() { return elapsedTime; }
 
@@ -86,12 +99,22 @@ public class Response implements Serializable {
 
     @Override
     public String toString() {
-        return "returnCode=" + returnCode + "\n" +
-               "statusText=" + statusText + "\n" +
-               "headers=" + headers + "\n" +
-               "contentLength=" + contentLength + "\n" +
-               "elapsedTime=" + elapsedTime + "\n" +
-               "body='" + (ArrayUtils.isEmpty(rawBody) ? "<NONE>" : StringUtils.left(getBody(), 500) + "...'");
+        String toString = "returnCode=" + returnCode + NL +
+                          "statusText=" + statusText + NL +
+                          "headers=" + headers + NL +
+                          "contentLength=" + contentLength + NL +
+                          "elapsedTime=" + elapsedTime + NL +
+                          "body=";
+
+        if (ArrayUtils.isEmpty(rawBody)) { return toString + "<NONE>"; }
+
+        String body = getBody();
+        int defaultMaxLength = getDefaultInt(MAX_CONSOLE_DISPLAY);
+
+        ExecutionContext context = ExecutionThread.get();
+        return toString + (context == null ?
+                           ExecutionContext.truncateForDisplay(body, defaultMaxLength) :
+                           context.truncateForDisplay(body));
     }
 
     protected void harvestCookies(String[] cookieParts) {
@@ -99,8 +122,9 @@ public class Response implements Serializable {
         for (String cookiePart : cookieParts) {
             Pair<String, String> nameValue;
             if (StringUtils.contains(cookiePart, "=")) {
-                String[] pair = StringUtils.split(cookiePart, "=");
-                nameValue = new ImmutablePair<>(StringUtils.trim(pair[0]), StringUtils.trim(pair[1]));
+                // presence of "=" doesn't mean that there's a valid name/value pair
+                nameValue = new ImmutablePair<>(StringUtils.trim(StringUtils.substringBefore(cookiePart, "=")),
+                                                StringUtils.trim(StringUtils.substringAfter(cookiePart, "=")));
             } else {
                 nameValue = new ImmutablePair<>(cookiePart, null);
             }

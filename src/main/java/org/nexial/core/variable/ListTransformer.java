@@ -21,7 +21,6 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -37,8 +36,9 @@ import org.nexial.commons.utils.RegexUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
 
-import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
-import static org.nexial.core.NexialConst.Data.treatCommonValueShorthand;
+import static org.nexial.core.NexialConst.Data.TEXT_DELIM;
+import static org.nexial.core.NexialConst.treatCommonValueShorthand;
+import static org.nexial.core.SystemVariables.getDefault;
 import static org.nexial.core.variable.ExpressionConst.ALIAS_EMPTY;
 import static org.nexial.core.variable.ExpressionUtils.fixControlChars;
 import static org.nexial.core.variable.NumberTransformer.DEC_SCALE;
@@ -61,11 +61,11 @@ public class ListTransformer<T extends ListDataType> extends Transformer {
 
         if (data == null || data.getValue() == null) { return newData; }
 
-        double[] sum = new double[]{0};
+        BigDecimal[] sum = new BigDecimal[]{new BigDecimal(0)};
         String[] array = data.getValue();
-        Arrays.stream(array).forEach(item -> sum[0] += NumberUtils.toDouble(item, 0));
+        Arrays.stream(array).forEach(item -> sum[0] = toBigDecimal(item).add(sum[0]));
 
-        newData.setTextValue(BigDecimal.valueOf(sum[0]).toPlainString());
+        newData.setTextValue(sum[0].toPlainString());
         newData.setValue(sum[0]);
         return newData;
     }
@@ -151,7 +151,7 @@ public class ListTransformer<T extends ListDataType> extends Transformer {
         if (data == null || data.getValue() == null || ArrayUtils.isEmpty(indices)) { return null; }
 
         ExecutionContext context = ExecutionThread.get();
-        String delim = context == null ? DEF_TEXT_DELIM : context.getTextDelim();
+        String delim = context == null ? getDefault(TEXT_DELIM) : context.getTextDelim();
         StringBuilder buffer = new StringBuilder();
 
         for (String index : indices) {
@@ -237,13 +237,11 @@ public class ListTransformer<T extends ListDataType> extends Transformer {
     }
 
     public T ascending(T data) {
-        if (data == null || data.getValue() == null) { return data; }
-        return updateValue(data, Arrays.stream(data.getValue()).sorted());
+        return data == null || data.getValue() == null ? data : updateValue(data, Array.sort(data.getValue(), true));
     }
 
     public T descending(T data) {
-        if (data == null || data.getValue() == null) { return data; }
-        return updateValue(data, Arrays.stream(data.getValue()).sorted(Collections.reverseOrder()));
+        return data == null || data.getValue() == null ? data : updateValue(data, Array.sort(data.getValue(), false));
     }
 
     public T remove(T data, String index) {
@@ -367,7 +365,7 @@ public class ListTransformer<T extends ListDataType> extends Transformer {
      * replace items that entirely matches {@code searchFor} with {@code replaceWith} (also entirely)
      */
     public T replaceItem(T data, String searchFor, String replaceWith) {
-        if (data == null || data.getValue() == null || StringUtils.isEmpty(searchFor)) { return data; }
+        if (data == null || data.getValue() == null) { return data; }
 
         String replaceBy = treatCommonValueShorthand(fixControlChars(StringUtils.defaultString(replaceWith)));
         String searchBy = treatCommonValueShorthand(fixControlChars(searchFor));
@@ -412,6 +410,12 @@ public class ListTransformer<T extends ListDataType> extends Transformer {
 
     @Override
     Map<String, Method> listSupportedMethods() { return FUNCTIONS; }
+
+    protected static BigDecimal toBigDecimal(String num) {
+        if (StringUtils.isBlank(num)) { return BigDecimal.valueOf(0); }
+        int numberOfDecimal = StringUtils.length(StringUtils.substringAfterLast(num, "."));
+        return NumberUtils.toScaledBigDecimal(NumberUtils.toDouble(num), numberOfDecimal, ROUND);
+    }
 
     protected T updateValue(T data, Stream<String> updated) {
         if (data == null || updated == null) { return null; }

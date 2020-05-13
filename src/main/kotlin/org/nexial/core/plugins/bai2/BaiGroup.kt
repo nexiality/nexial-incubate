@@ -91,7 +91,7 @@ class BaiGroup(private var queue: Queue<String>) : BaiModel() {
         return when (recordType) {
             groupHeaderMeta.type  -> TextDataType(header!!.get(name))
             groupTrailerMeta.type -> TextDataType(trailer!!.get(name))
-            else                  -> {
+            else          -> {
                 val builder = StringBuilder()
                 records.forEach { baiAccount ->
                     builder.append(baiAccount.field(recordType, name).textValue).append(",")

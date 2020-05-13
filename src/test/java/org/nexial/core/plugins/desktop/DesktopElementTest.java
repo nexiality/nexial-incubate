@@ -26,6 +26,7 @@ import org.apache.commons.lang3.RandomUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.Assert;
 import org.junit.Test;
+
 import org.nexial.commons.utils.CollectionUtil;
 import org.nexial.commons.utils.TextUtils;
 

@@ -46,9 +46,11 @@ import org.openqa.selenium.remote.RemoteWebDriver;
 
 import static org.nexial.core.NexialConst.BrowserType.crossbrowsertesting;
 import static org.nexial.core.NexialConst.CrossBrowserTesting.*;
-import static org.nexial.core.NexialConst.Data.*;
-import static org.nexial.core.NexialConst.WS_BASIC_PWD;
-import static org.nexial.core.NexialConst.WS_BASIC_USER;
+import static org.nexial.core.NexialConst.Data.BUILD_NO;
+import static org.nexial.core.NexialConst.Data.SCRIPT_REF_PREFIX;
+import static org.nexial.core.NexialConst.Web.BROWSER_WINDOW_SIZE;
+import static org.nexial.core.NexialConst.Ws.WS_BASIC_PWD;
+import static org.nexial.core.NexialConst.Ws.WS_BASIC_USER;
 import static org.nexial.core.plugins.web.WebDriverCapabilityUtils.initCapabilities;
 import static org.nexial.core.plugins.web.WebDriverCapabilityUtils.setCapability;
 
@@ -135,17 +137,24 @@ public class CrossBrowserTestingHelper extends CloudWebTestingPlatform {
     }
 
     protected void handleLocal(String username, String authkey, Map<String, String> config) {
-        boolean enableLocal = config.containsKey(KEY_ENABLE_LOCAL) ?
-                              BooleanUtils.toBoolean(config.remove(KEY_ENABLE_LOCAL)) : DEF_ENABLE_LOCAL;
+        boolean enableLocal = config.containsKey(KEY_ENABLE_LOCAL) &&
+                              BooleanUtils.toBoolean(config.remove(KEY_ENABLE_LOCAL));
         if (!enableLocal) { return; }
 
+        if (!config.containsKey(KEY_TERMINATE_LOCAL)) {
+            // default is true for backward compatibility
+            isTerminateLocal = true;
+        } else {
+            isTerminateLocal = BooleanUtils.toBoolean(config.remove(KEY_TERMINATE_LOCAL));
+        }
+
         try {
-            WebDriverHelper helper = WebDriverHelper.Companion.newInstance(crossbrowsertesting, context);
+            WebDriverHelper helper = WebDriverHelper.newInstance(crossbrowsertesting, context);
             File driver = helper.resolveDriver();
 
             String cbtLocal = helper.config.getBaseName();
 
-            RuntimeUtils.terminateInstance(cbtLocal);
+            if (isTerminateLocal) { RuntimeUtils.terminateInstance(cbtLocal); }
 
             List<String> cmdlineArgs = new ArrayList<>();
             cmdlineArgs.add("--username");
@@ -261,5 +270,7 @@ public class CrossBrowserTestingHelper extends CloudWebTestingPlatform {
     }
 
     @Override
-    protected void terminateLocal() { if (isRunningLocal) { RuntimeUtils.terminateInstance(localExeName); } }
+    protected void terminateLocal() {
+        if (isRunningLocal && isTerminateLocal) { RuntimeUtils.terminateInstance(localExeName); }
+    }
 }

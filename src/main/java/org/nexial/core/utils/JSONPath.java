@@ -20,6 +20,7 @@ package org.nexial.core.utils;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.util.*;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -174,10 +175,11 @@ public class JSONPath {
         }
 
         static String count(String parsed) {
-            if (StringUtils.isEmpty(parsed)) { return "1"; }
+            if (StringUtils.isEmpty(parsed)) { return "0"; }
 
             // is this array?
-            return TextUtils.isBetween(parsed, "[", "]") ? new JSONArray(parsed).length() + "" : "1";
+            return StringUtils.startsWith(parsed, "[") && StringUtils.endsWith(parsed, "]") ?
+                   new JSONArray(parsed).length() + "" : "1";
         }
 
         static String first(String parsed) {
@@ -288,7 +290,7 @@ public class JSONPath {
         private static boolean isArray(String parsed) { return TextUtils.isBetween(parsed, "[", "]"); }
     }
 
-    private class JSONPathKey {
+    private static class JSONPathKey {
         boolean isIndexOrdinal;
         String nodeName;
         String nodeIndex;
@@ -359,8 +361,7 @@ public class JSONPath {
 
         if (parsedVal instanceof JSONArray) {
             JSONArray array = (JSONArray) parsedVal;
-            if (array.length() < 1) { return null; }
-            return handleFunctions(simplifyPrimitives(array));
+            return handleFunctions(array.length() < 1 ? "[]" : simplifyPrimitives(array));
         } else {
             return handleFunctions(simplifyPrimitives(parsedVal));
         }
@@ -450,6 +451,17 @@ public class JSONPath {
     public static JSONArray overwriteOrAdd(JSONArray json, String path, String overwriteWith, boolean blankOnly)
         throws JSONException {
         return overwrite(json, path, overwriteWith, OVERWRITE_OR_ADD, blankOnly);
+    }
+
+    @NotNull
+    public static Set<String> keys(JSONObject json, String path) throws JSONException {
+        if (json != null) {
+            JSONPath jsonPath = new JSONPath(json, path);
+            Object result = jsonPath.getNative();
+            if (result instanceof JSONObject) { return ((JSONObject) result).keySet(); }
+        }
+
+        return new HashSet<>();
     }
 
     protected void modify(String modifyWith, Option option) throws JSONException {

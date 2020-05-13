@@ -34,6 +34,7 @@ import com.google.gson.JsonArray;
 
 import static java.io.File.separator;
 import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.NexialConst.Data.LAST_JSON_COMPARE_RESULT;
 import static org.nexial.core.NexialConst.Data.TREAT_JSON_AS_IS;
 import static org.nexial.core.NexialConst.GSON_COMPRESSED;
 
@@ -656,11 +657,12 @@ public class JsonCommandTest {
         System.out.println("data = " + fixture.find(json, "response.jobParameters"));
         System.out.println("data = " + fixture.find(json, "response.jobParameters[]"));
 
-        Assert.assertTrue(fixture.assertValue(json, "response.jobParameters", null).isSuccess());
+        Assert.assertTrue(fixture.assertValue(json, "response.jobParameters", "[]").isSuccess());
 
         Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", "[]", "false").isSuccess());
-        Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", context.replaceTokens("(null)"), "false")
-                                 .isSuccess());
+        Assert.assertTrue(fixture.assertValues(json,
+                                               "response.jobParameters",
+                                               context.replaceTokens("(null)"), "false").isSuccess());
         Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", "", "false").isSuccess());
         Assert.assertTrue(fixture.assertValues(json, "response.jobParameters", null, "false").isSuccess());
         Assert.assertTrue(fixture.assertValues(json,
@@ -798,4 +800,291 @@ public class JsonCommandTest {
         Assert.assertEquals("[Glenoak, Washington]", context.getStringData("dummy"));
 
     }
+
+    @Test
+    public void compact() throws Exception {
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        String json = "{\n" +
+                      "    \"billing_address\": {\n" +
+                      "        \"street_address\": \"1st Street SE\",\n" +
+                      "        \"city\": \"Washington\",\n" +
+                      "        \"state\": \"DC\"\n" +
+                      "    },\n" +
+                      "     \"glconfig\": []," +
+                      "     \"account\": { \"id\": \"12345\", \"name\": \"\" }" +
+                      "}";
+
+        Assert.assertTrue(fixture.compact("var", json, "true").isSuccess());
+        String compacted = context.getStringData("var");
+        System.out.println(compacted);
+        Assert.assertFalse(compacted.contains("glconfig"));
+        Assert.assertFalse(compacted.contains("name"));
+
+        json = "{\n" +
+               "  \"config\": {\n" +
+               "    \"mainOptions\": [\n" +
+               "      {\n" +
+               "        \"regionCode\": \"CA\",\n" +
+               "        \"state\": \"California\"\n" +
+               "      }\n" +
+               "    ],\n" +
+               "    \"mainLocation\": {\n" +
+               "    },\n" +
+               "    \"shootLocations\": [\n" +
+               "      {\n" +
+               "        \"regionCode\": \"CA\",\n" +
+               "        \"state\": \"California\"\n" +
+               "      }\n" +
+               "    ],\n" +
+               "    \"payrollConfig\": {\n" +
+               "      \"clientId\": 12345,\n" +
+               "      \"isNonUnion\": true\n" +
+               "    },\n" +
+               "    \"glconfig\": [],\n" +
+               "    \"dataListing\": [\"\", \"\", null, \"\", { } ],\n" +
+               "    \"productionInfo\": {\n" +
+               "      \"productionCompanyName\": \"Entertainment Productions\",\n" +
+               "      \"productionTitle\": \"Growing Painelous\",\n" +
+               "      \"productionAddress1\": \"123B Elms Blvd.\",\n" +
+               "      \"productionAddress2\": \"\",\n" +
+               "      \"productionCity\": null,\n" +
+               "      \"productionState\": \"CA\",\n" +
+               "      \"productionZipCode\": \"90010\",\n" +
+               "      \"productionPhoneNumber\": \"323-939-5555\",\n" +
+               "      \"productionEIN\": \"45-4098722\",\n" +
+               "      \"array1\": [ " +
+               "            { " +
+               "                \"inner1\": { }, " +
+               "                \"inner2\": [ " +
+               "                    null," +
+               "                    null, " +
+               "                    { " +
+               "                        \"inner3\": null, " +
+               "                        \"inner4\": { " +
+               "                            \"inner5\":\"\" " +
+               "                        } " +
+               "                    } " +
+               "                ] " +
+               "            } " +
+               "       ]" +
+               "    }\n" +
+               "  }\n" +
+               "}";
+        Assert.assertTrue(fixture.compact("var", json, "true").isSuccess());
+        compacted = context.getStringData("var");
+        System.out.println(compacted);
+        Assert.assertFalse(compacted.contains("glconfig"));
+        Assert.assertFalse(compacted.contains("mainLocation"));
+        Assert.assertFalse(compacted.contains("dataListing"));
+        Assert.assertFalse(compacted.contains("productionAddress2"));
+        Assert.assertFalse(compacted.contains("productionCity"));
+        Assert.assertFalse(compacted.contains("array1"));
+
+    }
+
+    @Test
+    public void compact2() throws Exception {
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        String json = "{\n" +
+                      "  \"config\": {\n" +
+                      "    \"location1\": [\n" +
+                      "      { \"code\": \"CA\", \"state\": \"California\" }\n" +
+                      "    ],\n" +
+                      "    \"location2\": { },\n" +
+                      "    \"config1\": {\n" +
+                      "      \"client\": 12345,\n" +
+                      "      \"active\": true\n" +
+                      "    },\n" +
+                      "    \"config\": [],\n" +
+                      "    \"dataListing\": [\"\", \"\", null, \"\", { } ]\n" +
+                      "  }\n" +
+                      "}";
+
+        Assert.assertTrue(fixture.compact("var", json, "false").isSuccess());
+        String compacted = context.getStringData("var");
+        System.out.println("JSONCommand.compact(var,false):");
+        System.out.println(compacted);
+        System.out.println();
+        System.out.println();
+        Assert.assertEquals("{\"config\":{\"location1\":[{\"code\":\"CA\",\"state\":\"California\"}]," +
+                            "\"config1\":{\"client\":12345,\"active\":true},\"dataListing\":[\"\",\"\",\"\"]}}",
+                            compacted);
+
+        Assert.assertTrue(fixture.compact("var", json, "true").isSuccess());
+        compacted = context.getStringData("var");
+        System.out.println("JSONCommand.compact(var,true):");
+        System.out.println(compacted);
+        Assert.assertEquals("{\"config\":{\"location1\":[{\"code\":\"CA\",\"state\":\"California\"}]," +
+                            "\"config1\":{\"client\":12345,\"active\":true}}}",
+                            compacted);
+    }
+
+    @Test
+    public void assertEqual_different_order() throws Exception {
+        String testJson1 = "[ { \"firstName\": \"John Mark\", \"id\": 12345, \"lastName\": \"Magillon\" }, {} ]";
+        String testJson2 = "[ { \"id\": 12345, \"lastName\": \"Magillon\", \"firstName\": \"John Mark\" }, {  } ]";
+
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertEqual(testJson1, testJson2);
+        Assert.assertNotNull(result);
+
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+    }
+
+    @Test
+    public void assertEqual_different_order_2() throws Exception {
+        String testJson1 = "[ {}, { \"firstName\": \"John Mark\", \"id\": 12345, \"lastName\": \"Magillon\" } ]";
+        String testJson2 = "[ { \"id\": 12345, \"lastName\": \"Magillon\", \"firstName\": \"John Mark\" }, {  } ]";
+
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertEqual(testJson1, testJson2);
+        Assert.assertNotNull(result);
+
+        System.out.println("result = " + result);
+        Assert.assertFalse(result.isSuccess());
+
+        String compareResult = context.getStringData(LAST_JSON_COMPARE_RESULT);
+        Assert.assertTrue(compareResult.contains("\"expected\": \"0 element\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"3 elements (firstName, id, lastName)\""));
+        Assert.assertTrue(compareResult.contains("\"expected\": \"3 elements (firstName, id, lastName)\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"0 element\""));
+    }
+
+    @Test
+    public void assertEqual_uneven_nodes() throws Exception {
+        String testJson1 = "[ { \"firstName\": \"John Mark\", \"id\": 12345, \"lastName\": \"Magillon\" }, {} ]";
+        String testJson2 = "[ { \"id\": 54321, \"lastName\": \"Killian\", \"middleName\": \"Mark\", " +
+                           "\"firstName\": \"John\" }, {  } ]";
+
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertEqual(testJson1, testJson2);
+        Assert.assertNotNull(result);
+
+        System.out.println("result = " + result);
+        Assert.assertFalse(result.isSuccess());
+
+        String compareResult = context.getStringData(LAST_JSON_COMPARE_RESULT);
+        Assert.assertTrue(compareResult.contains("\"expected\": \"3 elements (firstName, id, lastName)\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"4 elements (firstName, id, lastName, middleName)\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"John Mark\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"John\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value 12345 of type number\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value 54321 of type number\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"Magillon\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"Killian\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"NOT FOUND\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"Mark\\\" of type text\""));
+    }
+
+    @Test
+    public void assertEqual_out_of_order() throws Exception {
+        String testJson1 = "[" +
+                           "  {" +
+                           "    \"id\": \"1491302\"," +
+                           "    \"employeeid\": \"9268gIgEI\"," +
+                           "    \"employeetype\": \"REG\"," +
+                           "    \"employeetypedescription\": \"PWE Employee\"," +
+                           "    \"firstName\": \"MICHAEL\"," +
+                           "    \"middleName\": \"\"," +
+                           "    \"lastname\": \"FRXXX\"," +
+                           "    \"corpName\": \"\"," +
+                           "    \"corpFEIN\": \"\"," +
+                           "    \"address1\": \"C/O EMA TELSTAR PRODUCTIONS AB\"," +
+                           "    \"address2\": \"BOX 1018 CARL MILLES VAG 7\"," +
+                           "    \"city\": \"S-18121 LIDINGO\"," +
+                           "    \"state\": \"FO\"," +
+                           "    \"postalcode\": \"000000000\"," +
+                           "    \"country\": \"UNK\"" +
+                           "  }" +
+                           "]";
+        String testJson2 = "[" +
+                           "  {" +
+                           "    \"lastName\": \"HIRST\"," +
+                           "    \"country\": \"USA\"," +
+                           "    \"address2\": \"\"," +
+                           "    \"city\": \"BEVERLY HILLS\"," +
+                           "    \"address1\": \"% ENDEAVOR              9601 WILSHIRE BL 3RD FL   \"," +
+                           "    \"postalCode\": \"90210\"," +
+                           "    \"employeeId\": \"+876Hy!5s\"," +
+                           "    \"corpName\": \"\"," +
+                           "    \"firstName\": \"MICHAEL\"," +
+                           "    \"employeeType\": \"REG\"," +
+                           "    \"pweTypeDescription\": \"PWE Employee \"," +
+                           "    \"corpFEIN\": \"\"," +
+                           "    \"middleName\": \"\"," +
+                           "    \"id\": 2740263," +
+                           "    \"state\": \"CA\"" +
+                           "  }" +
+                           "]";
+
+        context.setData("nexial.json.compareResultsAsJSON", true);
+        context.setData("nexial.json.compareResultsAsCSV", true);
+        context.setData("nexial.json.compareResultsAsHTML", true);
+
+        JsonCommand fixture = new JsonCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertEqual(testJson1, testJson2);
+        Assert.assertNotNull(result);
+
+        System.out.println("result = " + result);
+        Assert.assertFalse(result.isSuccess());
+
+        String compareResult = context.getStringData(LAST_JSON_COMPARE_RESULT);
+        Assert.assertTrue(
+            compareResult.contains("\"expected\": \"value \\\"C/O EMA TELSTAR PRODUCTIONS AB\\\" of type text\""));
+        Assert.assertTrue(
+            compareResult.contains(
+                "\"actual\": \"value \\\"% ENDEAVOR              9601 WILSHIRE BL 3RD FL   \\\" of type text\""));
+
+        Assert.assertTrue(compareResult
+                              .contains("\"expected\": \"value \\\"BOX 1018 CARL MILLES VAG 7\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"S-18121 LIDINGO\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"BEVERLY HILLS\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"UNK\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"USA\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"9268gIgEI\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"NOT FOUND\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"REG\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"NOT FOUND\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"value \\\"PWE Employee\\\" of type text\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"NOT FOUND\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"NOT FOUND\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"+876Hy!5s\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"NOT FOUND\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"REG\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"NOT FOUND\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"HIRST\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"NOT FOUND\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"90210\\\" of type text\""));
+
+        Assert.assertTrue(compareResult.contains("\"expected\": \"NOT FOUND\""));
+        Assert.assertTrue(compareResult.contains("\"actual\": \"value \\\"PWE Employee \\\" of type text\""));
+    }
+
 }

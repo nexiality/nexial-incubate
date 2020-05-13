@@ -31,17 +31,19 @@ import org.nexial.commons.utils.TextUtils;
 import org.nexial.commons.utils.XmlUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.plugins.xml.Modification;
 import org.nexial.core.utils.ConsoleUtils;
 
 import static org.nexial.core.NexialConst.COMPRESSED_XML_OUTPUTTER;
-import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
+import static org.nexial.core.NexialConst.Data.TEXT_DELIM;
 import static org.nexial.core.NexialConst.PRETTY_XML_OUTPUTTER;
+import static org.nexial.core.SystemVariables.getDefault;
 
 public class XmlTransformer<T extends XmlDataType> extends Transformer {
     private static final Map<String, Integer> FUNCTION_TO_PARAM_LIST = discoverFunctions(XmlTransformer.class);
     private static final Map<String, Method> FUNCTIONS =
         toFunctionMap(FUNCTION_TO_PARAM_LIST, XmlTransformer.class, XmlDataType.class);
-    private static final XMLOutputter outputter = new XMLOutputter();
+    private static final XMLOutputter OUTPUTTER = new XMLOutputter();
     private static final String NODE_EXTRACT = "extracted";
 
     public TextDataType text(T data) { return super.text(data); }
@@ -93,7 +95,7 @@ public class XmlTransformer<T extends XmlDataType> extends Transformer {
             }
 
             ExecutionContext context = ExecutionThread.get();
-            String delim = context != null ? context.getTextDelim() : DEF_TEXT_DELIM;
+            String delim = context != null ? context.getTextDelim() : getDefault(TEXT_DELIM);
             return new ListDataType(TextUtils.toString(list, delim), delim);
         } catch (TypeConversionException e) {
             throw new IllegalArgumentException("Unable to process XML: " + e.getMessage(), e);
@@ -155,7 +157,7 @@ public class XmlTransformer<T extends XmlDataType> extends Transformer {
         });
 
         ExecutionContext context = ExecutionThread.get();
-        String delim = context != null ? context.getTextDelim() : DEF_TEXT_DELIM;
+        String delim = context != null ? context.getTextDelim() : getDefault(TEXT_DELIM);
         return new ListDataType(TextUtils.toString(values, delim), delim);
     }
 
@@ -180,7 +182,7 @@ public class XmlTransformer<T extends XmlDataType> extends Transformer {
         });
 
         ExecutionContext context = ExecutionThread.get();
-        String delim = context != null ? context.getTextDelim() : DEF_TEXT_DELIM;
+        String delim = context != null ? context.getTextDelim() : getDefault(TEXT_DELIM);
         return new ListDataType(TextUtils.toString(values, delim));
     }
 
@@ -232,6 +234,62 @@ public class XmlTransformer<T extends XmlDataType> extends Transformer {
 
     public T minify(T data) { return format(data, COMPRESSED_XML_OUTPUTTER); }
 
+    private T format(T data, XMLOutputter outputter) {
+        if (data == null || data.getValue() == null) { return null; }
+
+        String outputXml = outputter.outputString(data.getDocument());
+        data.setTextValue(outputXml.trim());
+        return data;
+    }
+
+    public T append(T data, String xpath, String content) throws IOException {
+        return modify(data, xpath, content, Modification.Companion.getAppend());
+    }
+
+    public T prepend(T data, String xpath, String content) throws IOException {
+        return modify(data, xpath, content, Modification.Companion.getPrepend());
+    }
+
+    public T insertBefore(T data, String xpath, String content) throws IOException {
+        return modify(data, xpath, content, Modification.Companion.getInsertBefore());
+    }
+
+    public T insertAfter(T data, String xpath, String content) throws IOException {
+        return modify(data, xpath, content, Modification.Companion.getInsertAfter());
+    }
+
+    public T replace(T data, String xpath, String content) throws IOException {
+        return modify(data, xpath, content, Modification.Companion.getReplace());
+    }
+
+    public T replaceIn(T data, String xpath, String content) throws IOException {
+        return modify(data, xpath, content, Modification.Companion.getReplaceIn());
+    }
+
+    public T delete(T data, String xpath) throws IOException {
+        return modify(data, xpath, null, Modification.Companion.getDelete());
+    }
+
+    public T clear(T data, String xpath) throws IOException {
+        return modify(data, xpath, null, Modification.Companion.getClear());
+    }
+
+    protected T modify(T data, String xpath, String content, Modification modification) throws IOException {
+        if (data == null || data.getDocument() == null || StringUtils.isEmpty(xpath)) { return null; }
+
+        Document doc = data.getDocument();
+        List matches = XmlUtils.findNodes(doc, xpath);
+        if (CollectionUtils.isEmpty(matches)) {
+            ConsoleUtils.error("No matches found on target XML using xpath '" + xpath + "'");
+            return null;
+        }
+
+        int edits = modification.modify(matches, content);
+        ConsoleUtils.log(edits + " edit(s) made to XML");
+        data.setTextValue(XmlUtils.toPrettyXml(doc.getRootElement()));
+        return data;
+    }
+
     public T store(T data, String var) {
         snapshot(var, data);
         return data;
@@ -239,18 +297,18 @@ public class XmlTransformer<T extends XmlDataType> extends Transformer {
 
     public ExpressionDataType save(T data, String path, String append) { return super.save(data, path, append); }
 
+    @Override
+    Map<String, Integer> listSupportedFunctions() { return FUNCTION_TO_PARAM_LIST; }
+
+    @Override
+    Map<String, Method> listSupportedMethods() { return FUNCTIONS; }
+
     protected String resolveContent(Object xmlObject) {
         if (xmlObject instanceof Element) { return ((Element) xmlObject).getTextNormalize(); }
         if (xmlObject instanceof Text) { return ((Text) xmlObject).getTextNormalize(); }
         if (xmlObject instanceof Content) { return ((Content) xmlObject).getValue(); }
         return xmlObject.toString();
     }
-
-    @Override
-    Map<String, Integer> listSupportedFunctions() { return FUNCTION_TO_PARAM_LIST; }
-
-    @Override
-    Map<String, Method> listSupportedMethods() { return FUNCTIONS; }
 
     protected Object updateContent(Object xmlObject, String content) {
         // in case `content` is XML document or array
@@ -285,16 +343,8 @@ public class XmlTransformer<T extends XmlDataType> extends Transformer {
         return xmlObject;
     }
 
-    private T format(T data, XMLOutputter outputter) {
-        if (data == null || data.getValue() == null) { return null; }
-
-        String outputXml = outputter.outputString(data.getDocument());
-        data.setTextValue(outputXml.trim());
-        return data;
-    }
-
     protected String toTextValue(Element value) {
         if (value == null) { return null; }
-        return outputter.outputString(value);
+        return OUTPUTTER.outputString(value);
     }
 }

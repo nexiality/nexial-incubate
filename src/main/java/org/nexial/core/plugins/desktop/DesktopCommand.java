@@ -17,11 +17,14 @@
 
 package org.nexial.core.plugins.desktop;
 
+import java.awt.*;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
+import java.util.List;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
@@ -38,15 +41,16 @@ import org.nexial.core.model.TestStep;
 import org.nexial.core.plugins.CanLogExternally;
 import org.nexial.core.plugins.CanTakeScreenshot;
 import org.nexial.core.plugins.ForcefulTerminate;
-import org.nexial.core.plugins.RequireWinium;
 import org.nexial.core.plugins.base.BaseCommand;
 import org.nexial.core.plugins.base.NumberCommand;
 import org.nexial.core.plugins.base.ScreenshotUtils;
 import org.nexial.core.plugins.desktop.DesktopTable.TableMetaData;
 import org.nexial.core.plugins.desktop.ig.IgExplorerBar;
 import org.nexial.core.plugins.desktop.ig.IgRibbon;
+import org.nexial.core.plugins.web.WebDriverExceptionHelper;
 import org.nexial.core.utils.CheckUtils;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.NativeInputHelper;
 import org.nexial.core.utils.OutputFileUtils;
 import org.nexial.seeknow.SeeknowData;
 import org.openqa.selenium.By;
@@ -65,18 +69,22 @@ import org.openqa.selenium.winium.WiniumDriver;
 import static java.io.File.separator;
 import static java.lang.Integer.MAX_VALUE;
 import static java.lang.System.lineSeparator;
-import static org.nexial.core.NexialConst.Data.*;
+import static org.apache.commons.lang3.SystemUtils.*;
+import static org.nexial.core.NexialConst.Data.BUILD_NO;
+import static org.nexial.core.NexialConst.Data.SCRIPT_REF_PREFIX;
+import static org.nexial.core.NexialConst.Desktop.DESKTOP_NOTIFY_WAITMS;
+import static org.nexial.core.NexialConst.Desktop.WINIUM_SERVICE_RUNNING;
+import static org.nexial.core.NexialConst.NL;
+import static org.nexial.core.NexialConst.OS;
+import static org.nexial.core.SystemVariables.getDefaultInt;
 import static org.nexial.core.plugins.desktop.DesktopConst.*;
 import static org.nexial.core.plugins.desktop.DesktopNotification.NotificationLevel.info;
 import static org.nexial.core.plugins.desktop.DesktopUtils.*;
 import static org.nexial.core.plugins.desktop.ElementType.*;
 import static org.nexial.core.utils.CheckUtils.*;
 
-public class DesktopCommand extends BaseCommand
-    implements RequireWinium, ForcefulTerminate, CanTakeScreenshot, CanLogExternally {
-
+public class DesktopCommand extends BaseCommand implements ForcefulTerminate, CanTakeScreenshot, CanLogExternally {
     protected static final Map<String, Class<? extends By>> SUPPORTED_FIND_BY = initSupportedFindBys();
-
     protected transient WiniumDriver winiumDriver;
     protected transient NumberCommand numberCommand;
 
@@ -84,8 +92,6 @@ public class DesktopCommand extends BaseCommand
     public void init(ExecutionContext context) {
         super.init(context);
         ShutdownAdvisor.addAdvisor(this);
-        // todo need a way to load winium driver dynamically. we have that in nextgen, but need one for this class
-        // if (!context.getBooleanData(WINIUM_LAZY_LOAD, DEF_WINIUM_LAZY_LOAD)) { winiumDriver = initWinium(context); }
         numberCommand = (NumberCommand) context.findPlugin("number");
     }
 
@@ -93,27 +99,11 @@ public class DesktopCommand extends BaseCommand
     public String getTarget() { return "desktop"; }
 
     @Override
-    public WiniumDriver initWinium(ExecutionContext context) {
-        // String autPath = context.getStringData(TARGET_DESKTOP_APP);
-        // if (StringUtils.isBlank(autPath)) {
-        // 	throw new RuntimeException("No " + TARGET_DESKTOP_APP + " variable defined; cannot continue");
-        // }
-        //
-        // String autParams = context.getStringData(TARGET_DESKTOP_APP_PARAMS);
-        //
-        // try {
-        // 	return context.getWiniumDriver(autPath, autParams);
-        // } catch (IOException e) {
-        // 	throw new RuntimeException("Unable to proceed to due " + e.getMessage(), e);
-        // }
-        ConsoleUtils.error(this.getClass().getSimpleName() + ".initWinium(): unable to resolve winium driver " +
-                           "since AUT information not yet available");
-        return null;
-    }
-
-    @Override
     public boolean mustForcefullyTerminate() {
-        return getDriver() != null && context.getBooleanData(WINIUM_SERVICE_RUNNING);
+        return IS_OS_WINDOWS &&
+               winiumDriver != null &&
+               getDriver() != null &&
+               context.getBooleanData(WINIUM_SERVICE_RUNNING);
     }
 
     @Override
@@ -124,25 +114,15 @@ public class DesktopCommand extends BaseCommand
             if (aut != null && aut.isTerminateExisting()) { closeApplication(); }
         }
 
-        WiniumUtils.shutdownWinium(null, getDriver());
-        winiumDriver = null;
+        if (mustForcefullyTerminate()) {
+            WiniumUtils.shutdownWinium(null, winiumDriver);
+            winiumDriver = null;
+        }
     }
 
     @Override
     public String takeScreenshot(TestStep testStep) {
         if (testStep == null) { return null; }
-
-        WiniumDriver driver = getDriver();
-        if (driver == null) {
-            error("driver (screenshot) is not available or not yet initialized.");
-            return null;
-        }
-
-        WebElement application = getApp();
-        if (application == null) {
-            error("target application not available or not yet initialized");
-            return null;
-        }
 
         String filename = generateScreenshotFilename(testStep);
         if (StringUtils.isBlank(filename)) {
@@ -151,30 +131,42 @@ public class DesktopCommand extends BaseCommand
         }
         filename = context.getProject().getScreenCaptureDir() + separator + filename;
 
-        Rectangle rect = null;
-        if (!context.getBooleanData(DESKTOP_SCREENSHOT_FULLSCREEN, DEF_DESKTOP_SCREENSHOT_FULLSCREEN)) {
-            String[] boundingRectangle = StringUtils.split(application.getAttribute(ATTR_BOUNDING_RECTANGLE), ",");
-            if (ArrayUtils.getLength(boundingRectangle) == 4) {
-                int x = NumberUtils.toInt(boundingRectangle[0]);
-                int y = NumberUtils.toInt(boundingRectangle[1]);
-                int width = NumberUtils.toInt(boundingRectangle[2]);
-                int height = NumberUtils.toInt(boundingRectangle[3]);
-                rect = new Rectangle(x, y, height, width);
+        File file;
+        if (!IS_OS_WINDOWS || winiumDriver == null) {
+            log("using native screen capturing approach...");
+            file = new File(filename);
+            if (!NativeInputHelper.captureScreen(0, 0, -1, -1, file)) {
+                error("Unable to capture screenshot via native screen capturing approach");
+                return null;
+            }
+        } else {
+            WebElement application = getApp();
+            if (application == null) {
+                error("target application not available or not yet initialized");
+                return null;
+            }
+
+            Rectangle rect = null;
+            if (!context.getBooleanData(DESKTOP_SCREENSHOT_FULLSCREEN, DEF_DESKTOP_SCREENSHOT_FULLSCREEN)) {
+                String[] boundingRectangle = StringUtils.split(application.getAttribute(ATTR_BOUNDING_RECTANGLE), ",");
+                if (ArrayUtils.getLength(boundingRectangle) == 4) {
+                    int x = NumberUtils.toInt(boundingRectangle[0]);
+                    int y = NumberUtils.toInt(boundingRectangle[1]);
+                    int width = NumberUtils.toInt(boundingRectangle[2]);
+                    int height = NumberUtils.toInt(boundingRectangle[3]);
+                    rect = new Rectangle(x, y, height, width);
+                }
+            }
+
+            // also generate `OPT_LAST_SCREENSHOT_NAME` var in context
+            file = ScreenshotUtils.saveScreenshot(getDriver(), filename, rect);
+            if (file == null) {
+                error("Unable to capture screenshot via Winium driver");
+                return null;
             }
         }
 
-        File file = ScreenshotUtils.saveScreenshot(driver, filename, rect);
-        if (file == null) { return null; }
-
-        if (context.isOutputToCloud()) {
-            try {
-                return context.getOtc().importMedia(file);
-            } catch (IOException e) {
-                log(toCloudIntegrationNotReadyMessage(file.toString()) + ": " + e.getMessage());
-            }
-        }
-
-        return file.getAbsolutePath();
+        return postScreenshot(testStep, file);
     }
 
     @Override
@@ -184,10 +176,10 @@ public class DesktopCommand extends BaseCommand
 
     @Override
     public void logExternally(TestStep testStep, String message) {
-        int waitMs = context.getIntData(DESKTOP_NOTIFY_WAITMS, DEF_DESKTOP_NOTIFY_WAITMS);
+        int waitMs = context.getIntData(DESKTOP_NOTIFY_WAITMS, getDefaultInt(DESKTOP_NOTIFY_WAITMS));
 
         Worksheet worksheet = testStep.getWorksheet();
-        String msg = "[" + worksheet.getName() + "][ROW " + (testStep.getRow().get(0).getRowIndex() + 1) + "]\n" +
+        String msg = "[" + worksheet.getName() + "][ROW " + (testStep.getRow().get(0).getRowIndex() + 1) + "]" + NL +
                      message;
         DesktopNotification.notify(info, msg, waitMs);
     }
@@ -203,15 +195,16 @@ public class DesktopCommand extends BaseCommand
         }
 
         // in case this appId is mapped to a location override
-        String locationOverrride = context.getStringData(OPT_CONFIG_LOCATION_PREFIX + appId);
+        String locationOverride = context.getStringData(OPT_CONFIG_LOCATION_PREFIX + appId);
         String configLocation =
-            StringUtils.isNotBlank(locationOverrride) ?
-            locationOverrride :
+            StringUtils.isNotBlank(locationOverride) ?
+            locationOverride :
             context.getProject().getDataPath() + DEF_CONFIG_HOME + appId + separator + DEF_CONFIG_FILENAME;
 
         try {
             session = DesktopSession.newInstance(appId, configLocation);
             syncSessionDataToContext(session);
+            winiumDriver = session.getDriver();
         } catch (IOException e) {
             return StepResult.fail("Error loading application " + appId + ": " + e.getMessage(), e);
         }
@@ -348,7 +341,24 @@ public class DesktopCommand extends BaseCommand
         requiresNotBlank(name, "Invalid name/label", name);
         DesktopElement component = getRequiredElement(name, Any);
         boolean found = component != null;
-        return new StepResult(found, "Element '" + name + "' " + (found ? "" : "NOT") + " found", null);
+        return new StepResult(found, "Element '" + name + "' " + (found ? "" : "NOT ") + "found", null);
+    }
+
+    public StepResult assertElementNotPresent(String name) {
+        requiresNotBlank(name, "Invalid name/label", name);
+
+        boolean found;
+        try {
+            found = getRequiredElement(name, Any) != null;
+        } catch (AssertionError | Exception e) {
+            found = false;
+        }
+
+        return new StepResult(!found,
+                              found ?
+                              "UNEXPECTED element '" + name + "' found" :
+                              "element '" + name + "' not found, as expected",
+                              null);
     }
 
     public StepResult assertEnabled(String name) {
@@ -390,7 +400,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult clearModalDialog(String var, String button) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(button, "invalid button", button);
 
         DesktopSession session = getCurrentSession();
@@ -401,7 +411,7 @@ public class DesktopCommand extends BaseCommand
         String dialogText = session.clearModalDialog(button);
         if (StringUtils.isNotEmpty(dialogText)) {
             ConsoleUtils.log("saving to var '" + var + "' the text '" + dialogText + "'");
-            context.setData(var, dialogText);
+            updateDataVariable(var, dialogText);
             resultMsg = "Modal dialog text harvested and saved to '" + var + "'.";
         } else {
             ConsoleUtils.error("Unable to save var '" + var + "' since no modal dialog text is found");
@@ -412,14 +422,14 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveModalDialogText(String var) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopSession session = getCurrentSession();
         requiresNotNull(session, "No active desktop session found");
 
         String dialogText = session.collectModalDialogText();
         if (StringUtils.isNotEmpty(dialogText)) {
-            context.setData(var, dialogText);
+            updateDataVariable(var, dialogText);
             return StepResult.success("Modal dialog text saved to '" + var + "'");
         }
 
@@ -442,12 +452,12 @@ public class DesktopCommand extends BaseCommand
         }
     }
 
-    public StepResult saveModalDialogTextByLocator(String var, String locater) {
+    public StepResult saveModalDialogTextByLocator(String var, String locator) {
         // find dialog
-        WebElement modalDialog = findElement(locater);
+        WebElement modalDialog = findElement(locator);
         if (modalDialog == null) {
             context.removeData(var);
-            return StepResult.success("No modal dialog found under application via " + locater + ".  No text saved");
+            return StepResult.success("No modal dialog found under application via " + locator + ".  No text saved");
         } else {
             String text = saveModalDialogText(modalDialog, var);
             return StepResult.success("Modal text found and saved to '" + var + "': " + text);
@@ -458,6 +468,36 @@ public class DesktopCommand extends BaseCommand
         DesktopElement component = getRequiredElement(name, Textbox);
         if (component == null) { return StepResult.fail("Unable to derive component via '" + name + "'"); }
         return component.typeTextComponent(true, false, text1, text2, text3, text4);
+    }
+
+    /**
+     * send keys via {@link java.awt.Robot}. As such, this is not dependent on Winium driver, and the {@code keystrokes}
+     * can be OS-specific. We use {@code os} to limit some undesired impact, albeit not completely. We use {@code os}
+     * as a condition whether the specified {@code keystrokes} should be exercised.
+     */
+    public StepResult typeKeys(String os, String keystrokes) {
+        requiresNotBlank(os, "invalid os", os);
+        requiresNotBlank(keystrokes, "invalid keystrokes", keystrokes);
+
+        List<String> oses = TextUtils.toList(os, context.getTextDelim(), true);
+        if (CollectionUtils.isEmpty(oses)) { return StepResult.fail("Invalid os specified: '" + os + "'"); }
+
+        oses = oses.stream().map(s -> s.trim().toUpperCase().replace(" ", "")).collect(Collectors.toList());
+
+        boolean supported = false;
+        for (String sys : oses) {
+            if (!OS.isValid(sys)) { return StepResult.fail("Invalid os '" + sys + "'"); }
+            if (IS_OS_WINDOWS && OS.isWindows(sys) || IS_OS_MAC && OS.isMac(sys) || IS_OS_LINUX && OS.isLinux(sys)) {
+                supported = true;
+                break;
+            }
+        }
+
+        if (!supported) { return StepResult.skipped("current operating system not supported: '" + os + "'"); }
+
+        ConsoleUtils.log("simulating keystrokes: " + keystrokes);
+        NativeInputHelper.typeKeys(TextUtils.toList(StringUtils.remove(keystrokes, "\r"), "\n", false));
+        return StepResult.success("type keys completed for " + keystrokes);
     }
 
     public StepResult typeTextBox(String name, String text1, String text2, String text3, String text4) {
@@ -533,7 +573,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult clickOffset(String locator, String xOffset, String yOffset) {
-        requires(StringUtils.isNotEmpty(locator), "Invalid locator", locator);
+        requiresNotBlank(locator, "Invalid locator", locator);
 
         WebElement elem = findElement(locator);
         if (elem == null) { return StepResult.fail("element NOT found via " + locator);}
@@ -543,24 +583,125 @@ public class DesktopCommand extends BaseCommand
         return StepResult.success("Clicked offset (" + xOffset + "," + yOffset + ") from element " + locator);
     }
 
+    public StepResult clickElementOffset(String name, String xOffset, String yOffset) {
+        DesktopElement component = getRequiredElement(name, null);
+
+        WebElement element = component.getElement();
+        if (element == null) { return StepResult.fail("element NOT found via '" + name + "'");}
+
+        clickOffset(element, xOffset, yOffset);
+        autoClearModalDialog(component);
+        return StepResult.success("Clicked offset (" + xOffset + "," + yOffset + ") from element '" + name + "'");
+    }
+
+    public StepResult clickScreen(String button, String modifiers, String x, String y) {
+        requiresNotBlank(button, "Invalid mouse button", button);
+
+        List<String> mods = new ArrayList<>();
+        if (!context.isNullValue(modifiers) && !context.isEmptyValue(modifiers)) {
+            while (StringUtils.isNotBlank(modifiers)) {
+                String mod = TextUtils.substringBetweenFirstPair(modifiers, "{", "}", true);
+                if (StringUtils.isEmpty(mod)) {
+                    if (StringUtils.isNotBlank(modifiers)) {
+                        ConsoleUtils.log("ignoring unsupported modifiers: " + modifiers);
+                    }
+                    break;
+                }
+                mods.add(mod);
+
+                String beforeMod = StringUtils.substringBefore(modifiers, mod);
+                if (StringUtils.isNotBlank(beforeMod)) {
+                    ConsoleUtils.log("ignoring unsupported modifiers: " + beforeMod);
+                }
+                modifiers = StringUtils.substringAfter(modifiers, mod);
+            }
+        }
+
+        Point screenPoint = NativeInputHelper.resolveScreenPosition(x, y);
+        int posX = screenPoint.x;
+        int posY = screenPoint.y;
+        if (StringUtils.equalsIgnoreCase(button, "left")) {
+            NativeInputHelper.click(mods, posX, posY);
+        } else if (StringUtils.equalsIgnoreCase(button, "middle")) {
+            NativeInputHelper.middleClick(mods, posX, posY);
+        } else if (StringUtils.equalsIgnoreCase(button, "right")) {
+            NativeInputHelper.rightClick(mods, posX, posY);
+        } else {
+            return StepResult.fail("Unknown/unsupported mouse button: " + button);
+        }
+
+        return StepResult.success(button + " mouse button clicked on screen (" + x + "," + y + ")");
+    }
+
+    public StepResult mouseWheel(String amount, String modifiers, String x, String y) {
+        if (!IS_OS_WINDOWS) { return StepResult.skipped("mouseWheel() currently only works on Windows"); }
+
+        requiresInteger(amount, "Invalid scroll amount", amount);
+
+        List<String> mods = new ArrayList<>();
+        if (!context.isNullValue(modifiers) && !context.isEmptyValue(modifiers)) {
+            while (StringUtils.isNotBlank(modifiers)) {
+                String mod = TextUtils.substringBetweenFirstPair(modifiers, "{", "}", true);
+                if (StringUtils.isEmpty(mod)) {
+                    if (StringUtils.isNotBlank(modifiers)) {
+                        ConsoleUtils.log("ignoring unsupported modifiers: " + modifiers);
+                    }
+                    break;
+                }
+                mods.add(mod);
+
+                String beforeMod = StringUtils.substringBefore(modifiers, mod);
+                if (StringUtils.isNotBlank(beforeMod)) {
+                    ConsoleUtils.log("ignoring unsupported modifiers: " + beforeMod);
+                }
+                modifiers = StringUtils.substringAfter(modifiers, mod);
+            }
+        }
+
+        Point screenPoint = NativeInputHelper.resolveScreenPosition(x, y);
+        int posX = screenPoint.x;
+        int posY = screenPoint.y;
+        NativeInputHelper.mouseWheel(NumberUtils.toInt(amount), mods, posX, posY);
+        return StepResult.success("Mouse wheel moved by " + amount + " notches on screen (" + x + "," + y + ")");
+    }
+
     public StepResult saveText(String var, String name) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         String text = getText(name);
         if (StringUtils.isNotEmpty(text)) {
-            context.setData(var, text);
+            updateDataVariable(var, text);
             return StepResult.success("Element '" + name + "' with text '" + text + "' saved to '" + var + "'");
+        } else {
+            context.removeData(var);
+            return StepResult.success("Element '" + name + "' found with no text; '" + var + "' removed");
         }
+    }
 
-        return StepResult.fail("No text found for '" + name + "'");
+    public StepResult saveTextByLocator(String var, String locator) {
+        requiresValidAndNotReadOnlyVariableName(var);
+        requiresNotBlank(locator, "Invalid locator", locator);
+
+        WebElement element = findElement(locator);
+        if (element == null) { return StepResult.fail("element NOT found via " + locator);}
+
+        try {
+            updateDataVariable(var, StringUtils.defaultIfEmpty(element.getText(), element.getAttribute("Name")));
+            return StepResult.success("text content saved to '" + var + "'");
+        } catch (WebDriverException e) {
+            String msg = "Cannot resolve content for '" + locator + "': " +
+                         WebDriverExceptionHelper.resolveErrorMessage(e);
+            ConsoleUtils.error(context.getRunId(), msg);
+            return StepResult.fail(msg);
+        }
     }
 
     public StepResult saveWindowTitle(String var) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         DesktopElement currentAppWindow = resolveCurrentTopMostWindow();
         String title = getCurrentTopMostWindowTitle(currentAppWindow);
         if (StringUtils.isNotEmpty(title)) {
-            context.setData(var, title);
+            updateDataVariable(var, title);
             return StepResult.success("window title saved to '" + var + "': " + title);
         } else {
             return StepResult.success("No window title found");
@@ -585,7 +726,7 @@ public class DesktopCommand extends BaseCommand
 
         String value = getAttribute(locator, attribute);
         if (value != null) {
-            context.setData(var, value);
+            updateDataVariable(var, value);
             return StepResult.success("Attribute " + attribute + "=" + value + "; saved to data " + var);
         }
 
@@ -652,7 +793,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult assertAttribute(String locator, String attribute, String expected) {
-        requires(StringUtils.isNotEmpty(expected), "Expected value must be specifid.", expected);
+        requires(StringUtils.isNotEmpty(expected), "Expected value must be specified.", expected);
 
         String value = getAttribute(locator, attribute);
         if (value != null) { return assertEqual(expected, value); }
@@ -698,7 +839,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveFirstMatchedListIndex(String var, String contains) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopList list = getCurrentList();
         requiresNotNull(list, "No List element referenced or scanned");
@@ -716,7 +857,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveFirstListData(String var, String contains) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopList list = getCurrentList();
         requiresNotNull(list, "No List element referenced or scanned");
@@ -734,7 +875,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveListData(String var, String contains) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopList list = getCurrentList();
         requiresNotNull(list, "No List element referenced or scanned");
@@ -754,7 +895,7 @@ public class DesktopCommand extends BaseCommand
             ConsoleUtils.log("No matched row found.");
         } else {
             context.setData(var, matches);
-            ConsoleUtils.log("saved matched list rows (" + matches.size() + ") to variable '" + var + "'\n" + matches);
+            ConsoleUtils.log("saved matched list rows (" + matches.size() + ") to variable '" + var + "'" + NL + matches);
         }
 
         return StepResult.success();
@@ -857,7 +998,7 @@ public class DesktopCommand extends BaseCommand
      * @see #clickTextPane(String, String) for details regarding {@code criteria}
      */
     public StepResult saveTextPane(String var, String name, String criteria) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(criteria, "Invalid criteria", criteria);
 
         DesktopElement component = getRequiredElement(name, TextPane);
@@ -886,7 +1027,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult clickTextPaneRow(String var, String index) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresPositiveNumber(index, "Invalid row index (zero-based)", index);
 
         if (!context.hasData(var)) { return StepResult.fail("No variable '" + var + "' found"); }
@@ -932,7 +1073,10 @@ public class DesktopCommand extends BaseCommand
     }
 
     // todo: deprecated; removal candidate for v1.1
-    public StepResult scanTable(String var, String name) { return useTable(var, name); }
+    public StepResult scanTable(String var, String name) {
+        logDeprecated(getTarget() + " » scanTable(var,name)", getTarget() + " » useTable(var,name)");
+        return useTable(var, name);
+    }
 
     public StepResult assertTableRowContains(String row, String contains) {
         requiresPositiveNumber(row, "Invalid row index (zero-based)", row);
@@ -1004,7 +1148,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveTableRows(String var, String contains) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(contains, "Invalid 'contains' specified", contains);
 
         DesktopTable table = getCurrentTable();
@@ -1022,7 +1166,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveAllTableRows(String var) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         DesktopTable table = getCurrentTable();
         requiresNotNull(table, "No Table element referenced or scanned");
 
@@ -1033,7 +1177,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveElementCount(String var, String name) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(name, "Invalid name", name);
 
         DesktopElement component = getRequiredElement(name, Any);
@@ -1112,7 +1256,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult useTableRow(String var, String row) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(row, "Invalid row index (zero-based)", row);
         int rowIndex = StringUtils.equals(row, "*") ? MAX_VALUE : NumberUtils.toInt(row);
         requiresPositiveNumber(rowIndex + "", "Invalid row index (zero-based)", row);
@@ -1136,6 +1280,8 @@ public class DesktopCommand extends BaseCommand
         requiresNotBlank(nameValues, "Invalid name-values", nameValues);
         requires(StringUtils.contains(nameValues, "="), "Name-values MUST be in the form of name=value", nameValues);
 
+        logDeprecated(getTarget() + " » editCurrentRow(nameValues)", getTarget() + " » editTableCells(row,nameValues)");
+
         if (!context.hasData(CURRENT_DESKTOP_TABLE_ROW)) {
             fail("Unable to proceed since no table row in reference.  Check that desktop.useTable() is executed " +
                  "before this command");
@@ -1150,7 +1296,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveTableRowsRange(String var, String beginRow, String endRow) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresPositiveNumber(beginRow, "Invalid beginRow", beginRow);
         requiresPositiveNumber(endRow, "Invalid beginRow", endRow);
 
@@ -1173,7 +1319,7 @@ public class DesktopCommand extends BaseCommand
     public StepResult getRowCount(String var) { return saveRowCount(var); }
 
     public StepResult saveRowCount(String var) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         DesktopTable table = getCurrentTable();
         if (table == null) {
             throw new IllegalArgumentException("ERROR: no Table object found. Make sure to run useTable() first");
@@ -1193,14 +1339,14 @@ public class DesktopCommand extends BaseCommand
     }
 
     public StepResult saveHierRow(String var, String matchBy) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         Map<String, String> rowData = getHierRow(matchBy);
         context.setData(var, rowData);
         return StepResult.success("Hierarchical table row saved to '" + var + "'");
     }
 
     public StepResult saveHierCells(String var, String matchBy, String column, String nestedOnly) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(matchBy, "Invalid 'matchBy' specified", matchBy);
         requiresNotBlank(column, "Invalid 'column' specified", column);
         requiresNotBlank(nestedOnly, "Invalid value specified for nestedOnly", nestedOnly);
@@ -1213,7 +1359,7 @@ public class DesktopCommand extends BaseCommand
             context.removeData(var);
             return StepResult.success("No data found in column '" + column + "'.  Variable '" + var + "' removed.");
         } else {
-            context.setData(var, cellData);
+            updateDataVariable(var, cellData);
             return StepResult.success("Cell data for '" + column + "' saved to variable '" + var + "'");
         }
     }
@@ -1339,15 +1485,24 @@ public class DesktopCommand extends BaseCommand
         }
 
         DesktopSession session = getCurrentSession();
-        requiresNotNull(session, "No active desktop session found");
+        if (session == null) {
+            WiniumUtils.shutdownWinium(null, winiumDriver);
+            winiumDriver = null;
+            return StepResult.success();
+        }
 
         if (!WiniumUtils.isSoloMode()) {
             String msg = "not closing application due solo mode currently in effect";
             ConsoleUtils.log(msg);
             return StepResult.skipped(msg);
         }
-        // doing it old school...
+
         Aut aut = session.getConfig().getAut();
+        if (aut == null || winiumDriver == null || getDriver() == null) {
+            return StepResult.success("No desktop application running");
+        }
+
+        // doing it old school...
         boolean closed = WiniumUtils.terminateRunningInstance(aut.getExe());
         String message = "application " + (closed ? "terminated via process termination" : "DID NOT terminate");
 
@@ -1388,30 +1543,24 @@ public class DesktopCommand extends BaseCommand
     }
 
     protected StepResult saveHierCellChildData(String var, String matchBy, String fetchColumn) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(matchBy, "Invalid 'matchBy' specified", matchBy);
         requiresNotBlank(fetchColumn, "Invalid 'column' specified", fetchColumn);
+
         List<String> cellData = getHierCellChildData(matchBy, fetchColumn);
-        if (cellData == null) {
-            context.removeData(var);
-            return StepResult.success("No data found in column '" +
-                                      fetchColumn +
-                                      "'.  Variable '" +
-                                      var +
-                                      "' removed.");
-        } else {
+        if (cellData != null) {
             context.setData(var, cellData);
             return StepResult.success("Column data for '" + fetchColumn + "' saved to variable '" + var + "'");
         }
+
+        context.removeData(var);
+        return StepResult.success("No data found in column '" + fetchColumn + "'.  Variable '" + var + "' removed.");
     }
 
-    protected StepResult assertHierCellChildData(
-        String matchBy,
-        String fetchColumn,
-        String expected) {
-
+    protected StepResult assertHierCellChildData(String matchBy, String fetchColumn, String expected) {
         requiresNotBlank(matchBy, "Invalid 'matchBy' specified", matchBy);
         requiresNotBlank(fetchColumn, "Invalid 'column' specified", fetchColumn);
+
         List<String> cellData = getHierCellChildData(matchBy, fetchColumn);
         if (StringUtils.isBlank(expected)) {
             if (!cellData.isEmpty()) {
@@ -1423,6 +1572,7 @@ public class DesktopCommand extends BaseCommand
         if (cellData.isEmpty()) {
             return StepResult.fail("EXPECTS '" + expected + "' but empty row or no match was found");
         }
+
         String delim = context.getTextDelim();
         String[] criterion = StringUtils.contains(expected, delim) ?
                              StringUtils.splitByWholeSeparator(expected, delim) :
@@ -1445,28 +1595,20 @@ public class DesktopCommand extends BaseCommand
     }
 
     protected String getHierCell(String matchBy, String column) {
-
         DesktopHierTable hiertable = getCurrentHierTable();
         requiresNotNull(hiertable, "No Hierarchical Table element referenced or scanned");
 
-        if (!(hiertable.getHeaders().contains(column))) {
-            CheckUtils.fail("Specified column '" +
-                            column +
-                            "' not found.");
-        }
+        if (!hiertable.getHeaders().contains(column)) {CheckUtils.fail("Specified column '" + column + "' not found.");}
         String delim = context.getTextDelim();
         List<String> matchData = TextUtils.toList(matchBy, delim, true);
 
         Map<String, String> row = hiertable.getHierRow(matchData);
+        if (row == null) { CheckUtils.fail("Unable to fetch data from hiertable"); }
 
-        if (row == null) {
-            CheckUtils.fail("Unable to fetch data from hiertable");
-        }
         return String.valueOf(row.get(column));
     }
 
     protected List<String> getHierCellChildData(String matchBy, String fetchColumn) {
-
         DesktopHierTable hiertable = getCurrentHierTable();
         requiresNotNull(hiertable, "No Hierarchical Table element referenced or scanned");
         requires(hiertable.containsHeader(fetchColumn), "Unmatched column specified", fetchColumn);
@@ -1474,10 +1616,8 @@ public class DesktopCommand extends BaseCommand
         List<String> matchData = TextUtils.toList(matchBy, delim, true);
 
         List<String> cellData = hiertable.getHierCellChildData(matchData, fetchColumn);
+        if (cellData == null) { CheckUtils.fail("Unable to fetch data from hiertable"); }
 
-        if (cellData == null) {
-            CheckUtils.fail("Unable to fetch data from hiertable");
-        }
         return cellData;
     }
 
@@ -1508,6 +1648,11 @@ public class DesktopCommand extends BaseCommand
     }
 
     protected WiniumDriver getDriver() {
+        if (!IS_OS_WINDOWS) {
+            log("Winium requires Windows OS");
+            return null;
+        }
+
         DesktopSession session = getCurrentSession();
         if (session != null) { return session.getDriver(); }
 
@@ -1683,8 +1828,8 @@ public class DesktopCommand extends BaseCommand
     }
 
     protected List<WebElement> findElements(WebElement container, String locator) {
-        requires(container != null, "Invalid container", container);
-        requires(StringUtils.isNotBlank(locator), "invalid locator", locator);
+        requiresNotNull(container, "Invalid container", container);
+        requiresNotBlank(locator, "invalid locator", locator);
 
         By findBy = findBy(locator);
         requires(findBy != null, "Unknown/unsupported locator", locator);
@@ -1699,6 +1844,7 @@ public class DesktopCommand extends BaseCommand
 
     protected List<WebElement> findElements(String locator) {
         requiresNotBlank(locator, "invalid locator", locator);
+
         By findBy = findBy(locator);
         try {
             return findBy != null ? getDriver().findElements(findBy) : null;
@@ -1904,8 +2050,13 @@ public class DesktopCommand extends BaseCommand
         context.setData(DESKTOP_APPLICATION, session.getApp());
         context.setData(DESKTOP_PROCESS_ID, session.getProcessId());
         context.addScriptReferenceData("process id", session.getProcessId());
-        context.addScriptReferenceData("app version", StringUtils.defaultString(session.getApplicationVersion()));
-        context.addScriptReferenceData(BUILD_NO, StringUtils.defaultString(session.getApplicationVersion()));
+
+        String appVersion = StringUtils.defaultString(session.getApplicationVersion());
+        String buildnum = context.getStringData(SCRIPT_REF_PREFIX + BUILD_NO, appVersion);
+
+        if (StringUtils.isNotBlank(appVersion)) { context.addScriptReferenceData("app version", appVersion); }
+        if (StringUtils.isNotBlank(buildnum)) { context.addScriptReferenceData(BUILD_NO, buildnum); }
+
         context.addScriptReferenceData("app", session.getAppId());
     }
 
@@ -1970,7 +2121,7 @@ public class DesktopCommand extends BaseCommand
     }
 
     protected StepResult saveListMetaData(String var, String name) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopList list = resolveListElement(name);
         if (list == null) { return StepResult.fail("Unable to reference '" + name + "' as a list element."); }
@@ -1987,7 +2138,7 @@ public class DesktopCommand extends BaseCommand
      * be stored as {@code var}.
      */
     protected StepResult saveTableMetaData(String var, String name, boolean rescan) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopTable table = resolveTableElement(name);
         if (table == null) { return StepResult.fail("Unable to reference '" + name + "' as a table element."); }
@@ -2031,7 +2182,7 @@ public class DesktopCommand extends BaseCommand
      * be stored as {@code var}.
      */
     protected StepResult saveHierTableMetaData(String var, String name) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         DesktopHierTable table = resolveHierTableElement(name);
         if (table == null) {

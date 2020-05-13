@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.TypeVariable;
 import java.net.URLEncoder;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -45,7 +46,6 @@ import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.nexial.commons.utils.EnvUtils;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
-import org.nexial.core.ExecutionEventListener;
 import org.nexial.core.MemManager;
 import org.nexial.core.TokenReplacementException;
 import org.nexial.core.aws.NexialS3Helper;
@@ -55,14 +55,13 @@ import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.excel.ext.CellTextReader;
 import org.nexial.core.interactive.InteractiveSession;
+import org.nexial.core.mail.NexialMailer;
 import org.nexial.core.plugins.CanTakeScreenshot;
 import org.nexial.core.plugins.NexialCommand;
 import org.nexial.core.plugins.pdf.CommonKeyValueIdentStrategies;
 import org.nexial.core.plugins.sound.SoundMachine;
 import org.nexial.core.plugins.web.Browser;
-import org.nexial.core.plugins.web.WebDriverExceptionHelper;
 import org.nexial.core.reports.ExecutionMailConfig;
-import org.nexial.core.reports.NexialMailer;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.ExecUtils;
 import org.nexial.core.utils.ExecutionLogger;
@@ -75,6 +74,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
+import org.thymeleaf.TemplateEngine;
 
 import static java.io.File.separator;
 import static java.lang.System.lineSeparator;
@@ -83,8 +83,14 @@ import static org.apache.commons.lang3.SystemUtils.USER_NAME;
 import static org.nexial.commons.utils.EnvUtils.enforceUnixEOL;
 import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Exec.*;
 import static org.nexial.core.NexialConst.FlowControls.*;
+import static org.nexial.core.NexialConst.Iteration.*;
+import static org.nexial.core.NexialConst.NL;
 import static org.nexial.core.NexialConst.Project.NEXIAL_HOME;
+import static org.nexial.core.NexialConst.TimeTrack.TRACK_EXECUTION;
+import static org.nexial.core.NexialConst.Web.*;
+import static org.nexial.core.SystemVariables.*;
 import static org.nexial.core.excel.ext.CipherHelper.CRYPT_IND;
 
 /**
@@ -105,6 +111,7 @@ public class ExecutionContext {
     private static final String NAME_SPRING_CONTEXT = "nexialInternal.springContext";
     private static final String NAME_PLUGIN_MANAGER = "nexialInternal.pluginManager";
     private static final String NAME_TRACK_TIME_LOGS = "nexialInternal.trackTimeLogs";
+    private static final String NAME_CURRENT_COMMAND_PROFILES = "nexialInternal.currentCommandProfiles";
 
     // function parsing
     private static final String ESCAPED_DOLLAR = "\\$";
@@ -119,6 +126,7 @@ public class ExecutionContext {
     private static final String ALT_GML_CLOSE_TAG2 = "__%&&*&&$__";
     private static final String ESCAPED_TOKEN_START = "\\$\\{";
     private static final String ESCAPED_TOKEN_END = "\\}";
+    private static final String REGEX_CRYPT = "(crypt:[0-9A-Za-z]+)";
 
     protected Logger logger = LoggerFactory.getLogger(getClass());
     protected ExecutionDefinition execDef;
@@ -146,6 +154,7 @@ public class ExecutionContext {
     protected SoundMachine dj;
     protected SmsHelper smsHelper;
     protected NexialMailer nexialMailer;
+    protected TemplateEngine templateEngine;
     protected Map<String, String> defaultContextProps;
     protected List<String> readOnlyVars;
     protected List<String> referenceDataForExecution = new ArrayList<>();
@@ -156,11 +165,14 @@ public class ExecutionContext {
     protected ExecutionEventListener executionEventListener;
     protected CanTakeScreenshot screenshotAgent;
     protected Syspath syspath;
-    protected WebDriverExceptionHelper webDriverExceptionHelper;
+    protected Map<String, String> currentCommandProfiles = new HashMap<>();
+    // protected ProfileHelper profileHelper;
 
     // spring-managed map of webdriver related configs.
     protected Map<BrowserType, String> webdriverHelperConfig;
-    private String iterationId;
+
+    static final String KEY_COMPLEX = "__lAIxEn__";
+    static final String DOT_LITERAL_REPLACER = "__53n7ry_4h34d__";
 
     class Function {
         String functionName;
@@ -189,7 +201,10 @@ public class ExecutionContext {
             // e.g. a\|b\|\c|d|2|3  => 3 params, using pipe as nexial.textDelim
 
             // get the rest of token after the first pipe.  this should represent the entirety of all params
-            token = replaceTokens(StringUtils.substringAfter(token, TOKEN_PARAM_SEP));
+            // token = replaceTokens(StringUtils.substringAfter(token, TOKEN_PARAM_SEP));
+
+            // relay token replacement until after `token` is split into its proper parts
+            token = StringUtils.substringAfter(token, TOKEN_PARAM_SEP);
 
             // compensate the use of TOKEN_PARAM_SEP as delimiter
             String delim = getTextDelim();
@@ -219,13 +234,16 @@ public class ExecutionContext {
                 param = StringUtils.replace(param, ESCAPED_DOLLAR, "$");
                 param = StringUtils.replace(param, ESCAPED_OPEN_PARENTHESIS, "(");
                 param = StringUtils.replace(param, ESCAPED_CLOSE_PARENTHESIS, ")");
+                param = replaceTokens(param);
                 parameters[i] = param;
             }
         }
     }
 
-    static final String KEY_COMPLEX = "__lAIxEn__";
-    static final String DOT_LITERAL_REPLACER = "__53n7ry_4h34d__";
+    // support unit test and mocking
+    protected ExecutionContext() { }
+
+    public ExecutionContext(ExecutionDefinition execDef) { this(execDef, null); }
 
     public ExecutionContext(ExecutionDefinition execDef, Map<String, Object> intraExecutionData) {
         this.execDef = execDef;
@@ -234,7 +252,8 @@ public class ExecutionContext {
         setData(HOSTNAME, this.hostname, true);
 
         // init data map... something just doesn't make sense not to exist from the get-go
-        data.put(OPT_LAST_OUTCOME, true);
+        setData(OPT_LAST_OUTCOME, true);
+        setData(ITERATION_ENDED, false);
 
         if (MapUtils.isNotEmpty(intraExecutionData)) {
             // reuse existing spring context
@@ -244,9 +263,17 @@ public class ExecutionContext {
             plugins = (PluginManager) intraExecutionData.remove(NAME_PLUGIN_MANAGER);
             plugins.setContext(this);
 
+            currentCommandProfiles = (Map<String, String>) intraExecutionData.remove(NAME_CURRENT_COMMAND_PROFILES);
+
             data.putAll(intraExecutionData);
             data.remove(BREAK_CURRENT_ITERATION);
             data.remove(LAST_ITERATION);
+            data.remove(IS_FIRST_ITERATION);
+            data.remove(IS_LAST_ITERATION);
+            data.remove(OPT_LAST_SCREENSHOT_NAME);
+            data.remove(OPT_LAST_ALERT_TEXT);
+            data.remove(OPT_LAST_OUTPUT_LINK);
+            data.remove(OPT_LAST_OUTPUT_PATH);
         } else {
             // init spring
             springContext = new ClassPathXmlApplicationContext("classpath:" +
@@ -263,27 +290,23 @@ public class ExecutionContext {
         overrideIfSysPropFound(NEXIAL_HOME);
         overrideIfSysPropFound(ENABLE_EMAIL);
         overrideIfSysPropFound(OPT_OPEN_RESULT);
+        overrideIfSysPropFound(OPT_OPEN_EXEC_REPORT);
         overrideIfSysPropFound(ASSISTANT_MODE);
-        overrideIfSysPropFound(OPT_EASY_STRING_COMPARE);
+        overrideIfSysPropFound(OPT_TEXT_MATCH_LENIENT);
         overrideIfSysPropFound(OUTPUT_TO_CLOUD);
         overrideIfSysPropFound(FAIL_FAST);
         overrideIfSysPropFound(VERBOSE);
         overrideIfSysPropFound(TEXT_DELIM);
 
-        // initSpringBeans();
-
-        setData(ITERATION_ENDED, false);
-
         expression = new ExpressionProcessor(this);
         executionLogger = new ExecutionLogger(this);
+        // profileHelper = new ProfileHelper(this);
+
+        if (!ExecUtils.isRunningInZeroTouchEnv() && getBooleanData(OPT_ODI_ENABLED, getDefaultBool(OPT_ODI_ENABLED))) {
+            OnDemandInspectionDetector.getInstance(this);
+            ConsoleUtils.log("On-Demand Inspection detection enabled");
+        }
     }
-
-    // support unit test and mocking
-    protected ExecutionContext() { }
-
-    public ExecutionContext(ExecutionDefinition execDef) { this(execDef, null); }
-
-    public void setIterationId(String iterationId) { this.iterationId = iterationId; }
 
     public void useTestScript(Excel testScript) throws IOException {
         this.testScript = testScript;
@@ -301,20 +324,11 @@ public class ExecutionContext {
 
     public void logCurrentStep(String message) {
         TestStep currentTestStep = getCurrentTestStep();
-        if (isVerbose()) {
-            executionLogger.log(currentTestStep, message);
-        } else {
-            ConsoleUtils.log(currentTestStep == null ? "unknown test step" : currentTestStep.showPosition(), message);
-        }
+        executionLogger.log(currentTestStep, message);
+        if (isVerbose()) { currentTestStep.addNestedMessage(message); }
     }
 
-    public void logCurrentCommand(NexialCommand command, String message) {
-        if (isVerbose()) {
-            executionLogger.log(command, message);
-        } else {
-            ConsoleUtils.log(command.getTarget(), message);
-        }
-    }
+    public void logCurrentCommand(NexialCommand command, String message) { executionLogger.log(command, message); }
 
     public ExecutionDefinition getExecDef() { return execDef; }
 
@@ -346,8 +360,6 @@ public class ExecutionContext {
 
     public Map<BrowserType, String> getWebdriverHelperConfig() { return webdriverHelperConfig; }
 
-    public WebDriverExceptionHelper getWebDriverExceptionHelper() { return webDriverExceptionHelper; }
-
     public NexialS3Helper getOtc() throws IOException {
         // check that the required properties are set
         if (otc == null || !otc.isReadyForUse()) { throw new IOException(otcNotReadyMessage); }
@@ -361,12 +373,25 @@ public class ExecutionContext {
 
     public SmsHelper getSmsHelper() { return smsHelper; }
 
+    // public ProfileHelper getProfileHelper() { return profileHelper; }
+
     public NexialMailer getNexialMailer() { return nexialMailer; }
+
+    public TemplateEngine getTemplateEngine() { return templateEngine; }
 
     public boolean isPluginLoaded(String target) { return plugins.isPluginLoaded(target); }
 
-    public NexialCommand findPlugin(String target) { return plugins.getPlugin(target); }
+    public NexialCommand findPlugin(String target) {
+        if (currentCommandProfiles.containsKey(target)) {
+            return plugins.getPlugin(target + CMD_PROFILE_SEP + currentCommandProfiles.get(target));
+        } else {
+            return plugins.getPlugin(target);
+        }
+    }
 
+    /**
+     * return {@link Data#CMD_PROFILE_DEFAULT default} profile browser
+     */
     public Browser getBrowser() { return plugins.getBrowser(); }
 
     @NotNull
@@ -380,8 +405,15 @@ public class ExecutionContext {
         // DO NOT SET BROWSER TYPE TO SYSTEM PROPS, SINCE THIS WILL PREVENT ITERATION-LEVEL OVERRIDES
         // System.setProperty(BROWSER, browserType);
 
-        return StringUtils.remove(System.getProperty(BROWSER, getStringData(BROWSER, DEF_BROWSER)), ".");
+        // browser is all about web commands...
+        Map<String, String> config = getProfileConfig("web", currentCommandProfiles.get("web"));
+        String systemBrowser = System.getProperty(BROWSER, getStringData(BROWSER, getDefault(BROWSER)));
+        return StringUtils.remove(
+            MapUtils.isEmpty(config) ? systemBrowser : config.getOrDefault(BROWSER, systemBrowser),
+            ".");
     }
+
+    public boolean isDelayBrowser() { return getBooleanData(OPT_DELAY_BROWSER, getDefaultBool(OPT_DELAY_BROWSER)); }
 
     public Excel getTestScript() { return testScript; }
 
@@ -389,7 +421,9 @@ public class ExecutionContext {
 
     public ExecutionEventListener getExecutionEventListener() { return executionEventListener; }
 
-    public boolean isScreenshotOnError() { return getBooleanData(OPT_SCREENSHOT_ON_ERROR, false); }
+    public boolean isScreenshotOnError() {
+        return getBooleanData(OPT_SCREENSHOT_ON_ERROR, getDefaultBool(OPT_SCREENSHOT_ON_ERROR));
+    }
 
     public void registerScreenshotAgent(CanTakeScreenshot agent) { screenshotAgent = agent; }
 
@@ -401,11 +435,18 @@ public class ExecutionContext {
         return getBooleanData(OPT_INTERACTIVE, false) && !ExecUtils.isRunningInZeroTouchEnv();
     }
 
-    public boolean isFailFast() { return getBooleanData(FAIL_FAST, DEF_FAIL_FAST) && !isInteractiveMode(); }
+    public boolean isFailFast() {return getBooleanData(FAIL_FAST, getDefaultBool(FAIL_FAST)) && !isInteractiveMode(); }
 
-    /** Evaluate Page Source Stability Required */
-    public boolean isPageSourceStabilityEnforced() {
-        return getBooleanData(ENFORCE_PAGE_SOURCE_STABILITY, DEF_ENFORCE_PAGE_SOURCE_STABILITY);
+    public boolean isResolveTextAsURL() {
+        return hasData(RESOLVE_TEXT_AS_URL) ? getBooleanData(RESOLVE_TEXT_AS_URL) :
+               hasData(EXPRESSION_RESOLVE_URL) ? getBooleanData(EXPRESSION_RESOLVE_URL) :
+               getDefaultBool(RESOLVE_TEXT_AS_URL);
+    }
+
+    public boolean isResolveTextAsIs() {
+        return hasData(RESOLVE_TEXT_AS_IS) ? getBooleanData(RESOLVE_TEXT_AS_IS) :
+               hasData(EXPRESSION_OPEN_FILE_AS_IS) ? getBooleanData(EXPRESSION_OPEN_FILE_AS_IS) :
+               getDefaultBool(RESOLVE_TEXT_AS_IS);
     }
 
     /**
@@ -417,21 +458,20 @@ public class ExecutionContext {
         if (!result.isError()) { return; }
 
         // increment execution fail count
-        int execFailCount = getIntData(EXECUTION_FAIL_COUNT, 0) + 1;
-        setData(EXECUTION_FAIL_COUNT, execFailCount);
+        int execFailCount = getIntData(FAIL_COUNT, 0) + 1;
+        setData(FAIL_COUNT, execFailCount);
 
         // determine if fail-immediate is eminent
         int failAfter = getFailAfter();
         if (failAfter != -1 && execFailCount >= failAfter) {
-            ConsoleUtils.error("execution fail count (" + execFailCount + ") exceeds fail-after limit (" + failAfter +
-                               "), setting fail-immediate to true");
+            executionLogger.log(getCurrentTestStep(), failAfterReached(execFailCount, failAfter));
             setFailImmediate(true);
         }
 
         // in effect, the `onError()` event works the same way as `pauseOnError`. Nexial supports both stylistic variety
         executionEventListener.onError();
 
-        if (getBooleanData(OPT_PAUSE_ON_ERROR, DEF_PAUSE_ON_ERROR)) {
+        if (isPauseOnError()) {
             ConsoleUtils.doPause(this, "[ERROR #" + execFailCount + "]: Error found " +
                                        ExecutionLogger.toHeader(getCurrentTestStep()) + " - " +
                                        result.getMessage());
@@ -440,29 +480,48 @@ public class ExecutionContext {
 
     public void evaluateResult(StepResult result) {
         if (result.isSkipped()) {
-            setData(EXECUTION_SKIP_COUNT, getIntData(EXECUTION_SKIP_COUNT, 0) + 1);
+            setData(SKIP_COUNT, getIntData(SKIP_COUNT, 0) + 1);
             return;
         }
 
-        setData(EXECUTION_EXEC_COUNT, getIntData(EXECUTION_EXEC_COUNT, 0) + 1);
+        setData(EXEC_COUNT, getIntData(EXEC_COUNT, 0) + 1);
         if (result.isSuccess()) {
-            setData(EXECUTION_PASS_COUNT, getIntData(EXECUTION_PASS_COUNT, 0) + 1);
+            setData(PASS_COUNT, getIntData(PASS_COUNT, 0) + 1);
         } else {
             incrementAndEvaluateFail(result);
         }
     }
 
-    public int getFailAfter() { return getIntData(FAIL_AFTER, DEF_FAIL_AFTER); }
+    public int getFailAfter() { return getIntData(FAIL_AFTER, getDefaultInt(FAIL_AFTER)); }
 
     public boolean isStepByStep() { return getBooleanData(OPT_STEP_BY_STEP); }
 
     public boolean isVerbose() { return getBooleanData(VERBOSE); }
 
-    public boolean isLenientStringCompare() { return getBooleanData(OPT_EASY_STRING_COMPARE, true); }
+    public boolean isTextMatchLeniently() {
+        return getBooleanData(OPT_TEXT_MATCH_LENIENT, getDefaultBool(OPT_TEXT_MATCH_LENIENT));
+    }
 
-    public boolean isProxyRequired() { return getBooleanData(OPT_PROXY_REQUIRED, false); }
+    public boolean isTextMatchAsNumber() {
+        return getBooleanData(OPT_TEXT_MATCH_AS_NUMBER, getDefaultBool(OPT_TEXT_MATCH_AS_NUMBER));
+    }
 
-    public boolean isOutputToCloud() { return getBooleanData(OUTPUT_TO_CLOUD, DEF_OUTPUT_TO_CLOUD); }
+    public boolean isTextMatchUseTrim() {
+        return getBooleanData(OPT_TEXT_MATCH_USE_TRIM, getDefaultBool(OPT_TEXT_MATCH_USE_TRIM));
+    }
+
+    public boolean isTextMatchCaseInsensitive() {
+        return getBooleanData(OPT_TEXT_MATCH_CASE_INSENSITIVE, getDefaultBool(OPT_TEXT_MATCH_CASE_INSENSITIVE));
+    }
+
+    // public boolean isProxyRequired() { return getBooleanData(OPT_PROXY_REQUIRED, false); }
+
+    public boolean isOutputToCloud() { return getBooleanData(OUTPUT_TO_CLOUD, getDefaultBool(OUTPUT_TO_CLOUD)); }
+
+    public boolean isPauseOnError() {
+        return getBooleanData(OPT_PAUSE_ON_ERROR, getDefaultBool(OPT_PAUSE_ON_ERROR)) &&
+               !ExecUtils.isRunningInZeroTouchEnv();
+    }
 
     @NotNull
     public String getTextDelim() { return getRawStringData(TEXT_DELIM, ","); }
@@ -470,11 +529,13 @@ public class ExecutionContext {
     @NotNull
     public String getNullValueToken() { return getRawStringData(NULL_VALUE, NULL); }
 
-    public long getPollWaitMs() { return getIntData(POLL_WAIT_MS, DEF_POLL_WAIT_MS); }
+    public long getPollWaitMs() { return getIntData(POLL_WAIT_MS, getDefaultInt(POLL_WAIT_MS)); }
 
     public long getSLAElapsedTimeMs() { return getIntData(OPT_ELAPSED_TIME_SLA); }
 
-    public long getDelayBetweenStep() { return getIntData(DELAY_BETWEEN_STEPS_MS, DEF_DELAY_BETWEEN_STEPS_MS); }
+    public long getDelayBetweenStep() {
+        return getIntData(DELAY_BETWEEN_STEPS_MS, getDefaultInt(DELAY_BETWEEN_STEPS_MS));
+    }
 
     public boolean hasData(String name) { return getObjectData(name) != null; }
 
@@ -484,6 +545,18 @@ public class ExecutionContext {
         String sysProp = System.getProperty(name);
         if (StringUtils.isNotEmpty(sysProp)) { return sysProp; }
         return MapUtils.getObject(data, name);
+    }
+
+    @Nullable
+    public <T> T getObjectData(String name, Class<T> expectedType) {
+        if (StringUtils.isBlank(name)) { return null; }
+        if (!hasData(name)) { return null; }
+
+        Object obj = MapUtils.getObject(data, name);
+        if (obj == null) { return null; }
+        if (expectedType.isAssignableFrom(obj.getClass())) { return expectedType.cast(obj); }
+
+        return null;
     }
 
     public String getStringData(String name) {
@@ -556,6 +629,10 @@ public class ExecutionContext {
         return null;
     }
 
+    /**
+     * return a map of name-value pair where the names start with the specified {@code prefix}. Note that the returned
+     * names have the {@code prefix} removed.
+     */
     @NotNull
     public Map<String, String> getDataByPrefix(String prefix) {
         Map<String, String> props = new LinkedHashMap<>();
@@ -623,7 +700,7 @@ public class ExecutionContext {
     }
 
     public boolean isReadOnlyData(String var) {
-        return StringUtils.isBlank(var) || readOnlyVars.contains(var) || StringUtils.startsWith(var, "java.");
+        return readOnlyVars.contains(var) || StringUtils.startsWith(var, "java.");
     }
 
     /**
@@ -631,7 +708,7 @@ public class ExecutionContext {
      */
     public String removeData(String name) {
         if (isReadOnlyData(name)) {
-            ConsoleUtils.error("Removing READ-ONLY variable is not allowed: " + name);
+            ConsoleUtils.error("Removing READ-ONLY variable is not permitted: " + name);
             return null;
         }
 
@@ -649,49 +726,78 @@ public class ExecutionContext {
             removedObj = null;
         }
 
-        String removedFromSys = System.clearProperty(name);
-        return StringUtils.isEmpty(removed) ? removedFromSys : removed;
+        if (StringUtils.isBlank(name)) {
+            return removed;
+        } else {
+            String removedFromSys = System.clearProperty(name);
+            return StringUtils.isEmpty(removed) ? removedFromSys : removed;
+        }
     }
 
     public void setData(String name, String value) {
         // some reference data are considered "special" and should be elevated to "execution" level so that they can be
-        // as such for Execution Dashboard
+        // used as such for Execution Dashboard
         setData(name, value, referenceDataForExecution.contains(name));
     }
 
     public void setData(String name, String value, boolean updateSysProps) {
         if (data.containsKey(name)) { CellTextReader.unsetValue(value); }
         if (isNullValue(value)) {
+            // will remove from both `data` and sysprop
             removeData(name);
         } else {
-            data.put(name, mergeProperty(value));
+            value = mergeProperty(value);
+            data.put(name, value);
+
+            // logic updated; see below
+            // if (updateSysProps || referenceDataForExecution.contains(name)) { System.setProperty(name, value); }
             if (updateSysProps) { System.setProperty(name, value); }
+
+            // we'll update the system property for the same data variable IFF
+            // 1. `updateSysProps` is true  - OR -
+            // 2. the data variable is found as a sysprop AND
+            // 3. the same data variable is not considered as READ-ONLY
+            // if (updateSysProps || (StringUtils.isNotEmpty(System.getProperty(name)) && !isReadOnlyData(name))) {
+            //     System.setProperty(name, value);
+            // }
         }
     }
 
-    public void setData(String name, int value) { data.put(name, value); }
+    public void setData(String name, int value) { setDataOrSysProp(name, value); }
 
-    public void setData(String name, Map<String, String> value) {
-        if (MapUtils.isEmpty(value)) { data.remove(name); }
-        data.put(name, value);
-    }
+    public void setData(String name, Map<String, String> value) { setDataOrSysProp(name, value); }
 
-    public void setData(String name, List value) { data.put(name, value); }
+    public void setData(String name, List value) { setDataOrSysProp(name, value); }
 
-    public void setData(String name, Boolean value) { data.put(name, value); }
+    public void setData(String name, Boolean value) { setDataOrSysProp(name, value); }
 
-    public void setData(String name, Object value) {
-        if (StringUtils.isBlank(name)) { return; }
-        if (value == null) { data.remove(name); } else { data.put(name, value); }
-    }
+    public void setData(String name, Object value) { setDataOrSysProp(name, value); }
 
     public boolean isNullValue(String value) { return value == null || StringUtils.equals(value, getNullValueToken()); }
 
-    public boolean isEmptyValue(String value) {
-        return StringUtils.equals(value, "") || StringUtils.equals(value, EMPTY);
+    public boolean isEmptyValue(String value) { return StringUtils.isEmpty(value) || StringUtils.equals(value, EMPTY); }
+
+    public boolean isBlankValue(String value) { return StringUtils.isBlank(value) || StringUtils.equals(value, BLANK); }
+
+    public boolean isNullOrEmptyValue(String value) { return isNullValue(value) || isEmptyValue(value); }
+
+    public boolean isNullOrEmptyOrBlankValue(String value) {
+        return isBlankValue(value) || isEmptyValue(value) || isNullValue(value);
     }
 
-    public String replaceTokens(String text) {
+    public static boolean asNull(String value) { return value == null || StringUtils.equals(value, NULL); }
+
+    public static boolean asEmpty(String value) {return StringUtils.isEmpty(value) || StringUtils.equals(value, EMPTY);}
+
+    public static boolean asBlank(String value) {return StringUtils.isBlank(value) || StringUtils.equals(value, BLANK);}
+
+    public static boolean asNullOrEmpty(String value) { return asNull(value) || asEmpty(value); }
+
+    public static boolean asNullOrEmptyOrBlank(String value) {return asBlank(value) || asEmpty(value) || asNull(value);}
+
+    public String replaceTokens(String text) { return replaceTokens(text, false); }
+
+    public String replaceTokens(String text, boolean retainCrypt) {
         if (StringUtils.isBlank(text)) { return text; }
         if (StringUtils.equals(text, getNullValueToken())) { return null; }
 
@@ -699,7 +805,11 @@ public class ExecutionContext {
         if (text == null) { return null; }
 
         // for portability
-        text = StringUtils.replace(text, NL, lineSeparator());
+        text = StringUtils.replace(text, EOL, lineSeparator());
+
+        // pre-first pass  ;-)
+        // substitute crypt value
+        text = handleCryptValue(text);
 
         // first pass: cycle through the dyn var
         text = handleFunction(text);
@@ -713,7 +823,7 @@ public class ExecutionContext {
         if (CollectionUtils.isNotEmpty(ignoredVars)) { tokens.removeAll(ignoredVars); }
 
         boolean allTokenResolvedToNull = CollectionUtils.isNotEmpty(tokens);
-        boolean unresolvedAsIs = DEF_VAR_DEFAULT_AS_IS;
+        boolean unresolvedAsIs = getDefaultBool(OPT_VAR_DEFAULT_AS_IS);
         if (hasData(OPT_VAR_DEFAULT_AS_IS)) {
             Object config = getObjectData(OPT_VAR_DEFAULT_AS_IS);
             if (config != null) { unresolvedAsIs = BooleanUtils.toBoolean(config.toString()); }
@@ -747,29 +857,72 @@ public class ExecutionContext {
 
             allTokenResolvedToNull = false;
 
-            if (value.equals(EMPTY)) {
+            if (value.equals(NULL)) {
                 text = StringUtils.replace(text, tokenized, "");
                 continue;
             }
 
-            if (value.equals(BLANK)) {
-                text = StringUtils.replace(text, tokenized, " ");
-                continue;
-            }
-
-            if (value.equals(TAB)) {
-                text = StringUtils.replace(text, tokenized, "\t");
+            if (NON_DISPLAYABLE_REPLACEMENTS.containsKey(value.toString())) {
+                text = StringUtils.replace(text, tokenized, NON_DISPLAYABLE_REPLACEMENTS.get(value.toString()));
                 continue;
             }
 
             Class valueType = value.getClass();
             if (valueType.isPrimitive() || SIMPLE_VALUES.contains(valueType)) {
-                // if there's substitution for ${...}[] and the `value` can be treated as list
-                // if (isListCompatible(value) && containListAccess(text, tokenized)) {
-                //     collectionValues.put(token, StringUtils.split(value.toString(), getTextDelim()));
-                // } else {
-                text = StringUtils.replace(text, tokenized, StringUtils.defaultString(getStringData(token)));
-                // }
+
+                String stringValue = StringUtils.defaultString(getStringData(token));
+                // if we need to conceal crypt and this token resolves from a crypt value,
+                // then we'll revert back to its crypt form
+                // stringValue = CellTextReader.readValue(stringValue);
+                if (retainCrypt && CellTextReader.isCrypt(stringValue)) { stringValue = tokenized; }
+
+                // it's possible that we might get a reference to an item of a string-based array (like "a,b,c,d")
+                // check to see if there's any reference to the ${var}[index] pattern
+                if (isListCompatible(stringValue)) {
+                    String regexIndexRef = ESCAPED_TOKEN_START + token + ESCAPED_TOKEN_END + "\\[.+?\\]";
+                    boolean hasIndexRef = RegexUtils.match(text, regexIndexRef, true);
+
+                    // if there's substitution for ${...}[#] and the `value` can be treated as list
+                    if (hasIndexRef) {
+                        String beforeIndex = TOKEN_START + token + TOKEN_END + TOKEN_ARRAY_START;
+                        String afterIndex = TOKEN_ARRAY_END;
+
+                        String[] array = StringUtils.splitPreserveAllTokens(stringValue, getTextDelim());
+
+                        List<String> indexRefs = RegexUtils.eagerCollectGroups(text, regexIndexRef, false, true);
+                        for (String indexRef : indexRefs) {
+                            String indexStr = StringUtils.substringBetween(indexRef, beforeIndex, afterIndex);
+                            String indexStr2;
+
+                            // in-place replacement for possible index value
+                            if (TextUtils.isBetween(indexStr, TOKEN_START, TOKEN_END)) {
+                                indexStr2 = replaceTokens(indexStr);
+                            } else {
+                                indexStr2 = indexStr;
+                            }
+
+                            if (!NumberUtils.isDigits(indexStr2)) { continue; }
+
+                            int index = NumberUtils.toInt(indexStr2);
+                            String itemValue;
+                            if (ArrayUtils.isArrayIndexValid(array, index)) {
+                                itemValue = array[index];
+                            } else {
+                                if (unresolvedAsIs) { continue; }
+                                itemValue = "";
+                            }
+                            text = StringUtils.replace(text, beforeIndex + indexStr + afterIndex, itemValue);
+                        }
+                    }
+
+                } else {
+                    // then only ${var}[0] would make sense; single value is the same as the first item
+                    String firstIndexRef = "${" + token + "}[0]";
+                    text = StringUtils.replace(text, firstIndexRef, stringValue);
+                }
+
+                // finally replace token after all index ref's are handled
+                text = StringUtils.replace(text, tokenized, stringValue);
             } else if (Collection.class.isAssignableFrom(valueType) || valueType.isArray()) {
                 collectionValues.put(token, value);
             } else {
@@ -801,7 +954,7 @@ public class ExecutionContext {
         text = handleExpression(text);
 
         // sixth pass: crypt
-        if (StringUtils.startsWith(text, CRYPT_IND)) { text = CellTextReader.getText(text); }
+        if (StringUtils.startsWith(text, CRYPT_IND) && !retainCrypt) { text = CellTextReader.getText(text); }
 
         return enforceUnixEOL(text);
     }
@@ -813,13 +966,26 @@ public class ExecutionContext {
         try {
             return expression.process(text);
         } catch (ExpressionException e) {
-            String errorPrefix = "Unable to process expression due to ";
-            for (Throwable throwable : ExceptionUtils.getThrowableList(e.getCause())) {
-                if (throwable instanceof IOException) {
-                    throw new IllegalArgumentException(errorPrefix + throwable.getMessage());
-                }
+            Throwable cause = ExceptionUtils.getRootCause(e);
+            String errorMessage = "Unable to process expression due to " +
+                                  (cause instanceof NullPointerException ?
+                                   cause.getClass().getSimpleName() :
+                                   cause.getMessage());
+
+            ExecutionLogger logger = getLogger();
+            TestStep testStep = getCurrentTestStep();
+            if (testStep == null) {
+                logger.error(this, errorMessage, cause);
+            } else {
+                logger.error(testStep,
+                             errorMessage + NL + "Error log: " + OutputFileUtils.generateErrorLog(testStep, cause));
             }
-            ConsoleUtils.error(getRunId(), errorPrefix + e.getMessage(), e);
+
+            if (cause instanceof IOException) {
+                throw new IllegalArgumentException("Unable to process expression due to " + cause.getMessage());
+            }
+
+            // not IOE
             return text;
         }
     }
@@ -861,14 +1027,27 @@ public class ExecutionContext {
         return text;
     }
 
-    public String resolveRunModeSpecificUrl(File file) {
-        if (file == null) { return null; }
-        return resolveRunModeSpecificUrl(file.getAbsolutePath());
+    public TestProject getProject() { return project; }
+
+    public String getCurrentScenario() {
+        String scenario = getStringData(OPT_CURRENT_SCENARIO);
+        if (StringUtils.isNotBlank(scenario)) { return scenario; }
+
+        try {
+            return currentTestStep != null ? currentTestStep.getTestCase().getTestScenario().getName() : null;
+        } catch (NullPointerException e) {
+            ConsoleUtils.error("Unable to determine current scenario: " + e.getMessage());
+            return null;
+        }
     }
 
-    public String resolveRunModeSpecificUrl(String filename) { return filename; }
-
-    public TestProject getProject() { return project; }
+    public void setCurrentScenario(TestScenario scenario) {
+        if (scenario == null) {
+            removeDataForcefully(OPT_CURRENT_SCENARIO);
+        } else {
+            setData(OPT_CURRENT_SCENARIO, scenario.getName());
+        }
+    }
 
     public TestStep getCurrentTestStep() { return currentTestStep; }
 
@@ -921,6 +1100,9 @@ public class ExecutionContext {
         intraExecutionData.putAll(getDataMap());
         intraExecutionData.put(NAME_PLUGIN_MANAGER, plugins);
         intraExecutionData.put(NAME_SPRING_CONTEXT, springContext);
+        intraExecutionData.put(NAME_CURRENT_COMMAND_PROFILES, currentCommandProfiles);
+        intraExecutionData.remove(IS_FIRST_ITERATION);
+        intraExecutionData.remove(IS_LAST_ITERATION);
     }
 
     public Map<String, String> gatherScenarioReferenceData() { return gatherReferenceData(SCENARIO_REF_PREFIX); }
@@ -937,19 +1119,21 @@ public class ExecutionContext {
 
     public void clearScriptRefData() { clearReferenceData(SCRIPT_REF_PREFIX); }
 
-    public void startIteration(int currIteration, boolean firstUse) {
+    public void startIteration(int iterationIndex, int iterationRef, int totalIterationCount, boolean firstUse) {
         getTrackTimeLogs();
 
         // remember whether we want to track execution completion as a time-track event or not
-        System.setProperty(TRACK_EXECUTION, getStringData(TRACK_EXECUTION, DEF_TRACK_EXECUTION));
+        System.setProperty(TRACK_EXECUTION, getStringData(TRACK_EXECUTION, getDefault(TRACK_EXECUTION)));
 
+        setData(CURR_ITERATION, iterationIndex);
+        if (iterationRef != -1) { setData(CURR_ITERATION_ID, iterationRef); }
+        setData(IS_FIRST_ITERATION, iterationIndex == 1);
+        setData(IS_LAST_ITERATION, iterationIndex == totalIterationCount);
+
+        // handling events
         ExecutionEventListener eventListener = getExecutionEventListener();
-
-        // handling onExecutionStart
         if (firstUse) { eventListener.onExecutionStart(); }
-
-        setData(CURR_ITERATION, currIteration);
-        if (currIteration == 1) { eventListener.onScriptStart(); }
+        if (iterationIndex == 1) { eventListener.onScriptStart(); }
         eventListener.onIterationStart();
     }
 
@@ -1062,36 +1246,32 @@ public class ExecutionContext {
         // set back to its pre-execution state
         Map<String, String> ref = gatherScenarioReferenceData();
 
-        int scenarioSeqId = 0;
         for (TestScenario testScenario : testScenarios) {
             // re-init scenario ref data
             clearScenarioRefData();
             ref.forEach((name, value) -> data.put(SCENARIO_REF_PREFIX + name, replaceTokens(value)));
-            testScenario.setIterationId(iterationId);
-            testScenario.setScenarioSeqId(++scenarioSeqId);
+
             if (!testScenario.execute()) {
                 allPass = false;
 
                 if (isFailFast()) {
-                    executionLogger.log(testScenario, "test scenario execution failed, and fail-fast in effect. " +
-                                                      "Hence all subsequent test scenarios will be skipped");
+                    executionLogger.log(testScenario, MSG_SCENARIO_FAIL_FAST);
                     break;
                 }
             }
 
             if (isFailImmediate()) {
-                executionLogger.log(testScenario, "test scenario execution failed, and fail-immediate in effect. " +
-                                                  "Hence all subsequent test scenarios will be skipped");
+                executionLogger.log(this, MSG_EXEC_FAIL_IMMEDIATE);
                 break;
             }
 
             if (isEndImmediate()) {
-                executionLogger.log(testScenario, "test scenario execution ended due to EndIf() flow control");
+                executionLogger.log(this, MSG_EXEC_END_IF);
                 break;
             }
 
             if (isBreakCurrentIteration()) {
-                executionLogger.log(testScenario, "test scenario execution ended due to EndLoopIf() flow control");
+                executionLogger.log(this, MSG_EXEC_END_LOOP_IF);
                 break;
             }
         }
@@ -1111,6 +1291,32 @@ public class ExecutionContext {
     public void markExecutionStart() {
         startTimestamp = System.currentTimeMillis();
         startDateTime = DF_TIMESTAMP.format(startTimestamp);
+    }
+
+    public boolean containsCrypt(String data) {
+        try {
+            if (StringUtils.contains(data, CRYPT_IND)) { return true; }
+
+            if (TextUtils.isBetween(data, TOKEN_START, TOKEN_END)) {
+                return StringUtils.contains(CellTextReader.readValue(replaceTokens(data)), CRYPT_IND);
+            }
+
+            // if the value can be mapped to a crypted value -OR-
+            // if we still have ${...} pattern after token replacement,
+            // then that's means one or more data variables are crypted (retainCrypt=true)
+
+            // if (!StringUtils.equals(data, CellTextReader.readValue(data))) { return true; }
+            if (CellTextReader.isCrypt(data)) { return true; }
+
+            // no variables means no crypt
+            Set<String> variables = findTokens(data);
+            return CollectionUtils.isNotEmpty(variables) &&
+                   variables.stream()
+                            .anyMatch(var -> CellTextReader.isCrypt(replaceTokens(TOKEN_START + var + TOKEN_END)));
+        } catch (RuntimeException e) {
+            // don't worry it now.. Nexial will eventually barf at such exception later on (and probably at a better spot).
+            return false;
+        }
     }
 
     public static boolean getSystemThenContextBooleanData(String name, ExecutionContext context, boolean def) {
@@ -1144,6 +1350,180 @@ public class ExecutionContext {
     }
 
     /**
+     * resolve a set of name-value configuration, based on a "profile", and store it in the current
+     * {@link ExecutionContext context}. This is useful for profile-aware commands where multiple instances of the
+     * same command co-exist and distinguish by the associated "profile".
+     */
+    public Map<String, String> updateProfileConfig(String command, String profile, String config) {
+        Map<String, String> configMap = getProfileConfig(command, profile);
+
+        if (StringUtils.isNotBlank(config)) {
+            // replace , with newline, except if comma is escaped.
+            config = StringUtils.remove(config, "\r");
+            config = StringUtils.replace(config, "\\,", "!@#>>*<<#@!");
+            config = StringUtils.replace(config, ",", "\n");
+            config = StringUtils.replace(config, "!@#>>*<<#@!", ",");
+            configMap.putAll(TextUtils.toMap(config, "\n", "="));
+        }
+
+        // config map is updated and ready for use
+        setData(resolveProfileConfigKey(command, profile), configMap);
+
+        // if (StringUtils.isNotBlank(profile) && !StringUtils.equals(profile, CMD_PROFILE_DEFAULT)) {
+        // init command, if needed
+        // setData(resolveProfileCommandKey(command, profile), findPlugin(command + CMD_PROFILE_SEP + profile));
+        // }
+
+        // remember the current profile
+        currentCommandProfiles.put(command, profile);
+
+        return configMap;
+    }
+
+    public Map<String, String> getProfileConfig(String command, String profile) {
+        if (StringUtils.isEmpty(profile)) { profile = CMD_PROFILE_DEFAULT; }
+        String configMapKey = resolveProfileConfigKey(command, profile);
+
+        Map<String, String> config = new HashMap<>();
+        if (!hasData(configMapKey)) { return config; }
+        if (!(getObjectData(configMapKey) instanceof Map)) { return config; }
+
+        Map mapData = getMapData(configMapKey);
+        TypeVariable<? extends Class<? extends Map>>[] mapTypes = mapData.getClass().getTypeParameters();
+        if (mapTypes.length != 2) { return config; }
+        // if (!StringUtils.contains(mapTypes[0].getTypeName(), "String") ||
+        //     !StringUtils.contains(mapTypes[1].getTypeName(), "String")) { return config; }
+
+        return (Map<String, String>) mapData;
+    }
+
+    public String getStringConfig(String command, String profile, String key) {
+        Map<String, String> config = getProfileConfig(command, profile);
+        String contextValue = getStringData(key, getDefault(key));
+        if (MapUtils.isEmpty(config)) { return contextValue; }
+        return config.getOrDefault(key, contextValue);
+    }
+
+    public int getIntConfig(String command, String profile, String key) {
+        Map<String, String> config = getProfileConfig(command, profile);
+        int contextValue = getIntData(key, getDefaultInt(key));
+        if (MapUtils.isEmpty(config) || StringUtils.isBlank(profile)) { return contextValue; }
+        String configValue = config.get(key);
+        if (StringUtils.isBlank(configValue)) { return contextValue; }
+        return NumberUtils.toInt(configValue, contextValue);
+    }
+
+    public double getDoubleConfig(String command, String profile, String key) {
+        Map<String, String> config = getProfileConfig(command, profile);
+        double contextValue = getDoubleData(key, getDefaultDouble(key));
+        if (MapUtils.isEmpty(config) || StringUtils.isBlank(profile)) { return contextValue; }
+        String configValue = config.get(withProfile(profile, key));
+        if (StringUtils.isBlank(configValue)) { return contextValue; }
+        return NumberUtils.toDouble(configValue, contextValue);
+    }
+
+    public boolean getBooleanConfig(String command, String profile, String key) {
+        Map<String, String> config = getProfileConfig(command, profile);
+        boolean contextValue = getBooleanData(key, getDefaultBool(key));
+        if (MapUtils.isEmpty(config) || StringUtils.isBlank(profile)) { return contextValue; }
+        String configValue = config.get(withProfile(profile, key));
+        if (StringUtils.isBlank(configValue)) { return contextValue; }
+        return BooleanUtils.toBoolean(configValue);
+    }
+
+    public boolean hasConfig(String command, String profile, String key) {
+        Map<String, String> config = getProfileConfig(command, profile);
+        if (config.containsKey(key)) { return true; }
+        return hasData(key);
+    }
+
+    @NotNull
+    public String truncateForDisplay(String text) {
+        return truncateForDisplay(text, getIntData(MAX_CONSOLE_DISPLAY, getDefaultInt(MAX_CONSOLE_DISPLAY)));
+    }
+
+    @NotNull
+    public static String truncateForDisplay(String text, int maxLength) {
+        if (StringUtils.isBlank(text) || maxLength < 1) { return text; }
+        return text.length() <= maxLength ? text : StringUtils.left(text, maxLength) + "...";
+    }
+
+    @NotNull
+    protected static String resolveProfileConfigKey(String command, String profile) {
+        return "nexial.config" + CMD_PROFILE_SEP + command + "." + profile;
+    }
+
+    @NotNull
+    protected static String resolveProfileCommandKey(String command, String profile) {
+        return "nexial.command" + CMD_PROFILE_SEP + command + "." + profile;
+    }
+
+    protected String handleCryptValue(String text) {
+        if (StringUtils.isBlank(text)) { return text; }
+        if (!StringUtils.contains(text, CRYPT_IND)) { return text; }
+
+        String crypt = RegexUtils.firstMatches(text, REGEX_CRYPT);
+        while (StringUtils.isNotBlank(crypt)) {
+            String decrypt = CellTextReader.getText(crypt);
+            if (StringUtils.isNotBlank(decrypt)) {
+                text = StringUtils.replace(text, crypt, decrypt);
+                crypt = RegexUtils.firstMatches(text, REGEX_CRYPT);
+            } else {
+                break;
+            }
+        }
+
+        return text;
+    }
+
+    /**
+     * updating corresponding System property when a data variable of the same name is updated. Note that the purpose of
+     * this method is to keep in sync the data variable that might have been set as System variable with those defined
+     * in data sheets. Data variables defined via command line (<code>-Dname=value</code>, for example) and
+     * <code>project.properties</code> are kept as System properties. Suppose the same data variable is updated with
+     * new value during execution, then we need to update both the data variable repo ({@link #data}) and System
+     * properties to keep the same data variable in sync.
+     * <p>
+     * Note that System properties will be updating <b>ONLY</b> IF:
+     * <ol>
+     * <li>{@code name} is valid (not null)</li>
+     * <li>the same data variable is already defined as System properties (hence needing to overwrite)</li>
+     * <li>execution is currently in progress</li>
+     * </ol>
+     */
+    protected void setDataOrSysProp(String name, Object value) {
+        // we will only update System properties IF:
+        // 1) we have valid/non-empty name/value
+        // 2) same property found from System (hence needing to overwrite)
+        // 3) we are currently automating a test scenario/activity/step (ie. currentTestStep != null)
+        if (StringUtils.isBlank(name)) { return; }
+
+        boolean isNullValue = value == null || isNullValue(Objects.toString(value));
+
+        if (data.containsKey(name) && isNullValue) { CellTextReader.unsetValue(Objects.toString(value)); }
+
+        boolean remove = isNullValue;
+        if (value instanceof Map && MapUtils.isEmpty((Map) value)) { remove = true; }
+        if (value instanceof Collection && CollectionUtils.isEmpty((Collection) value)) { remove = true; }
+
+        if (remove) {
+            data.remove(name);
+            System.clearProperty(name);
+            return;
+        }
+
+        if (StringUtils.isEmpty(System.getProperty(name))) {
+            data.put(name, value);
+
+            // some reference data are considered "special" and should be elevated to "execution" level so that they
+            // can be used as such for Execution Dashboard
+            if (referenceDataForExecution.contains(name)) { System.setProperty(name, Objects.toString(value)); }
+        } else {
+            System.setProperty(name, Objects.toString(value));
+        }
+    }
+
+    /**
      * perhaps it's a system property? first check System property, then internal map
      */
     protected String getRawStringData(String name) { return System.getProperty(name, MapUtils.getString(data, name)); }
@@ -1152,8 +1532,9 @@ public class ExecutionContext {
         return System.getProperty(name, MapUtils.getString(data, name, def));
     }
 
-    protected boolean isListCompatible(Object value) {
-        return !Objects.isNull(value) && StringUtils.contains(value.toString(), getTextDelim());
+    protected boolean isListCompatible(String value) {
+        String delim = getTextDelim();
+        return StringUtils.isNotBlank(value) && !StringUtils.equals(value, delim) && StringUtils.contains(value, delim);
     }
 
     protected boolean containListAccess(String text, String tokenized) {
@@ -1393,7 +1774,8 @@ public class ExecutionContext {
                         // last resort: treat 'propName' like a real method
                         String args = StringUtils.substringBetween(postToken, TOKEN_ARRAY_START, TOKEN_ARRAY_END);
                         newValue = ObjectUtils.defaultIfNull(
-                            MethodUtils.invokeMethod(value, propName, StringUtils.split(args, DEF_TEXT_DELIM)), "");
+                            MethodUtils.invokeMethod(value, propName, StringUtils.split(args, getDefault(TEXT_DELIM))),
+                            "");
                         if (StringUtils.isNotEmpty(args)) {
                             token += TOKEN_ARRAY_START + args + TOKEN_ARRAY_END;
                             postToken = StringUtils.substringAfter(postToken, args + TOKEN_ARRAY_END);
@@ -1433,7 +1815,7 @@ public class ExecutionContext {
             throw new IllegalArgumentException("reference to a built-in function NOT shown via the $(...|...) format");
         }
 
-        String errorPrefix = "Invalid built-in function " + TOKEN_FUNCTION_START + token + TOKEN_FUNCTION_END;
+        String errorPrefix = "Invalid built-in function " + TOKEN_FUNCTION_START + token + TOKEN_FUNCTION_END + " ";
 
         Function f = null;
 
@@ -1487,9 +1869,8 @@ public class ExecutionContext {
         // to its initial form during invokeFunction()
 
         // keep search for $(...) pattern
-        return nextFunctionToken(StringUtils.replace(text,
-                                                     TOKEN_FUNCTION_START + token + TOKEN_FUNCTION_END,
-                                                     TOKEN_DEFUNC_START + token + TOKEN_DEFUNC_END));
+        return nextFunctionToken(text.replace(TOKEN_FUNCTION_START + token + TOKEN_FUNCTION_END,
+                                              TOKEN_DEFUNC_START + token + TOKEN_DEFUNC_END));
     }
 
     protected String resolveDeferredTokens(String text) {
@@ -1524,7 +1905,7 @@ public class ExecutionContext {
         List<String> replaced = new ArrayList<>();
         for (String item : text) { replaced.add(resolveDeferredTokens(item)); }
 
-        return replaced.toArray(new String[replaced.size()]);
+        return replaced.toArray(new String[0]);
     }
 
     protected String mergeProperty(String value) {
@@ -1536,8 +1917,8 @@ public class ExecutionContext {
             String var = StringUtils.substring(value, startIdx + TOKEN_START.length(), endIdx);
             String searchFor = TOKEN_START + var + TOKEN_END;
             if (data.containsKey(var)) {
-                String replacedBy = MapUtils.getString(data, var);
-                value = StringUtils.replace(value, searchFor, replacedBy);
+                searchFor = searchFor + getIndexedRef(value, endIdx + TOKEN_END.length());
+                value = StringUtils.replace(value, searchFor, replaceTokens(searchFor));
             } else {
                 // mark the irreplaceable token so we can put things back later
                 value = StringUtils.replace(value, searchFor, "~[[" + var + "]]~");
@@ -1553,6 +1934,19 @@ public class ExecutionContext {
         value = StringUtils.replace(value, "]]~", TOKEN_END);
 
         return value;
+    }
+
+    protected static String getIndexedRef(String value, int expectedArrayStartIdx) {
+        // find `[` and `]` after TOKEN End Index
+        int startArrayIdx = StringUtils.indexOf(value, TOKEN_ARRAY_START, expectedArrayStartIdx);
+        int endArrayIdx = StringUtils.indexOf(value, TOKEN_ARRAY_END, expectedArrayStartIdx);
+
+        // Ignore index ref if is not after token
+        if (startArrayIdx != -1 && endArrayIdx != -1 && expectedArrayStartIdx == startArrayIdx) {
+            String listIndex = StringUtils.substring(value, startArrayIdx + TOKEN_ARRAY_START.length(), endArrayIdx);
+            if (NumberUtils.isDigits(listIndex)) { return TOKEN_ARRAY_START + listIndex + TOKEN_ARRAY_END; }
+        }
+        return "";
     }
 
     protected String encodeForUrl(String filename) {
@@ -1578,6 +1972,7 @@ public class ExecutionContext {
     protected void clearCurrentTestStep() { this.currentTestStep = null; }
 
     protected TestProject adjustPath(ExecutionDefinition execDef) {
+        // run id is not determined earlier, hence we are considering it now as part of output path
         TestProject project = execDef.getProject().copy();
         project.setOutPath(StringUtils.appendIfMissing(project.getOutPath(), separator) + execDef.getRunId());
 
@@ -1643,13 +2038,13 @@ public class ExecutionContext {
         });
 
         // support dynamic resolution of WPS executable path
-        String spreadsheetProgram = getStringData(SPREADSHEET_PROGRAM, DEF_SPREADSHEET);
+        String spreadsheetProgram = getStringData(SPREADSHEET_PROGRAM, getDefault(SPREADSHEET_PROGRAM));
         if (StringUtils.equals(spreadsheetProgram, SPREADSHEET_PROGRAM_WPS) && IS_OS_WINDOWS) {
             setData(WPS_EXE_LOCATION, Excel.resolveWpsExecutablePath());
         }
 
         if (StringUtils.isBlank(System.getProperty(OPT_OPEN_RESULT))) {
-            boolean openResult = MapUtils.getBoolean(data, OPT_OPEN_RESULT, BooleanUtils.toBoolean(DEF_OPEN_RESULT));
+            boolean openResult = MapUtils.getBoolean(data, OPT_OPEN_RESULT, getDefaultBool(OPT_OPEN_RESULT));
             System.setProperty(OPT_OPEN_RESULT, openResult + "");
         }
 
@@ -1660,7 +2055,6 @@ public class ExecutionContext {
     }
 
     private void initSpringBeans() {
-        readOnlyVars = springContext.getBean("readOnlyVars", new ArrayList<String>().getClass());
         failfastCommands = springContext.getBean("failfastCommands", new ArrayList<String>().getClass());
 
         // init built-in variables
@@ -1684,13 +2078,15 @@ public class ExecutionContext {
 
         // default / reference
         defaultContextProps = springContext.getBean("defaultContextProps", new HashMap<String, String>().getClass());
-        referenceDataForExecution =
-            TextUtils.toList(defaultContextProps.get("nexial.referenceDataForExecution"), ",", true);
+        referenceDataForExecution = springContext.getBean("nexial.referenceDataForExecution", List.class);
+        readOnlyVars = springContext.getBean("readOnlyVars", new ArrayList<String>().getClass());
 
         // web driver
         webdriverHelperConfig =
             springContext.getBean("webdriverHelperConfig", new HashMap<BrowserType, String>().getClass());
-        webDriverExceptionHelper = springContext.getBean("webdriverExceptionHelper", WebDriverExceptionHelper.class);
+
+        // thymeleaf template engine
+        templateEngine = springContext.getBean("htmlTemplateEngine", TemplateEngine.class);
     }
 
     @NotNull

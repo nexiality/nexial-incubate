@@ -13,6 +13,7 @@ function resolveOSXAppPath() {
 
     IFS=$'\n'
 
+    # todo: need alternative from `locate` since it requires local sudo rights.
     for p in `locate "MacOS/${appExec}" | grep -E "${appExec}$"`; do
         if [[ "$path" = "" ]]; then
             # first time.. just use what we found
@@ -94,8 +95,18 @@ function title() {
 }
 
 
+export NEXIAL_OS=
 function resolveEnv() {
-    JAVA_VERSION=`echo "$(${JAVA} -version 2>&1)" | grep "java version" | awk '{ print substr($3, 2, length($3)-2); }'`
+    unameOut="$(uname -s)"
+    case "${unameOut}" in
+        Linux*)     export NEXIAL_OS=Linux;;
+        Darwin*)    export NEXIAL_OS=Mac;;
+        CYGWIN*)    export NEXIAL_OS=Cygwin;;
+        MINGW*)     export NEXIAL_OS=MinGw;;
+        *)          export NEXIAL_OS="UNKNOWN:${unameOut}"
+    esac
+
+    JAVA_VERSION=`echo "$(${JAVA} -version 2>&1)" | grep " version" | awk '{ print substr($3, 2, length($3)-2); }'`
 
     echo "» ENVIRONMENT: "
     echo "  CURRENT TIME:   `date \"+%Y-%m-%d %H:%M%:%S\"`"
@@ -141,6 +152,7 @@ function resolveAppPath() {
 
 
 # utilities to be invoked by other frontend scripts
+mkdir -p "$HOME/.nexial"
 export PROJECT_BASE=~/projects
 export NEXIAL_HOME=$(cd `dirname $0`/..; pwd -P)
 export NEXIAL_LIB=${NEXIAL_HOME}/lib
@@ -174,7 +186,9 @@ fi
 JAVA_OPT="${JAVA_OPT} -ea"
 JAVA_OPT="${JAVA_OPT} -Xss24m"
 JAVA_OPT="${JAVA_OPT} -Dfile.encoding=UTF-8"
+# JAVA_OPT="${JAVA_OPT} -Djava.awt.headless=true"
 JAVA_OPT="${JAVA_OPT} -Dnexial.home=${NEXIAL_HOME}"
 JAVA_OPT="${JAVA_OPT} -Dwebdriver.winium.verbose=true"
 JAVA_OPT="${JAVA_OPT} -Dwebdriver.winium.silent=false"
 # JAVA_OPT="${JAVA_OPT} -Dwebdriver.winium.logpath=$TMPDIR/winium-service.log"
+JAVA_OPT="${JAVA_OPT} -Dorg.apache.poi.util.POILogger=org.apache.poi.util.NullLogger"

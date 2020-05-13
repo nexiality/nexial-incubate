@@ -1,6 +1,5 @@
 package org.nexial.core.plugins.base
 
-
 import org.apache.commons.lang3.math.NumberUtils
 import org.junit.After
 import org.junit.Assert
@@ -19,7 +18,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun target() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         Assert.assertEquals("number", fixture.target)
@@ -29,7 +27,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun assertEqual() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         // happy path
@@ -37,14 +34,12 @@ class NumberCommandTest {
         Assert.assertTrue(fixture.assertEqual("0", "0").isSuccess)
         Assert.assertTrue(fixture.assertEqual("195", "1567").failed())
         Assert.assertTrue(fixture.assertEqual("3451", "152").failed())
-
     }
 
     @Test
     @Throws(Exception::class)
     fun assertGreater() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         Assert.assertTrue(fixture.assertGreater("2", "1").isSuccess)
@@ -57,7 +52,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun assertGreaterOrEqual() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         Assert.assertTrue(fixture.assertGreaterOrEqual("1", "1").isSuccess)
@@ -70,7 +64,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun assertLesser() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         Assert.assertTrue(fixture.assertLesser("1", "2").isSuccess)
@@ -83,7 +76,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun assertLesserOrEqual() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         Assert.assertTrue(fixture.assertLesserOrEqual("1", "2").isSuccess)
@@ -96,7 +88,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun assertBetween() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         Assert.assertTrue(fixture.assertBetween("5", "1", "10").isSuccess)
@@ -109,7 +100,6 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun average() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
         val varName = "var1"
@@ -142,7 +132,7 @@ class NumberCommandTest {
         Assert.assertEquals(-1.12689, NumberUtils.toDouble(context.getStringData(varName)), 00.000001)
 
         // wild wild west; expects non-number to be ignored
-        Assert.assertTrue(fixture.average(varName, "1,.2,3.00,004,-105.00,6a,7b,blakhas,,,,").isSuccess)
+        Assert.assertTrue(fixture.average(varName, "1,.2,3.00,004,-105.00,6a,7b,blackness,,,,").isSuccess)
         Assert.assertEquals(-12.1, NumberUtils.toDouble(context.getStringData(varName)), 0.000001)
 
         // mixing number types
@@ -153,12 +143,10 @@ class NumberCommandTest {
     @Test
     @Throws(Exception::class)
     fun testMax() {
-
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val varName = "var1"
+        val varName = "var2"
 
         // empty, null, blank
         try {
@@ -202,32 +190,31 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun testMin() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val varName = "var1"
+        val varName = "var3"
 
         // empty, null, blank
         try {
-            fixture.max(varName, null)
+            fixture.min(varName, null)
             Assert.fail("expects failure with null array")
         } catch (e: AssertionError) {
         }
 
         try {
-            fixture.max(varName, "")
+            fixture.min(varName, "")
             Assert.fail("expects failure with empty array")
         } catch (e: AssertionError) {
         }
 
         try {
-            fixture.max(varName, " ")
+            fixture.min(varName, " ")
             Assert.fail("expects failure with blank")
         } catch (e: AssertionError) {
         }
 
         try {
-            fixture.max(varName, "\t")
+            fixture.min(varName, "\t")
             Assert.fail("expects failure with only tab")
         } catch (e: AssertionError) {
         }
@@ -249,10 +236,9 @@ class NumberCommandTest {
     @Throws(Exception::class)
     fun testCeiling() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val varName = "var1"
+        val varName = "var4"
 
         // null/empty/blank
         try {
@@ -301,17 +287,15 @@ class NumberCommandTest {
             Assert.fail("expected failure due to blank value")
         } catch (e: AssertionError) {
         }
-
     }
 
     @Test
     @Throws(Exception::class)
     fun testFloor() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val variableName = "var1"
+        val variableName = "var5"
 
         // null/empty/blank
         try {
@@ -334,7 +318,6 @@ class NumberCommandTest {
             Assert.fail("expected failure due to blank value")
         } catch (e: AssertionError) {
         }
-
 
         // happy path
         context.setData(variableName, 1)
@@ -349,6 +332,11 @@ class NumberCommandTest {
         Assert.assertTrue(fixture.floor(variableName).isSuccess)
         Assert.assertEquals("0", context.getStringData(variableName))
 
+        // more test
+        context.setData(variableName, "34086577.45")
+        Assert.assertTrue(fixture.floor(variableName).isSuccess)
+        Assert.assertEquals("34086577", context.getStringData(variableName))
+
         // negative
         context.setData(variableName, -503.124)
         Assert.assertTrue(fixture.floor(variableName).isSuccess)
@@ -361,22 +349,20 @@ class NumberCommandTest {
             Assert.fail("expected failure due to blank value")
         } catch (e: AssertionError) {
         }
-
     }
 
     @Test
     @Throws(Exception::class)
-    fun testRound() {
+    fun testRoundTo() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val variableName = "var1"
+        val variableName = "var6"
 
         // null/empty/blank
         try {
             context.removeData(variableName)
-            fixture.round(variableName, "1")
+            fixture.roundTo(variableName, "1")
             Assert.fail("expected failure due to null value")
         } catch (e: AssertionError) {
         }
@@ -384,7 +370,7 @@ class NumberCommandTest {
 
         try {
             context.setData(variableName, "")
-            fixture.round(variableName, "1")
+            fixture.roundTo(variableName, "1")
             Assert.fail("expected failure due to empty value")
         } catch (e: AssertionError) {
         }
@@ -392,66 +378,158 @@ class NumberCommandTest {
 
         try {
             context.setData(variableName, " ")
-            fixture.round(variableName, "1")
+            fixture.roundTo(variableName, "1")
             Assert.fail("expected failure due to blank value")
         } catch (e: AssertionError) {
         }
 
         try {
             context.setData(variableName, 1)
-            fixture.round(variableName, "")
+            fixture.roundTo(variableName, "")
             Assert.fail("expected failure due to blank value")
         } catch (e: AssertionError) {
         }
 
         // happy path
         context.setData(variableName, 1)
-        Assert.assertTrue(fixture.round(variableName, "1").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "1").isSuccess)
         Assert.assertEquals(1.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
         context.setData(variableName, 1)
-        Assert.assertTrue(fixture.round(variableName, "0.1").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "0.1").isSuccess)
         Assert.assertEquals(1.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
         context.setData(variableName, 1)
-        Assert.assertTrue(fixture.round(variableName, "10").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "10").isSuccess)
         Assert.assertEquals(0.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
         context.setData(variableName, 56.00024)
-        Assert.assertTrue(fixture.round(variableName, "10").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "10").isSuccess)
         Assert.assertEquals(60.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
+        context.setData(variableName, 353.254)
+        Assert.assertTrue(fixture.roundTo(variableName, "90").isSuccess)
+        Assert.assertEquals(350.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
+
+        context.setData(variableName, 353.265)
+        Assert.assertTrue(fixture.roundTo(variableName, "0.00").isSuccess)
+        Assert.assertEquals(353.27, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
+
+        context.setData(variableName, 353.254)
+        Assert.assertTrue(fixture.roundTo(variableName, "0.01").isSuccess)
+        Assert.assertEquals(353.25, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
+
+        context.setData(variableName, 353.256)
+        Assert.assertTrue(fixture.roundTo(variableName, "1.00").isSuccess)
+        Assert.assertEquals(353.26, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
+
         context.setData(variableName, 56.00024)
-        Assert.assertTrue(fixture.round(variableName, "1").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "1").isSuccess)
         Assert.assertEquals(56.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
         context.setData(variableName, 0.0960)
-        Assert.assertTrue(fixture.round(variableName, "0.1").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "0.1").isSuccess)
         Assert.assertEquals(0.1, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
         // negative
         context.setData(variableName, -503.124)
-        Assert.assertTrue(fixture.round(variableName, "0.001").isSuccess)
+        Assert.assertTrue(fixture.roundTo(variableName, "0.001").isSuccess)
         Assert.assertEquals(-503.124, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
 
         // NaN
         try {
             context.setData(variableName, "not.a.number")
-            fixture.round(variableName, "1.0")
+            fixture.roundTo(variableName, "1.0")
+            Assert.fail("expected failure due to blank value")
+        } catch (e: AssertionError) {
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun testWhole() {
+        val fixture = NumberCommand()
+        fixture.init(context)
+
+        val variableName = "var7"
+
+        // null/empty/blank
+        try {
+            context.removeData(variableName)
+            fixture.whole(variableName)
+            Assert.fail("expected failure due to null value")
+        } catch (e: AssertionError) {
+        }
+
+        try {
+            context.setData(variableName, "")
+            fixture.whole(variableName)
+            Assert.fail("expected failure due to empty value")
+        } catch (e: AssertionError) {
+        }
+
+        try {
+            context.setData(variableName, " ")
+            fixture.whole(variableName)
             Assert.fail("expected failure due to blank value")
         } catch (e: AssertionError) {
         }
 
+        // happy path
+        context.setData(variableName, 1)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(1, NumberUtils.toInt(context.getStringData(variableName)))
+
+        context.setData(variableName, 353.465)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(353, NumberUtils.toInt(context.getStringData(variableName)))
+
+        context.setData(variableName, 353.565)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(353, NumberUtils.toInt(context.getStringData(variableName)))
+
+        context.setData(variableName, 0.0960)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(0, NumberUtils.toInt(context.getStringData(variableName)))
+
+        context.setData(variableName, 0.960)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(0, NumberUtils.toInt(context.getStringData(variableName)))
+
+        // extreme cases
+        context.setData(variableName, 249.9999999)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(249, NumberUtils.toInt(context.getStringData(variableName)))
+
+        context.setData(variableName, 249.5000000000001)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(249, NumberUtils.toInt(context.getStringData(variableName)))
+
+        context.setData(variableName, 249.00000001)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(249, NumberUtils.toInt(context.getStringData(variableName)))
+
+        // negative
+        context.setData(variableName, -503.624)
+        Assert.assertTrue(fixture.whole(variableName).isSuccess)
+        Assert.assertEquals(-503, NumberUtils.toInt(context.getStringData(variableName)))
+
+        // NaN
+        try {
+            context.setData(variableName, "not.a.number")
+            fixture.whole(variableName)
+            Assert.fail("expected failure due to blank value")
+        } catch (e: AssertionError) {
+        }
     }
 
     @Test
     @Throws(Exception::class)
     fun testIncrement() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val variableName = "var1"
+        val variableName = "var8"
 
         // null/empty/blank
         try {
@@ -498,17 +576,15 @@ class NumberCommandTest {
         context.setData(variableName, "0")
         Assert.assertTrue(fixture.increment(variableName, "0").isSuccess)
         Assert.assertEquals(0.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
-
     }
 
     @Test
     @Throws(Exception::class)
     fun testDecrement() {
         val fixture = NumberCommand()
-
         fixture.init(context)
 
-        val variableName = "var1"
+        val variableName = "var9"
 
         // null/empty/blank
         try {
@@ -555,14 +631,12 @@ class NumberCommandTest {
         context.setData(variableName, "0")
         Assert.assertTrue(fixture.decrement(variableName, "0").isSuccess)
         Assert.assertEquals(0.0, NumberUtils.toDouble(context.getStringData(variableName)), 0.0)
-
     }
 
     @Test
     fun testAdd() {
         val strings = TextUtils.toList("1,2,3,4,5,6,7,8,9,10", ",", true)
         val result = strings.foldRight(0.0, { s, acc -> NumberUtils.toDouble(s) + acc })
-        println("result = ${result}")
+        println("result = $result")
     }
-
 }

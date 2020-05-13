@@ -31,19 +31,19 @@ class SesCommand : BaseCommand() {
     override fun getTarget(): String = "aws.ses"
 
     fun sendTextMail(profile: String, to: String, subject: String, body: String) =
-        sendHtmlMail(profile, to, subject, body, true)
+            sendHtmlMail(profile, to, subject, body, true)
 
     fun sendHtmlMail(profile: String, to: String, subject: String, body: String) =
-        sendHtmlMail(profile, to, subject, body, false)
+            sendHtmlMail(profile, to, subject, body, false)
 
     private fun sendHtmlMail(profile: String, to: String, subject: String, body: String, sentAsPlainText: Boolean):
-        StepResult {
+            StepResult {
         requiresNotBlank(profile, "Invalid profile", profile)
         requiresNotBlank(to, "Invalid 'to' address", to)
         requiresNotBlank(subject, "Invalid subject", subject)
         requiresNotBlank(body, "Invalid mail content", body)
 
-        var content = OutputFileUtils.resolveContent(body, context, false)
+        val content = OutputFileUtils.resolveContent(body, context, false)
         val delim = context.textDelim
 
         try {
@@ -74,6 +74,6 @@ class SesCommand : BaseCommand() {
     private fun resolveSesSettings(context: ExecutionContext, profile: String): AwsSesSettings {
         val settings = AwsUtils.resolveAwsSesSettings(context, profile)
         requiresNotNull(settings, "Unable to resolve AWS credentials and/or AWS SES settings.")
-        return settings!!
+        return settings
     }
 }

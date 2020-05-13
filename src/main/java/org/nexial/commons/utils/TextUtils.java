@@ -18,10 +18,11 @@
 package org.nexial.commons.utils;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Array;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import javax.validation.constraints.NotNull;
 
@@ -30,12 +31,16 @@ import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.nexial.core.utils.ConsoleUtils;
 
 import static java.awt.event.KeyEvent.*;
 import static java.lang.Character.UnicodeBlock.SPECIALS;
 import static java.lang.System.lineSeparator;
+import static org.nexial.commons.utils.TextUtils.CleanNumberStrategy.CSV;
+import static org.nexial.commons.utils.TextUtils.CleanNumberStrategy.OCTAL;
 import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
 /**
@@ -52,6 +57,19 @@ public final class TextUtils {
     public static final String[] INLINE_BR = new String[]{"<br/>", "<br/>", "<br/>", "<br/>", "<br/>"};
 
     private static final Map<String, String> ESCAPE_HTML_MAP = initDefaultEscapeHtmlMapping();
+    private final static Map<String, String> CSV_SAFE_REPLACEMENT = TextUtils.toMap("=",
+                                                                                    " \n = ",
+                                                                                    " \r\n = ",
+                                                                                    " \r = ",
+                                                                                    " \t = ",
+                                                                                    " \n= ",
+                                                                                    " \r\n= ",
+                                                                                    " \r= ",
+                                                                                    " \t= ",
+                                                                                    "\n = ",
+                                                                                    "\r\n = ",
+                                                                                    "\r = ",
+                                                                                    "\t = ");
 
     /**
      * line break conversion strategies -- currently only two, namely (1)
@@ -88,6 +106,25 @@ public final class TextUtils {
 
             return text;
         }
+    }
+
+    public enum CleanNumberStrategy {
+        CSV(null, "£$%, \t"),
+        REAL("0123456789.E", null),
+        OCTAL("012345678", null),
+        NON_DIGITS("0123456789", null);
+
+        private final String keeps;
+        private final String removes;
+
+        CleanNumberStrategy(String keeps, String removes) {
+            this.keeps = keeps;
+            this.removes = removes;
+        }
+
+        public String getKeeps() { return keeps; }
+
+        public String getRemoves() { return removes; }
     }
 
     /**
@@ -161,6 +198,7 @@ public final class TextUtils {
         return StringUtils.substring(text, 0, position) + extra + StringUtils.substring(text, position);
     }
 
+    @NotNull
     public static Map<String, String> toMap(String delim, String... pairs) {
         Map<String, String> map = new LinkedHashMap<>();
 
@@ -174,6 +212,7 @@ public final class TextUtils {
         return map;
     }
 
+    @NotNull
     public static Map<String, String> toMap(String text, String pairDelim, String nameValueDelim) {
         Map<String, String> map = new LinkedHashMap<>();
 
@@ -194,7 +233,7 @@ public final class TextUtils {
     public static String[][] to2dArray(String text, String rowSeparator, String delim) {
         if (StringUtils.isEmpty(text)) { return new String[0][0]; }
 
-        // defautls
+        // defaults
         if (StringUtils.isEmpty(rowSeparator)) { rowSeparator = "\n"; }
         if (StringUtils.isEmpty(delim)) { delim = ","; }
 
@@ -252,7 +291,7 @@ public final class TextUtils {
     }
 
     /**
-     * tranform string to {@link List} (of String).  Use {@code delim} to determine the delimiter and {@code trim}
+     * transform string to {@link List} (of String).  Use {@code delim} to determine the delimiter and {@code trim}
      * to determine if the delimited list should be trimmed returned.
      */
     public static <T> List<T> toList(String text, String delim, ListItemConverter<T> itemConverter) {
@@ -274,9 +313,10 @@ public final class TextUtils {
     }
 
     /**
-     * tranform string to {@link List} (of String).  Use {@code delim} to determine the delimiter and {@code trim}
+     * transform string to {@link List} (of String).  Use {@code delim} to determine the delimiter and {@code trim}
      * to determine if the delimited list should be trimmed returned.
      */
+    @NotNull
     public static List<String> toList(String text, String delim, boolean trim) {
         List<String> list = new ArrayList<>();
         if (StringUtils.isEmpty(text) || StringUtils.isEmpty(delim)) { return list; }
@@ -334,7 +374,7 @@ public final class TextUtils {
     }
 
     /**
-     * tranform string to {@link List} (of String) without discounting consecutive delimiters.
+     * transform string to {@link List} (of String) without discounting consecutive delimiters.
      * Consecutive delimiters would render empty value instead.
      * Use {@code delim} to determine the delimiter and {@code trim}
      * to determine if the delimited list should be trimmed returned.
@@ -477,8 +517,7 @@ public final class TextUtils {
             sb.append(key).append(nameValueDelim).append(map.get(key)).append(pairDelim);
         }
         // remove last pairDelim
-        sb = sb.deleteCharAt(sb.length() - pairDelim.length());
-        return sb.toString();
+        return sb.deleteCharAt(sb.length() - pairDelim.length()).toString();
     }
 
     @NotNull
@@ -529,8 +568,7 @@ public final class TextUtils {
     public static String defaultIfBlank(String text) { return StringUtils.isBlank(text) ? null : text; }
 
     public static String initCap(String text) {
-        return StringUtils.isNotBlank(text) ?
-               text.substring(0, 1).toUpperCase() + text.substring(1, text.length()).toLowerCase() : "";
+        return StringUtils.isNotBlank(text) ? text.substring(0, 1).toUpperCase() + text.substring(1).toLowerCase() : "";
     }
 
     /**
@@ -549,15 +587,7 @@ public final class TextUtils {
         return StringUtils.replaceEach(text, INLINE_UNFRIENDLY_TEXT, INLINE_BR);
     }
 
-    /**
-     * find the string between the closest pair of <code >open</code> and <code >close</code>.  For example:
-     * <pre>
-     *     String a = "((mary had a ) ((little lamb))";
-     *     String b = TextUtils.substringBetweenClosestPair(a, "(", ")");
-     * </pre>
-     * <code >b</code> would be "mary had a ";
-     */
-    public static String substringBetweenFirstPair(String text, String open, String close) {
+    public static String substringBetweenFirstPair(String text, String open, String close, boolean includeSep) {
         if (StringUtils.isBlank(text)) { return null; }
         if (StringUtils.isEmpty(open)) { return null; }
         if (StringUtils.isEmpty(close)) { return null; }
@@ -568,7 +598,32 @@ public final class TextUtils {
         int indexClosestOpen = StringUtils.lastIndexOf(StringUtils.substring(text, 0, indexFirstClose), open);
         if (indexClosestOpen == -1) { return null; }
 
-        return StringUtils.substring(text, indexClosestOpen + 1, indexFirstClose);
+        String substring = StringUtils.substring(text, indexClosestOpen + 1, indexFirstClose);
+        return includeSep ? open + substring + close : substring;
+    }
+
+    /**
+     * find the string between the closest pair of <code >open</code> and <code >close</code>.  For example:
+     * <pre>
+     *     String a = "((mary had a ) ((little lamb))";
+     *     String b = TextUtils.substringBetweenClosestPair(a, "(", ")");
+     * </pre>
+     * <code >b</code> would be "mary had a ";
+     */
+    public static String substringBetweenFirstPair(String text, String open, String close) {
+        return substringBetweenFirstPair(text, open, close, false);
+    }
+
+    /**
+     * return new String that has {@code insert} after the {@code startWith} in {@code text}. Note that
+     * {@code startWith} must be the found from the beginning of {@code text}.
+     */
+    public static String insertAfter(String text, String startWith, String insert) {
+        if (StringUtils.isEmpty(text)) { return text; }
+        if (StringUtils.isEmpty(startWith)) { return text; }
+        if (StringUtils.isEmpty(insert)) { return text; }
+        return StringUtils.startsWith(text, startWith) ?
+               startWith + insert + StringUtils.substringAfter(text, startWith) : text;
     }
 
     /**
@@ -652,6 +707,49 @@ public final class TextUtils {
         return arr;
     }
 
+    /**
+     * convert {@literal array} into a {@literal String[]}. If {@literal array} is not an array (of any type), this
+     * method will return empty {@literal String[]}.
+     */
+    @NotNull
+    public static String[] toStringArray(Object array) {
+        if (array == null || !array.getClass().isArray()) { return new String[0]; }
+
+        int arrayLength = ArrayUtils.getLength(array);
+        String[] strings = new String[arrayLength];
+        for (int i = 0; i < arrayLength; i++) {
+            strings[i] = Objects.toString(Array.get(array, i));
+        }
+
+        return strings;
+    }
+
+    /**
+     * convert {@literal collection} into a {@literal List<String>}. If {@literal collection} is not a collection (of
+     * any type), this method will return empty {@literal List<String>}.
+     */
+    @NotNull
+    public static List<String> toStringList(Object collection) {
+        if (!(collection instanceof Collection)) { return new ArrayList<>(); }
+
+        List<String> strings = new ArrayList<>();
+        ((Collection) collection).forEach(item -> strings.add(Objects.toString(item)));
+        return strings;
+    }
+
+    /**
+     * convert {@literal map} into a {@literal Map<String,String>}. If {@literal map} is not an array (of any type),
+     * this method will return empty {@literal Map<String,String>}.
+     */
+    @NotNull
+    public static Map<String, String> toStringMap(Object map) {
+        if (!(map instanceof Map)) { return new HashMap<>(); }
+
+        Map<String, String> strings = new LinkedHashMap<>();
+        ((Map) map).forEach((key, value) -> strings.put(Objects.toString(key), Objects.toString(value)));
+        return strings;
+    }
+
     public static String removeFirst(String text, String remove) {
         if (StringUtils.isEmpty(text)) { return text; }
         if (StringUtils.isEmpty(remove)) { return text; }
@@ -665,16 +763,17 @@ public final class TextUtils {
     /**
      * remove all extraneous whitespaces, including space, tab, newline, carriage return so that {@code text} would
      * contain NO CONTIGUOUS whitespace.
-     *
-     * Note that this method will convert all whitespaces (non-printable) to space (ASCII 20), and remove space dups.
+     * <p>
+     * Note that this method will convert all whitespaces (non-printable) to space (ASCII 20), and remove space
+     * duplicates.
      */
     @NotNull
     public static String removeExcessWhitespaces(String text) {
         if (StringUtils.isEmpty(text)) { return ""; }
         if (StringUtils.isBlank(text)) { return " "; }
 
-        text = StringUtils.replaceAll(text, "\\s+", " ");
-        text = StringUtils.replaceAll(text, "  ", " ");
+        text = RegExUtils.replaceAll(text, "\\s+", " ");
+        text = RegExUtils.replaceAll(text, "  ", " ");
 
         return text;
     }
@@ -685,29 +784,28 @@ public final class TextUtils {
         if (!StringUtils.contains(name, "'")) { return "'" + name + "'"; }
         if (!StringUtils.contains(name, "\"")) { return "\"" + name + "\""; }
 
-        String substitue = "concat(";
+        String substitute = "concat(";
 
         while (StringUtils.isNotEmpty(name)) {
             int posStart = StringUtils.indexOfAny(name, '\'', '"');
             if (posStart == -1) {
-                substitue += "'" + name + "',";
+                substitute += "'" + name + "',";
                 break;
             }
 
             String quote = StringUtils.equals(StringUtils.substring(name, posStart, posStart + 1), "'") ?
                            "\"" : "'";
-            substitue += quote + StringUtils.substring(name, 0, posStart + 1) + quote + ",";
+            substitute += quote + StringUtils.substring(name, 0, posStart + 1) + quote + ",";
             name = StringUtils.substring(name, posStart + 1);
         }
 
-        return StringUtils.removeEnd(substitue, ",") + ")";
+        return StringUtils.removeEnd(substitute, ",") + ")";
     }
 
     public static String xpathNormalize(String text) {
         if (StringUtils.isBlank(text)) { return ""; }
 
-        text = StringUtils.trim(text);
-        text = StringUtils.replaceAll(text, "\\p{Space}", " ");
+        text = RegExUtils.replaceAll(StringUtils.trim(text), "\\p{Space}", " ");
         while (StringUtils.contains(text, "  ")) { text = StringUtils.replace(text, "  ", " "); }
 
         return text;
@@ -776,7 +874,7 @@ public final class TextUtils {
 
     /**
      * create HTML table with optional {@code tableStyleClass}.
-     *
+     * <p>
      * This implementation requires the same size of {@code headers} and {@code records}.  {@code headers} is thus
      * expected to <b>NOT TO BE EMPTY</b>, or no table HTML would be generated.
      */
@@ -861,41 +959,56 @@ public final class TextUtils {
     public static Map<String, String> loadProperties(String propFile) {
         if (!FileUtil.isFileReadable(propFile, 5)) { return null; }
 
-        String projectPropsContent;
-        try {
-            projectPropsContent = FileUtils.readFileToString(new File(propFile), DEF_FILE_ENCODING);
-        } catch (IOException e) {
-            ConsoleUtils.error("Unable to read project properties " + propFile + ": " + e.getMessage());
-            return null;
-        }
-
         Map<String, String> properties = new LinkedHashMap<>();
-        try (FileInputStream inStream = FileUtils.openInputStream(new File(propFile))) {
-            final String propsContent = projectPropsContent;
+        // String projectPropsContent;
+        try {
 
-            Properties projectProps = new Properties();
-            projectProps.load(inStream);
+            List<String> lines = FileUtils.readLines(new File(propFile), DEF_FILE_ENCODING);
+            for (int i = 0; i < lines.size(); i++) {
+                String line = lines.get(i);
+                if (StringUtils.isBlank(line)) { continue; }
+                if (StringUtils.startsWith(line.trim(), "#") || StringUtils.startsWith(line.trim(), "!")) { continue; }
 
-            projectProps.forEach((name, value) -> {
-                String strName = (String) name;
-                String strValue = (String) value;
+                if (StringUtils.endsWith(line, "\\")) {
+                    line = StringUtils.removeEnd(line, "\\");
 
-                if (StringUtils.contains(strValue, "=")) {
-                    // this might be a case of original name containing space, like "hello world=goodbye"
-
-                    // let's make sure
-                    if (!StringUtils.contains(propsContent, strName + "=" + strValue)) {
-                        // confirmed!
-                        strName += " " + StringUtils.substringBefore(strValue, "=");
-                        strValue = StringUtils.substringAfter(strValue, "=");
+                    // handle continuation
+                    for (int j = i + 1; j < lines.size(); j++) {
+                        String continuation = StringUtils.stripStart(lines.get(j), " \t");
+                        if (StringUtils.endsWith(continuation, "\\")) {
+                            line += StringUtils.removeEnd(continuation, "\\");
+                        } else {
+                            line += continuation;
+                            i = j;
+                            break;
+                        }
                     }
                 }
 
-                // store for later reference
-                properties.put(strName, strValue);
-            });
+                int posEqual = StringUtils.indexOf(line, "=");
+                int posColon = StringUtils.indexOf(line, ":");
+                if (posEqual == -1) {
+                    if (posColon == -1) {
+                        // not name/value pair
+                        properties.put(line, "");
+                    } else {
+                        properties.put(StringUtils.substringBefore(line, ":"), StringUtils.substringAfter(line, ":"));
+                    }
+                } else {
+                    if (posColon == -1) {
+                        properties.put(StringUtils.substringBefore(line, "="), StringUtils.substringAfter(line, "="));
+                    } else {
+                        String delim = posEqual < posColon ? "=" : ":";
+                        properties.put(StringUtils.substringBefore(line, delim),
+                                       StringUtils.substringAfter(line, delim));
+                    }
+                }
+            }
+
+            // projectPropsContent = FileUtils.readFileToString(new File(propFile), DEF_FILE_ENCODING);
         } catch (IOException e) {
-            ConsoleUtils.error("Unable to load System properties via " + propFile + ": " + e.getMessage());
+            ConsoleUtils.error("Unable to read project properties " + propFile + ": " + e.getMessage());
+            return null;
         }
 
         return properties;
@@ -906,7 +1019,7 @@ public final class TextUtils {
      * <li>It starts with '+' symbol, follow by country code (i.e. '1' for US)</li>
      * <li>All letters are converted to number, according to traditional phone number dial pad</li>
      * </ol>
-     *
+     * <p>
      * In addition, it checks that {@literal phoneNumber} must be 10 characters or more.
      */
     @NotNull
@@ -1001,6 +1114,22 @@ public final class TextUtils {
         return phoneNumber;
     }
 
+    public static String removeOnly(String text, String removeTheseOnly) {
+        if (StringUtils.isEmpty(removeTheseOnly)) { return text; }
+        if (StringUtils.isEmpty(text)) { return text; }
+
+        char[] removeChars = removeTheseOnly.toCharArray();
+        Character[] remove = new Character[removeChars.length];
+        Arrays.setAll(remove, i -> removeChars[i]);
+        List<Character> distinctRemove = Arrays.stream(remove).distinct().collect(Collectors.toList());
+
+        StringBuilder buffer = new StringBuilder();
+        char[] chars = text.toCharArray();
+        for (char c : chars) { if (!distinctRemove.contains(c)) { buffer.append(c); } }
+
+        return buffer.toString();
+    }
+
     public static String keepOnly(String text, String keepTheseOnly) {
         if (StringUtils.isEmpty(keepTheseOnly)) { return text; }
         if (StringUtils.isEmpty(text)) { return text; }
@@ -1022,18 +1151,43 @@ public final class TextUtils {
         StringBuilder csvBuffer = new StringBuilder();
         values.forEach(row -> {
             StringBuilder rowBuffer = new StringBuilder();
-            row.forEach(cell -> rowBuffer.append(cell).append(delim));
+            row.forEach(cell -> rowBuffer.append(cell.contains(delim) ? StringUtils.wrapIfMissing(cell, "\"") : cell)
+                                         .append(delim));
             csvBuffer.append(StringUtils.removeEnd(rowBuffer.toString(), delim)).append(recordDelim);
         });
         return csvBuffer.toString();
     }
 
-    public static String base64encoding(String plain) {
+    @NotNull
+    public static String csvSafe(String text, String delim, boolean oneLine) {
+        if (StringUtils.isBlank(text)) { return text; }
+
+        AtomicReference<String> safe = new AtomicReference<>(text);
+        if (oneLine) {
+            CSV_SAFE_REPLACEMENT.forEach((find, replace) -> safe.set(StringUtils.replace(safe.get(), find, replace)));
+            safe.set(StringUtils.replace(safe.get(), "\r", ""));
+            safe.set(StringUtils.replace(safe.get(), "\n", " "));
+            safe.set(StringUtils.replace(safe.get(), "\t", " "));
+        }
+
+        String safeText = safe.get();
+        if (!TextUtils.isBetween(safeText, "\"", "\"") && StringUtils.contains(safeText, delim)) {
+            safeText = "\"" + safeText + "\"";
+        }
+
+        return safeText;
+    }
+
+    public static String base64encode(String plain) {
         return StringUtils.isEmpty(plain) ? plain : Base64.getEncoder().encodeToString(plain.getBytes());
     }
 
-    public static String base64decoding(String encoded) {
+    public static String base64decode(String encoded) {
         return StringUtils.isEmpty(encoded) ? encoded : new String(Base64.getDecoder().decode(encoded.getBytes()));
+    }
+
+    public static byte[] base64decodeAsBytes(String encoded) {
+        return StringUtils.isEmpty(encoded) ? new byte[0] : Base64.getDecoder().decode(encoded.getBytes());
     }
 
     public static String demarcate(String text, int markPosition, String delim) {
@@ -1047,6 +1201,66 @@ public final class TextUtils {
         while (seekPos < text.length()) {
             text = text.substring(0, seekPos) + delim + text.substring(seekPos);
             seekPos += markPosition + delimLength;
+        }
+
+        return text;
+    }
+
+    public static String cleanNumber(String text, CleanNumberStrategy howToClean) {
+        text = StringUtils.trim(text);
+        if (StringUtils.isBlank(text)) { return "0"; }
+
+        // in case start with - or +
+        boolean isNegative = StringUtils.startsWith(text, "-");
+        if (isNegative) { text = StringUtils.removeStart(text, "-"); }
+
+        // remove characters not suitable to represent number
+        if (howToClean != null) {
+            if (howToClean == CSV) { text = StringUtils.unwrap(StringUtils.unwrap(text, "'"), "\""); }
+            if (howToClean.removes != null) { text = removeOnly(text, howToClean.removes); }
+            if (howToClean.keeps != null) { text = keepOnly(text, howToClean.keeps); }
+        }
+
+        // remove leading zero's
+        if (howToClean != OCTAL) { text = RegExUtils.removeFirst(text, "^0{1,}"); }
+
+        if (StringUtils.isBlank(text)) { return "0"; }
+
+        // transform .001 to 0.001
+        if (StringUtils.startsWith(text, ".")) { text = "0" + text; }
+
+        // put negative sign back
+        if (isNegative) { text = "-" + text; }
+
+        // we still good?
+        if (!NumberUtils.isCreatable(text)) {throw new IllegalArgumentException("'" + text + " is not a valid number");}
+
+        // we good
+        return text;
+    }
+
+    public static String decorateTextRange(String text,
+                                           String startsFrom,
+                                           String endsWith,
+                                           String decorateStart,
+                                           String decorateEnd) {
+        if (StringUtils.isEmpty(text) ||
+            StringUtils.isEmpty(startsFrom) ||
+            StringUtils.isEmpty(endsWith) ||
+            StringUtils.isEmpty(decorateStart) ||
+            StringUtils.isEmpty(decorateEnd)) { return text; }
+
+        int startPos = text.indexOf(startsFrom);
+        while (startPos != -1) {
+            int endPos = text.indexOf(endsWith, startPos + startsFrom.length());
+            if (endPos == -1) { break; }
+
+            text = text.substring(0, startPos + startsFrom.length()) +
+                   decorateStart +
+                   text.substring(startPos + startsFrom.length(), endPos) +
+                   decorateEnd +
+                   text.substring(endPos);
+            startPos = text.indexOf(startsFrom, endPos + decorateEnd.length() + decorateEnd.length());
         }
 
         return text;

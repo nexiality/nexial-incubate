@@ -25,13 +25,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.dbcp2.BasicDataSource;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.aspectj.util.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
+import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.plugins.db.SqlComponent.Type;
 import org.nexial.core.utils.ConsoleUtils;
@@ -42,7 +45,10 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.StatementCallback;
 import org.springframework.jdbc.core.support.JdbcDaoSupport;
 
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.NL;
+import static org.nexial.core.NexialConst.Rdbms.*;
+import static org.nexial.core.SystemVariables.getDefaultBool;
+import static org.nexial.core.SystemVariables.getDefaultInt;
 
 /**
  * a <b>VERY</b> basic and stripped down version of data extraction via SQL statements or stored procedure.  This class
@@ -50,21 +56,30 @@ import static org.nexial.core.NexialConst.*;
  * fulfillment of requirement.
  */
 public class SimpleExtractionDao extends JdbcDaoSupport {
+    private static final String MSG_NULL_JDBC = "Unable to resolve data access; contain Nexial Support team";
+
     protected String treatNullAs = DEF_TREAT_NULL_AS;
     protected Connection transactedConnection;
     protected Boolean autoCommit;
     protected ExecutionContext context;
 
-    protected class JdbcResultExtractor
-        implements ResultSetExtractor<JdbcResult>, StatementCallback<JdbcResult> {
+    protected class JdbcResultExtractor implements ResultSetExtractor<JdbcResult>, StatementCallback<JdbcResult> {
         private JdbcResult result;
         private File file;
+        private QueryResultExporter exporter;
 
         public JdbcResultExtractor(JdbcResult result) { this.result = result; }
 
         public JdbcResultExtractor(JdbcResult result, File file) {
             this.result = result;
             this.file = file;
+            // this.exporter = new CsvExporter(context, treatNullAs, true)
+        }
+
+        public JdbcResultExtractor(JdbcResult result, File file, QueryResultExporter exporter) {
+            this.result = result;
+            this.file = file;
+            this.exporter = exporter;
         }
 
         public JdbcResult getResult() { return result; }
@@ -76,14 +91,16 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
             if (result == null) { throw new IllegalArgumentException("null result found"); }
 
             if (rs == null) {
-                result.setError("Unable to retrieve query resultset; Query execution possibly did not complete");
+                result.setError("Unable to retrieve query result; Query execution possibly did not complete");
                 return result;
             }
 
             int rowsAffected = rs.getStatement().getUpdateCount();
             if (rowsAffected != -1) { result.setRowCount(rowsAffected); }
 
-            return (file != null) ? resultToFile(rs, result, file) : resultToListOfMap(rs, result);
+            if (file == null) { return resultToListOfMap(rs, result); }
+            if (exporter == null) { return resultToCSV(rs, result, file); }
+            return exporter.export(rs, result, file);
         }
 
         @Override
@@ -98,19 +115,38 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
             }
 
             String sql = result.getSql();
+            boolean isRollback = result.getSqlType() != null && result.getSqlType().isRollback();
             try {
                 if (stmt.execute(sql)) {
                     ResultSet rs = stmt.getResultSet();
-                    return file != null ? resultToFile(rs, result, file) : packData(resultToListOfMap(rs, result));
+
+                    // esp. treatment when there's no resultset to process
+                    if (rs == null || rs.isClosed()) { return processNoResultset(stmt, isRollback); }
+
+                    if (file == null) { return packData(resultToListOfMap(rs, result)); }
+                    if (exporter == null) { return resultToCSV(rs, result, file); }
+                    if (isRollback) { result.setRolledBack(true); }
+                    return exporter.export(rs, result, file);
                 } else {
-                    int rowsAffected = stmt.getUpdateCount();
-                    if (rowsAffected != -1) { result.setRowCount(rowsAffected); }
-                    return result;
+                    return processNoResultset(stmt, isRollback);
                 }
             } catch (SQLException | DataAccessException e) {
-                result.setError("Error occurred when executing '" + sql + "': " + e.getMessage());
+                if (context.isVerbose()) { e.printStackTrace(); }
+                result.setError("Error occurred when executing '" +
+                                sql +
+                                "': " +
+                                ExceptionUtils.getRootCauseMessage(e));
                 return result;
+            } finally {
+                if (isRollback) { stmt.close(); }
             }
+        }
+
+        protected JdbcResult processNoResultset(Statement stmt, boolean isRollback) throws SQLException {
+            int rowsAffected = stmt.getUpdateCount();
+            if (rowsAffected != -1) { result.setRowCount(rowsAffected); }
+            if (isRollback) { result.setRolledBack(true); }
+            return result;
         }
     }
 
@@ -121,26 +157,7 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
     public JdbcResult executeSql(String sql, File saveTo) {
         long startTime = System.currentTimeMillis();
         JdbcResult result = new JdbcResult(sql);
-
-        JdbcTemplate jdbc = getJdbcTemplate();
-        JdbcResultExtractor extractor = new JdbcResultExtractor(result, saveTo);
-
-        if (isAutoCommit()) { return jdbc.execute(extractor).setTiming(startTime); }
-
-        initTransactedConnection();
-
-        // stored procedure?
-        Type sqlType = result.getSqlType();
-        if (sqlType != null && sqlType.isStoredProcedure()) {
-            return executeStoredProcedure(transactedConnection, extractor).setTiming(startTime);
-        }
-
-        try (Statement statement = transactedConnection.createStatement()) {
-            return extractor.doInStatement(statement).setTiming(startTime);
-        } catch (SQLException e) {
-            result.setError("Error executing " + sql + ": " + e.getMessage());
-            return result.setTiming(startTime);
-        }
+        return executeAndExtract(sql, result, new JdbcResultExtractor(result, saveTo)).setTiming(startTime);
     }
 
     protected JdbcResult executeStoredProcedure(Connection connection, JdbcResultExtractor extractor) {
@@ -184,8 +201,8 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
                     varName = context.replaceTokens(varName);
                 }
 
-                ConsoleUtils.log("Executing '" + StringUtils.defaultIfEmpty(varName, "UNNAMED QUERY") +
-                                 "' - " + query);
+                ConsoleUtils.log("Executing" + (StringUtils.isNotEmpty(varName) ? " '" + varName + "'" : "") + " - " +
+                                 query);
 
                 JdbcResult result = executeSql(query, null);
 
@@ -208,15 +225,16 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
         });
 
         if (!isAutoCommit()) {
-            initTransactedConnection();
-
             try {
-                transactedConnection.commit();
+                if (!explicitCommit.get() && !explicitRollback.get()) {
+                    initTransactedConnection();
+                    transactedConnection.commit();
+                }
             } catch (SQLException e) {
                 // this might fail since explicit commit/rollback was performed earlier
                 if (explicitCommit.get() || explicitRollback.get()) {
-                    ConsoleUtils.log("Possibly benigh error found when committing current transaction - " +
-                                     e.getErrorCode() + " " + e.getMessage() + "\n" +
+                    ConsoleUtils.log("Possibly benign error found when committing current transaction - " +
+                                     e.getErrorCode() + " " + e.getMessage() + NL +
                                      "An explicit COMMIT or ROLLBACK was PREVIOUSLY EXECUTED IN THIS TRANSACTION");
                 } else {
                     outcome.setError(e.getErrorCode() + " " + e.getMessage());
@@ -241,7 +259,8 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
     }
 
     protected List<Map<String, String>> pack(List<Map<String, String>> results) {
-        if (context == null || !context.getBooleanData(OPT_INCLUDE_PACK_SINGLE_ROW, DEF_INCLUDE_PACK_SINGLE_ROW)) {
+        if (context == null ||
+            !context.getBooleanData(OPT_INCLUDE_PACK_SINGLE_ROW, getDefaultBool(OPT_INCLUDE_PACK_SINGLE_ROW))) {
             return results;
         }
 
@@ -257,13 +276,87 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
         return results;
     }
 
+    protected JdbcResult importResults(SqlComponent sql, SimpleExtractionDao dao, TableSqlGenerator tableGenerator) {
+        long startTime = System.currentTimeMillis();
+
+        String query = sql.getSql();
+        JdbcResult result = new JdbcResult(query);
+
+        JdbcTemplate jdbc = getJdbcTemplate();
+        if (jdbc == null) { throw new RuntimeException(MSG_NULL_JDBC); }
+
+        Integer rowsImported = jdbc.query(query, rs -> {
+            if (!rs.next()) {
+                result.setError("Unable to retrieve query result; Query execution possibly did not complete");
+                return -1;
+            }
+
+            // 1. generate DDL for target table
+            ResultSetMetaData metaData = rs.getMetaData();
+            String ddl = tableGenerator.generateSql(metaData);
+            JdbcResult ddlResult = dao.executeSql(ddl, null);
+            if (ddlResult.hasError()) {
+                result.setError("Failed to create table via '" + ddl + "': " + ddlResult.getError());
+                return -1;
+            }
+
+            // 2. generate DML to import data to target
+            int rowCount = 0;
+            int rowsAffected = 0;
+            int importBufferSize = context.getIntData(IMPORT_BUFFER_SIZE, getDefaultInt(IMPORT_BUFFER_SIZE));
+            StringBuilder error = new StringBuilder();
+            StringBuilder inserts = new StringBuilder();
+            int numOfColumn = metaData.getColumnCount();
+
+            do {
+                inserts.append("INSERT INTO ").append(tableGenerator.getTable()).append(" VALUES (");
+                for (int i = 1; i <= numOfColumn; i++) {
+                    String data = rs.getString(i);
+                    if (rs.wasNull()) {
+                        data = "NULL";
+                    } else if (tableGenerator.isTextColumnType(metaData.getColumnType(i))) {
+                        data = "'" + StringUtils.replace(data, "'", "''") + "'";
+                    }
+                    inserts.append(data);
+                    if (i < numOfColumn) { inserts.append(","); }
+                }
+
+                inserts.append(");").append(NL);
+
+                rowCount++;
+
+                if (rowCount % importBufferSize == 0) {
+                    JdbcOutcome insertResults = dao.executeSqls(SqlComponent.toList(inserts.toString()));
+                    rowsAffected += insertResults.getRowsAffected();
+                    if (result.hasError()) { error.append(result.getError()).append(NL); }
+                    inserts = new StringBuilder();
+                }
+            } while (rs.next());
+
+            JdbcOutcome insertResults = dao.executeSqls(SqlComponent.toList(inserts.toString()));
+            rowsAffected += insertResults.getRowsAffected();
+            if (result.hasError()) { error.append(result.getError()).append(NL); }
+
+            if (error.length() > 0) { result.setError(error.toString()); }
+
+            return rowsAffected;
+        });
+
+        result.setRowCount(rowsImported == null ? -1 : rowsImported);
+        result.setTiming(startTime);
+
+        return result;
+    }
+
     protected void setAutoCommit(Boolean autoCommit) { this.autoCommit = autoCommit; }
 
     protected Boolean isAutoCommit() {
         return autoCommit != null ? autoCommit : ((BasicDataSource) getDataSource()).getDefaultAutoCommit();
     }
 
-    protected <T extends JdbcResult> T resultToFile(ResultSet rs, T result, File file) throws SQLException {
+    /** @deprecated use {@link CsvExporter} instead */
+    @Deprecated
+    protected <T extends JdbcResult> T resultToCSV(ResultSet rs, T result, File file) throws SQLException {
         if (rs == null || !rs.next()) { return result; }
 
         ResultSetMetaData metaData = rs.getMetaData();
@@ -304,7 +397,6 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
 
             result.setRowCount(rowCount);
             outputStream.flush();
-            outputStream.close();
         } catch (Throwable e) {
             result.setError(e.getMessage());
         }
@@ -318,7 +410,7 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
         List<Map<String, String>> rows = new ArrayList<>();
         ResultSetMetaData metaData = rs.getMetaData();
 
-        // recycle through all rows
+        // cycle through all rows
         do {
             Map<String, String> row = new LinkedHashMap<>();
 
@@ -336,10 +428,37 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
         return result;
     }
 
+    @NotNull
+    protected JdbcResult saveAsJSON(@NotNull String sql, @NotNull File output, boolean header) {
+        long startTime = System.currentTimeMillis();
+        JdbcResult result = new JdbcResult(sql);
+        JsonExporter exporter = new JsonExporter(context, treatNullAs, header);
+        return executeAndExtract(sql, result, new JdbcResultExtractor(result, output, exporter)).setTiming(startTime);
+    }
+
+    @NotNull
+    protected JdbcResult saveAsXML(@NotNull String sql, @NotNull File output, String root, String row, String cell) {
+        long startTime = System.currentTimeMillis();
+        JdbcResult result = new JdbcResult(sql);
+        XmlExporter exporter = new XmlExporter(context, treatNullAs, root, row, cell);
+        return executeAndExtract(sql, result, new JdbcResultExtractor(result, output, exporter)).setTiming(startTime);
+    }
+
+    @NotNull
+    protected JdbcResult saveAsEXCEL(@NotNull String sql, @NotNull File output, String sheet, String startAddress) {
+        long startTime = System.currentTimeMillis();
+        JdbcResult result = new JdbcResult(sql);
+        ExcelExporter exporter = new ExcelExporter(treatNullAs, true, sheet, new ExcelAddress(startAddress));
+        return executeAndExtract(sql, result, new JdbcResultExtractor(result, output, exporter)).setTiming(startTime);
+    }
+
     protected void initTransactedConnection() {
         try {
             if (transactedConnection == null || transactedConnection.isClosed()) {
-                transactedConnection = getJdbcTemplate().getDataSource().getConnection();
+                JdbcTemplate jdbc = getJdbcTemplate();
+                if (jdbc == null) { throw new RuntimeException(MSG_NULL_JDBC); }
+
+                transactedConnection = jdbc.getDataSource().getConnection();
                 if (transactedConnection == null) {
                     throw new InvalidDataAccessResourceUsageException(
                         "Unable to obtain database connection for transaction: null");
@@ -353,6 +472,38 @@ public class SimpleExtractionDao extends JdbcDaoSupport {
         } catch (SQLException e) {
             throw new InvalidDataAccessResourceUsageException("Unable to obtain database connection for transaction: " +
                                                               e.getMessage(), e);
+        }
+    }
+
+    @NotNull
+    protected JdbcResult executeAndExtract(@NotNull String sql, JdbcResult result, JdbcResultExtractor extractor) {
+        JdbcTemplate jdbc = getJdbcTemplate();
+        if (jdbc == null) { throw new RuntimeException(MSG_NULL_JDBC); }
+
+        if (isAutoCommit()) { return jdbc.execute(extractor); }
+
+        initTransactedConnection();
+
+        // stored procedure?
+        Type sqlType = result.getSqlType();
+        if (sqlType != null && sqlType.isStoredProcedure()) {
+            return executeStoredProcedure(transactedConnection, extractor);
+        }
+
+        try (Statement statement = transactedConnection.createStatement()) {
+            return extractor.doInStatement(statement);
+        } catch (SQLException e) {
+            result.setError("Error executing " + sql + ": " + e.getMessage());
+            return result;
+        } finally {
+            // if (sqlType != null && (sqlType.isCommit() || sqlType.isRollback())) {
+            if (sqlType != null && sqlType.isRollback()) {
+                try {
+                    transactedConnection.close();
+                } catch (SQLException e) {
+                    ConsoleUtils.error("Error when closing transaction: " + e.getMessage());
+                }
+            }
         }
     }
 }

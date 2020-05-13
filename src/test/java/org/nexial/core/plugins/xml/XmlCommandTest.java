@@ -17,6 +17,9 @@
 
 package org.nexial.core.plugins.xml;
 
+import java.io.File;
+
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.After;
 import org.junit.Assert;
@@ -26,7 +29,30 @@ import org.nexial.commons.utils.ResourceUtils;
 import org.nexial.core.model.MockExecutionContext;
 import org.nexial.core.model.StepResult;
 
+import static java.io.File.separator;
+import static org.apache.commons.lang3.SystemUtils.JAVA_IO_TMPDIR;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+
 public class XmlCommandTest {
+    String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                 "<CATALOG>\n" +
+                 "    <CD>\n" +
+                 "        <TITLE>Empire Burlesque</TITLE>\n" +
+                 "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                 "        <COUNTRY>USA</COUNTRY>\n" +
+                 "        <COMPANY>Columbia</COMPANY>\n" +
+                 "        <PRICE>10.90</PRICE>\n" +
+                 "        <YEAR>1985</YEAR>\n" +
+                 "    </CD>\n" +
+                 "    <CD>\n" +
+                 "        <TITLE>Eros</TITLE>\n" +
+                 "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                 "        <COUNTRY>EU</COUNTRY>\n" +
+                 "        <COMPANY>BMG</COMPANY>\n" +
+                 "        <PRICE>9.90</PRICE>\n" +
+                 "        <YEAR>1997</YEAR>\n" +
+                 "    </CD>\n" +
+                 "</CATALOG>\n";
     private MockExecutionContext context;
 
     @Before
@@ -447,6 +473,1501 @@ public class XmlCommandTest {
         XmlCommand fixture = new XmlCommand();
         fixture.init(context);
         Assert.assertTrue(fixture.assertCorrectness(xml, schema).isSuccess());
+    }
+
+    @Test
+    public void append_text() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.append(xml, "//CATALOG/CD/TITLE", " Joker", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque Joker</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros Joker</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void append_element() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add multiple element
+        StepResult result = fixture.append(xml, "//CATALOG/CD/TITLE",
+                                           "<SUBTITLE>Joker</SUBTITLE><SEASON>First</SEASON>",
+                                           "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            Empire Burlesque\n" +
+                            "            <SUBTITLE>Joker</SUBTITLE>\n" +
+                            "            <SEASON>First</SEASON>\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            Eros\n" +
+                            "            <SUBTITLE>Joker</SUBTITLE>\n" +
+                            "            <SEASON>First</SEASON>\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void append_text_element_again_text() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add content and then element, and then again text content
+        StepResult result = fixture.append(xml, "//CATALOG/CD/TITLE", " - New Edition", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque - New Edition</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros - New Edition</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.append(newXml,
+                                "//CATALOG/CD/TITLE",
+                                "<SUBTITLE>Bigger, Stronger, Faster</SUBTITLE>",
+                                "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            Empire Burlesque - New Edition\n" +
+                            "            <SUBTITLE>Bigger, Stronger, Faster</SUBTITLE>\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            Eros - New Edition\n" +
+                            "            <SUBTITLE>Bigger, Stronger, Faster</SUBTITLE>\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.append(newXml, "//CATALOG/CD/TITLE", "Collector's Favorite!", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            Empire Burlesque - New Edition\n" +
+                            "            <SUBTITLE>Bigger, Stronger, Faster</SUBTITLE>\n" +
+                            "            Collector's Favorite!\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            Eros - New Edition\n" +
+                            "            <SUBTITLE>Bigger, Stronger, Faster</SUBTITLE>\n" +
+                            "            Collector's Favorite!\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void append_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE currency=\"USD\">10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE currency=\"IND\">9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.append(xml, "//CATALOG/CD/PRICE/@currency", ",SGD", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"USD,SGD\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE currency=\"IND,SGD\">9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void prepend_text() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.prepend(xml, "//CATALOG/CD/TITLE", "Reader's Digest - ", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Reader's Digest - Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Reader's Digest - Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void prepend_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE currency=\"USD\">10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE currency=\"IND\">9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.prepend(xml, "//CATALOG/CD/PRICE/@currency", "BITCOIN,", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"BITCOIN,USD\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE currency=\"BITCOIN,IND\">9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void replace_text() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.replace(xml, "//CATALOG/CD/YEAR", "UNKNOWN", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        UNKNOWN\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        UNKNOWN\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void prepend_text_element_multipleElement() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add content and then element, and then again text content
+        StepResult result = fixture.prepend(xml, "//CATALOG/CD/TITLE", "Guardian: ", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Guardian: Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Guardian: Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.prepend(newXml, "//CATALOG/CD/TITLE", "<AWARD>Bookworm Recommends</AWARD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "            Guardian: Empire Burlesque\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "            Guardian: Eros\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.prepend(newXml, "//CATALOG/CD[position()=1]/TITLE",
+                                 "<AWARD>Miami Herald</AWARD><AWARD>Laureus Sports</AWARD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            <AWARD>Miami Herald</AWARD>\n" +
+                            "            <AWARD>Laureus Sports</AWARD>\n" +
+                            "            <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "            Guardian: Empire Burlesque\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>\n" +
+                            "            <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "            Guardian: Eros\n" +
+                            "        </TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void replace_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE currency=\"USD\">10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE currency=\"IND\">9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.replace(xml, "//CATALOG/CD/PRICE/@currency", "bitcoin", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE bitcoin=\"USD\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE bitcoin=\"IND\">9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void replace_multiple() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add content and then element, and then again text content
+        StepResult result = fixture.replace(xml, "//CATALOG/CD", "<CD><MESSAGE>Not available</MESSAGE></CD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <MESSAGE>Not available</MESSAGE>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <MESSAGE>Not available</MESSAGE>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.replace(newXml, "//CATALOG/CD/MESSAGE", "Not available at this time", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>Not available at this time</CD>\n" +
+                            "    <CD>Not available at this time</CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.replace(newXml, "//CATALOG/CD[position()=1]", "<CD id=\"123\">Not available</CD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD id=\"123\">Not available</CD>\n" +
+                            "    <CD>Not available at this time</CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void delete_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST alive=\"no\">Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE>10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE>9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.delete(xml, "//CATALOG/CD[ ARTIST[@alive=\"no\"] ]", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.delete(xml, "//CATALOG/CD/ARTIST[@alive=\"no\"]/@alive", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void delete_element() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST alive=\"no\">Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE>10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE>9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.delete(xml, "//CATALOG/CD/*[name() != 'TITLE' and name() != 'ARTIST']", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST alive=\"no\">Bob Dylan</ARTIST>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void clear_element() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST alive=\"no\">Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE>10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE>9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.clear(xml, "//CATALOG/CD/*[name() != 'TITLE' and name() != 'ARTIST']", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST alive=\"no\">Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY />\n" +
+                            "        <COMPANY />\n" +
+                            "        <PRICE />\n" +
+                            "        <YEAR />\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST alive=\"yes\">Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY />\n" +
+                            "        <COMPANY />\n" +
+                            "        <PRICE />\n" +
+                            "        <YEAR />\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.clear(xml, "//CATALOG/CD", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD />\n" +
+                            "    <CD />\n" +
+                            "</CATALOG>", newXml);
+
+    }
+
+    @Test
+    public void insertAfter_text_element_multipleElement() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add content and then element, and then again text content
+        StepResult result = fixture.insertAfter(xml, "//CATALOG/CD[position()=2]", "MIAMI AWARDS", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    MIAMI AWARDS\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.insertAfter(newXml, "//CATALOG/CD/ARTIST", "<AWARD>Bookworm Recommends</AWARD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    MIAMI AWARDS\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.insertAfter(newXml, "//CATALOG/CD[position()=1]/ARTIST",
+                                     "<AWARD>Miami Herald</AWARD><AWARD>Laureus Sports</AWARD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <AWARD>Miami Herald</AWARD>\n" +
+                            "        <AWARD>Laureus Sports</AWARD>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    MIAMI AWARDS\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void insertAfter_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE currency=\"USD\">10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.insertAfter(xml, "//CATALOG/CD/PRICE/@currency", "city", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"USD\" city=\"\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.insertAfter(newXml, "//CATALOG/CD/PRICE/@currency", "city=NYC", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"USD\" city=\"NYC\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void insertBefore_text_element_multipleElement() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add content and then element, and then again text content
+        StepResult result = fixture.insertBefore(xml, "//CATALOG/CD[position()=1]", "MIAMI AWARDS", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    MIAMI AWARDS\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.insertBefore(newXml, "//CATALOG/CD/ARTIST", "<AWARD>Bookworm Recommends</AWARD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    MIAMI AWARDS\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.insertBefore(newXml, "//CATALOG/CD[position()=1]/ARTIST",
+                                      "<AWARD>Miami Herald</AWARD><AWARD>Laureus Sports</AWARD>", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    MIAMI AWARDS\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <AWARD>Miami Herald</AWARD>\n" +
+                            "        <AWARD>Laureus Sports</AWARD>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE>10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <AWARD>Bookworm Recommends</AWARD>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE>9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void insertBefore_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE currency=\"USD\">10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.insertBefore(xml, "//CATALOG/CD/PRICE/@currency", "city", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"USD\" city=\"\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.insertBefore(newXml, "//CATALOG/CD/PRICE/@currency", "city=NYC", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"USD\" city=\"NYC\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void replaceIn_attribute() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "<CATALOG>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Empire Burlesque</TITLE>\n" +
+                     "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                     "        <COUNTRY>USA</COUNTRY>\n" +
+                     "        <COMPANY>Columbia</COMPANY>\n" +
+                     "        <PRICE currency=\"USD\">10.90</PRICE>\n" +
+                     "        <YEAR>1985</YEAR>\n" +
+                     "    </CD>\n" +
+                     "    <CD>\n" +
+                     "        <TITLE>Eros</TITLE>\n" +
+                     "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                     "        <COUNTRY>EU</COUNTRY>\n" +
+                     "        <COMPANY>BMG</COMPANY>\n" +
+                     "        <PRICE currency=\"IND\">9.90</PRICE>\n" +
+                     "        <YEAR>1997</YEAR>\n" +
+                     "    </CD>\n" +
+                     "</CATALOG>\n";
+
+        StepResult result = fixture.replaceIn(xml, "//CATALOG/CD/PRICE/@currency", "bitcoin", "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Empire Burlesque</TITLE>\n" +
+                            "        <ARTIST>Bob Dylan</ARTIST>\n" +
+                            "        <COUNTRY>USA</COUNTRY>\n" +
+                            "        <COMPANY>Columbia</COMPANY>\n" +
+                            "        <PRICE currency=\"bitcoin\">10.90</PRICE>\n" +
+                            "        <YEAR>1985</YEAR>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <TITLE>Eros</TITLE>\n" +
+                            "        <ARTIST>Eros Ramazzotti</ARTIST>\n" +
+                            "        <COUNTRY>EU</COUNTRY>\n" +
+                            "        <COMPANY>BMG</COMPANY>\n" +
+                            "        <PRICE currency=\"bitcoin\">9.90</PRICE>\n" +
+                            "        <YEAR>1997</YEAR>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+    }
+
+    @Test
+    public void replaceIn_multiple() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        // test: add text content and then element
+        StepResult result = fixture.replaceIn(xml,
+                                              "//CATALOG/CD",
+                                              "<STATUS>404</STATUS>Not available at this time",
+                                              "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <STATUS>404</STATUS>\n" +
+                            "        Not available at this time\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <STATUS>404</STATUS>\n" +
+                            "        Not available at this time\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+        result = fixture.replaceIn(newXml, "//CATALOG/CD",
+                                   "<STATUS>404</STATUS><MESSAGE>Not available</MESSAGE>",
+                                   "newXml");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        newXml = context.getStringData("newXml");
+        System.out.println("newXml = " + newXml);
+        Assert.assertEquals("<CATALOG>\n" +
+                            "    <CD>\n" +
+                            "        <STATUS>404</STATUS>\n" +
+                            "        <MESSAGE>Not available</MESSAGE>\n" +
+                            "    </CD>\n" +
+                            "    <CD>\n" +
+                            "        <STATUS>404</STATUS>\n" +
+                            "        <MESSAGE>Not available</MESSAGE>\n" +
+                            "    </CD>\n" +
+                            "</CATALOG>", newXml);
+
+    }
+
+    @Test
+    public void assertSoapFaultCode_simple() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertSoapFaultCode("soap:Server",
+                                                        "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                                        "   <soap:Body>" +
+                                                        "       <soap:Fault>\n" +
+                                                        "           <faultcode>soap:Server</faultcode>\n" +
+                                                        "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                                        "           <detail>\n" +
+                                                        "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                                        "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                                        "               generation failed because of incorrect input \n" +
+                                                        "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                                        "               </CICSFault> \n" +
+                                                        "           </detail> \n" +
+                                                        "       </soap:Fault>\n" +
+                                                        "   </soap:Body>  \n" +
+                                                        "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+    }
+
+    @Test
+    public void assertSoapFaultCode_none() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertSoapFaultCode("(empty)",
+                                                        "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                                        "   <soap:Body>" +
+                                                        "       <soap:Fault>\n" +
+                                                        "           <detail>\n" +
+                                                        "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                                        "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                                        "               generation failed because of incorrect input \n" +
+                                                        "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                                        "               </CICSFault> \n" +
+                                                        "           </detail> \n" +
+                                                        "       </soap:Fault>\n" +
+                                                        "   </soap:Body>  \n" +
+                                                        "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        result = fixture.assertSoapFaultCode("",
+                                             "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                             "   <soap:Body>" +
+                                             "       <soap:Fault>\n" +
+                                             "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                             "           <detail>\n" +
+                                             "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                             "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                             "               generation failed because of incorrect input \n" +
+                                             "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                             "               </CICSFault> \n" +
+                                             "           </detail> \n" +
+                                             "       </soap:Fault>\n" +
+                                             "   </soap:Body>  \n" +
+                                             "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        result = fixture.assertSoapFaultCode("",
+                                             "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                             "   <soap:Body>" +
+                                             "       <soap:Fault>\n" +
+                                             "           <faultcode></faultcode>\n" +
+                                             "           <detail>\n" +
+                                             "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                             "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                             "               generation failed because of incorrect input \n" +
+                                             "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                             "               </CICSFault> \n" +
+                                             "           </detail> \n" +
+                                             "       </soap:Fault>\n" +
+                                             "   </soap:Body>  \n" +
+                                             "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        result = fixture.assertSoapFaultCode("",
+                                             "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                             "   <soap:Body>" +
+                                             "       <soap:Fault>\n" +
+                                             "           <faultcode><SomeOtherNode></SomeOtherNode></faultcode>\n" +
+                                             "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                             "           <detail>\n" +
+                                             "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                             "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                             "               generation failed because of incorrect input \n" +
+                                             "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                             "               </CICSFault> \n" +
+                                             "           </detail> \n" +
+                                             "       </soap:Fault>\n" +
+                                             "   </soap:Body>  \n" +
+                                             "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+    }
+
+    @Test
+    public void assertSoapFaultCode_fail() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        try {
+            fixture.assertSoapFaultCode("soap:Server",
+                                        "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                        "   <soap:Body>" +
+                                        "       <soap:Fault>\n" +
+                                        "           <faultcode/>\n" +
+                                        "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                        "           <detail>\n" +
+                                        "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                        "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                        "               generation failed because of incorrect input \n" +
+                                        "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                        "               </CICSFault> \n" +
+                                        "           </detail> \n" +
+                                        "       </soap:Fault>\n" +
+                                        "   </soap:Body>  \n" +
+                                        "</soap:Envelope>");
+            Assert.fail("expected AssertionError NOT thrown");
+        } catch (AssertionError e) {
+            System.out.println("EXPECTED: " + e.getMessage());
+        }
+
+        try {
+            fixture.assertSoapFaultCode("Server",
+                                        "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                        "   <soap:Body>" +
+                                        "       <soap:Fault>\n" +
+                                        "           <faultcode>soap:Server</faultcode>\n" +
+                                        "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                        "           <detail>\n" +
+                                        "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                        "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                        "               generation failed because of incorrect input \n" +
+                                        "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                        "               </CICSFault> \n" +
+                                        "           </detail> \n" +
+                                        "       </soap:Fault>\n" +
+                                        "   </soap:Body>  \n" +
+                                        "</soap:Envelope>");
+            Assert.fail("expected AssertionError NOT thrown");
+        } catch (AssertionError e) {
+            System.out.println("EXPECTED: " + e.getMessage());
+        }
+    }
+
+    @Test
+    public void assertSoapFaultString_simple() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertSoapFaultString("Conversion to SOAP failed",
+                                                          "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                                          "   <soap:Body>" +
+                                                          "       <soap:Fault>\n" +
+                                                          "           <faultcode>soap:Server</faultcode>\n" +
+                                                          "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                                          "           <detail>\n" +
+                                                          "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                                          "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                                          "               generation failed because of incorrect input \n" +
+                                                          "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                                          "               </CICSFault> \n" +
+                                                          "           </detail> \n" +
+                                                          "       </soap:Fault>\n" +
+                                                          "   </soap:Body>  \n" +
+                                                          "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+    }
+
+    @Test
+    public void assertSoapFaultString_none() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        StepResult result = fixture.assertSoapFaultString("(empty)",
+                                                          "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                                          "   <soap:Body>" +
+                                                          "       <soap:Fault>\n" +
+                                                          "           <detail>\n" +
+                                                          "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                                          "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                                          "               generation failed because of incorrect input \n" +
+                                                          "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                                          "               </CICSFault> \n" +
+                                                          "           </detail> \n" +
+                                                          "       </soap:Fault>\n" +
+                                                          "   </soap:Body>  \n" +
+                                                          "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        result = fixture.assertSoapFaultString("",
+                                               "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                               "   <soap:Body>" +
+                                               "       <soap:Fault>\n" +
+                                               "           <faultstring></faultstring>\n" +
+                                               "           <detail>\n" +
+                                               "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                               "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                               "               generation failed because of incorrect input \n" +
+                                               "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                               "               </CICSFault> \n" +
+                                               "           </detail> \n" +
+                                               "       </soap:Fault>\n" +
+                                               "   </soap:Body>  \n" +
+                                               "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        result = fixture.assertSoapFaultString("",
+                                               "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                               "   <soap:Body>" +
+                                               "       <soap:Fault>\n" +
+                                               "           <faultstring/>\n" +
+                                               "           <detail>\n" +
+                                               "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                               "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                               "               generation failed because of incorrect input \n" +
+                                               "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                               "               </CICSFault> \n" +
+                                               "           </detail> \n" +
+                                               "       </soap:Fault>\n" +
+                                               "   </soap:Body>  \n" +
+                                               "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        result = fixture.assertSoapFaultString("",
+                                               "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                               "   <soap:Body>" +
+                                               "       <soap:Fault>\n" +
+                                               "           <faultcode>CODE RED</faultcode>\n" +
+                                               "           <faultstring><SomeOtherNode></SomeOtherNode></faultstring>\n" +
+                                               "           <detail>\n" +
+                                               "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                               "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                               "               generation failed because of incorrect input \n" +
+                                               "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                               "               </CICSFault> \n" +
+                                               "           </detail> \n" +
+                                               "       </soap:Fault>\n" +
+                                               "   </soap:Body>  \n" +
+                                               "</soap:Envelope>");
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+    }
+
+    @Test
+    public void assertSoapFaultString_fail() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        try {
+            fixture.assertSoapFaultString("soap:Server",
+                                          "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                          "   <soap:Body>" +
+                                          "       <soap:Fault>\n" +
+                                          "           <faultcode/>\n" +
+                                          "           <faultstring/>\n" +
+                                          "           <detail>\n" +
+                                          "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                          "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                          "               generation failed because of incorrect input \n" +
+                                          "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                          "               </CICSFault> \n" +
+                                          "           </detail> \n" +
+                                          "       </soap:Fault>\n" +
+                                          "   </soap:Body>  \n" +
+                                          "</soap:Envelope>");
+            Assert.fail("expected AssertionError NOT thrown");
+        } catch (AssertionError e) {
+            System.out.println("EXPECTED: " + e.getMessage());
+        }
+
+        try {
+            fixture.assertSoapFaultString("Server",
+                                          "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+                                          "   <soap:Body>" +
+                                          "       <soap:Fault>\n" +
+                                          "           <faultcode>soap:Server</faultcode>\n" +
+                                          "           <faultstring>Conversion to SOAP failed</faultstring>\n" +
+                                          "           <detail>\n" +
+                                          "               <CICSFault xmlns:soap=\"http://www.ibm.com/software/htp/cics/WSFault\">\n" +
+                                          "               DFHPI1008 25/01/2010 14:16:50 IYCWZCFU 00340 XML\n" +
+                                          "               generation failed because of incorrect input \n" +
+                                          "               (CONTAINER_NOT_FOUND container name) for WEBSERVICE servicename. \n" +
+                                          "               </CICSFault> \n" +
+                                          "           </detail> \n" +
+                                          "       </soap:Fault>\n" +
+                                          "   </soap:Body>  \n" +
+                                          "</soap:Envelope>");
+            Assert.fail("expected AssertionError NOT thrown");
+        } catch (AssertionError e) {
+            System.out.println("EXPECTED: " + e.getMessage());
+        }
+    }
+
+    @Test
+    public void assertSoap_simple() throws Exception {
+        XmlCommand fixture = new XmlCommand();
+        fixture.init(context);
+
+        String wsdl = "<?xml version=\"1.0\"?>\n" +
+                      "<wsdl:definitions name=\"EndorsementSearch\" targetNamespace=\"http://namespaces.snowboard-info.com\" xmlns:es=\"http://www.snowboard-info.com/EndorsementSearch.wsdl\" xmlns:esxsd=\"http://schemas.snowboard-info.com/EndorsementSearch.xsd\" xmlns:soap=\"http://schemas.xmlsoap.org/wsdl/soap/\" xmlns:wsdl=\"http://schemas.xmlsoap.org/wsdl/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.snowboard-info.com/EndorsementSearch.wsdl\">\n" +
+                      "  <wsdl:types>\n" +
+                      "    <xsd:schema targetNamespace=\"http://namespaces.snowboard-info.com\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.w3.org/2001/XMLSchema \">\n" +
+                      "      <xsd:element name=\"GetEndorsingBoarder\">\n" +
+                      "        <xsd:complexType>\n" +
+                      "          <xsd:sequence>\n" +
+                      "            <xsd:element name=\"manufacturer\" type=\"xsd:string\"/>\n" +
+                      "            <xsd:element name=\"model\" type=\"xsd:string\"/>\n" +
+                      "          </xsd:sequence>\n" +
+                      "        </xsd:complexType>\n" +
+                      "      </xsd:element>\n" +
+                      "      <xsd:element name=\"GetEndorsingBoarderResponse\">\n" +
+                      "        <xsd:complexType>\n" +
+                      "          <xsd:all>\n" +
+                      "            <xsd:element name=\"endorsingBoarder\" type=\"xsd:string\"/>\n" +
+                      "          </xsd:all>\n" +
+                      "        </xsd:complexType>\n" +
+                      "      </xsd:element>\n" +
+                      "      <xsd:element name=\"GetEndorsingBoarderFault\">\n" +
+                      "        <xsd:complexType>\n" +
+                      "          <xsd:all>\n" +
+                      "            <xsd:element name=\"errorMessage\" type=\"xsd:string\"/>\n" +
+                      "          </xsd:all>\n" +
+                      "        </xsd:complexType>\n" +
+                      "      </xsd:element>\n" +
+                      "    </xsd:schema>\n" +
+                      "  </wsdl:types>\n" +
+                      "  <wsdl:message name=\"GetEndorsingBoarderRequest\">\n" +
+                      "    <wsdl:part name=\"body\" element=\"esxsd:GetEndorsingBoarder\"/>\n" +
+                      "  </wsdl:message>\n" +
+                      "  <wsdl:message name=\"GetEndorsingBoarderResponse\">\n" +
+                      "    <wsdl:part name=\"body\" element=\"esxsd:GetEndorsingBoarderResponse\"/>\n" +
+                      "  </wsdl:message>\n" +
+                      "  <wsdl:portType name=\"GetEndorsingBoarderPortType\">\n" +
+                      "    <wsdl:operation name=\"GetEndorsingBoarder\">\n" +
+                      "      <wsdl:input message=\"es:GetEndorsingBoarderRequest\"/>\n" +
+                      "      <wsdl:output message=\"es:GetEndorsingBoarderResponse\"/>\n" +
+                      "      <wsdl:fault message=\"es:GetEndorsingBoarderFault\"/>\n" +
+                      "    </wsdl:operation>\n" +
+                      "  </wsdl:portType>\n" +
+                      "  <wsdl:binding name=\"EndorsementSearchSoapBinding\" type=\"es:GetEndorsingBoarderPortType\">\n" +
+                      "    <soap:binding style=\"document\" transport=\"http://schemas.xmlsoap.org/soap/http\"/>\n" +
+                      "    <wsdl:operation name=\"GetEndorsingBoarder\">\n" +
+                      "      <soap:operation soapAction=\"http://www.snowboard-info.com/EndorsementSearch\"/>\n" +
+                      "      <wsdl:input>\n" +
+                      "        <soap:body use=\"literal\" namespace=\"http://schemas.snowboard-info.com/EndorsementSearch.xsd\"/>\n" +
+                      "      </wsdl:input>\n" +
+                      "      <wsdl:output>\n" +
+                      "        <soap:body use=\"literal\" namespace=\"http://schemas.snowboard-info.com/EndorsementSearch.xsd\"/>\n" +
+                      "      </wsdl:output>\n" +
+                      "      <wsdl:fault>\n" +
+                      "        <soap:body use=\"literal\" namespace=\"http://schemas.snowboard-info.com/EndorsementSearch.xsd\"/>\n" +
+                      "      </wsdl:fault>\n" +
+                      "    </wsdl:operation>\n" +
+                      "  </wsdl:binding>\n" +
+                      "  <wsdl:service name=\"EndorsementSearchService\">\n" +
+                      "    <wsdl:documentation>snowboarding-info.com Endorsement Service</wsdl:documentation>\n" +
+                      "    <wsdl:port name=\"GetEndorsingBoarderPort\" binding=\"es:EndorsementSearchSoapBinding\">\n" +
+                      "      <soap:address location=\"http://www.snowboard-info.com/EndorsementSearch\"/>\n" +
+                      "    </wsdl:port>\n" +
+                      "  </wsdl:service>\n" +
+                      "</wsdl:definitions>\n";
+        File wsdlFile = new File(StringUtils.appendIfMissing(JAVA_IO_TMPDIR, separator) + "myWSDL.xsd");
+        FileUtils.writeStringToFile(wsdlFile, wsdl, DEF_FILE_ENCODING);
+
+        String requestXml =
+            "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\" soap:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\n" +
+            "  <soap:Body>\n" +
+            "    <m:GetEndorsingBoarder xmlns:m=\"http://namespaces.snowboard-info.com\">\n" +
+            "      <manufacturer>K2</manufacturer>\n" +
+            "      <model>Fatbob</model>\n" +
+            "    </m:GetEndorsingBoarder>\n" +
+            "  </soap:Body>\n" +
+            "</soap:Envelope>";
+
+        StepResult result = fixture.assertSoap(wsdlFile.getAbsolutePath(), requestXml);
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
+
+        String responseXml =
+            "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\" soap:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\n" +
+            "  <soap:Body>\n" +
+            "    <m:GetEndorsingBoarderResponse xmlns:m=\"http://namespaces.snowboard-info.com\">\n" +
+            "      <endorsingBoarder>Chris Englesmann</endorsingBoarder>\n" +
+            "    </m:GetEndorsingBoarderResponse>\n" +
+            "  </soap:Body>\n" +
+            "</soap:Envelope>";
+
+        result = fixture.assertSoap(wsdlFile.getAbsolutePath(), responseXml);
+        System.out.println("result = " + result);
+        Assert.assertTrue(result.isSuccess());
     }
 
 }

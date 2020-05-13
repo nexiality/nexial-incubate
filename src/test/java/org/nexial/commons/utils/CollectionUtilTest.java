@@ -24,6 +24,8 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 public class CollectionUtilTest {
 
     @Before
@@ -115,5 +117,13 @@ public class CollectionUtilTest {
         Assert.assertEquals(CollectionUtil.getOrDefault(Arrays.asList("a", "b", "f", ""), 3, "Hello"), "");
         Assert.assertNull(CollectionUtil.getOrDefault(Collections.singletonList("a"), 2, null));
 
+    }
+
+    @Test
+    public void testRandomSelectOne() {
+        Assert.assertNull(CollectionUtil.randomSelectOne(null));
+        Assert.assertEquals(CollectionUtil.randomSelectOne(Collections.singletonList("one")), "one");
+        assertThat(CollectionUtil.randomSelectOne(Arrays.asList("one", "two", "three"))).isIn("one", "two", "three");
+        assertThat(CollectionUtil.randomSelectOne(Arrays.asList("one", "two", "one", "two"))).isIn("one", "two");
     }
 }

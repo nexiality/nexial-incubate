@@ -26,23 +26,33 @@ import java.util.Map;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.StopWatch;
 import org.nexial.commons.logging.LogbackUtils;
 import org.nexial.commons.utils.FileUtil;
+import org.nexial.commons.utils.ResourceUtils;
 import org.nexial.core.aws.NexialS3Helper;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.model.*;
 import org.nexial.core.plugins.web.CloudWebTestingPlatform;
 import org.nexial.core.reports.ExecutionMailConfig;
+import org.nexial.core.reports.ExecutionReporter;
 import org.nexial.core.service.EventTracker;
-import org.nexial.core.service.SQLiteManager;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.ExecutionLogger;
+import org.nexial.core.variable.Syspath;
 
-import static org.nexial.core.NexialConst.Data.*;
+import static java.io.File.separator;
 import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Exec.*;
+import static org.nexial.core.NexialConst.Iteration.*;
+import static org.nexial.core.NexialConst.NL;
 import static org.nexial.core.NexialConst.Project.appendLog;
+import static org.nexial.core.NexialConst.Web.*;
+import static org.nexial.core.SystemVariables.getDefault;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.nexial.core.model.ExecutionEvent.*;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.ITERATION;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.SCRIPT;
@@ -68,8 +78,8 @@ public final class ExecutionThread extends Thread {
     private ExecutionDefinition execDef;
     private ExecutionSummary executionSummary = new ExecutionSummary();
     private List<File> completedTests = new ArrayList<>();
-    private boolean firstUse;
-    private boolean lastUse;
+    private boolean firstScript;
+    private boolean lastScript;
 
     // capture the data after an execution run (all iteration, all scenarios within 1 file)
     private Map<String, Object> intraExecutionData = new HashMap<>();
@@ -92,9 +102,9 @@ public final class ExecutionThread extends Thread {
         return self;
     }
 
-    public void setFirstUse(boolean firstUse) { this.firstUse = firstUse;}
+    public void setFirstScript(boolean firstScript) { this.firstScript = firstScript;}
 
-    public void setLastUse(boolean lastUse) { this.lastUse = lastUse;}
+    public void setLastScript(boolean lastScript) { this.lastScript = lastScript;}
 
     @Override
     public void run() {
@@ -106,41 +116,25 @@ public final class ExecutionThread extends Thread {
         StopWatch ticktock = new StopWatch();
         ticktock.start();
 
-        IterationManager iterationManager = execDef.getTestData().getIterationManager();
-        String scriptLocation = execDef.getTestScript();
-
         ExecutionContext context = MapUtils.isNotEmpty(intraExecutionData) ?
                                    new ExecutionContext(execDef, intraExecutionData) : new ExecutionContext(execDef);
         context.setCurrentActivity(null);
-
-        // in case there were fail-immediate condition from previous script..
-        if (context.isFailImmediate()) {
-            ConsoleUtils.error("previous test scenario execution failed, and fail-immediate in effect. " +
-                               "Hence all subsequent test scenarios will be skipped");
-            collectIntraExecutionData(context, 0);
-            return;
-        }
-
-        if (execDef.isFailFast() && !context.getBooleanData(OPT_LAST_OUTCOME)) {
-            if (context.getBooleanData(RESET_FAIL_FAST, DEF_RESET_FAIL_FAST)) {
-                // reset and pretend nothing's wrong.  Current script will be executed..
-                context.setData(OPT_LAST_OUTCOME, true);
-            } else {
-                ConsoleUtils.error("previous test scenario execution failed, and current test script is set to " +
-                                   "fail-fast.  Hence all subsequent test scenarios will be skipped");
-                collectIntraExecutionData(context, 0);
-                return;
-            }
-        }
-
-        int totalIterations = iterationManager.getIterationCount();
-        ConsoleUtils.log(runId, "executing " + scriptLocation + " with " + totalIterations + " iteration(s)");
-
+        context.removeDataForcefully(IS_LAST_ITERATION);
+        context.removeDataForcefully(IS_FIRST_ITERATION);
         if (StringUtils.isNotBlank(execDef.getPlanFile())) {
             context.setData(OPT_INPUT_PLAN_FILE, execDef.getPlanFile());
         }
 
         ExecutionThread.set(context);
+
+        // in case there were fail-immediate condition from previous script..
+        if (shouldFailNow(context)) { return; }
+
+        IterationManager iterationManager = execDef.getTestData().getIterationManager();
+        int totalIterations = iterationManager.getIterationCount();
+
+        String scriptLocation = execDef.getTestScript();
+        ConsoleUtils.log(runId, "executing " + scriptLocation + " with " + totalIterations + " iteration(s)");
 
         String scriptName =
             StringUtils.substringBeforeLast(
@@ -156,15 +150,12 @@ public final class ExecutionThread extends Thread {
         executionSummary.setPlanSequence(execDef.getPlanSequence());
         executionSummary.setPlanName(execDef.getPlanName());
         executionSummary.setPlanFile(execDef.getPlanFile());
+        executionSummary.setPlanDescription(execDef.getDescription());
 
-        final String scriptId = SQLiteManager.get();
-        executionSummary.setId(scriptId);
-        EventTracker.INSTANCE.track(new NexialScriptStartEvent(scriptId, scriptName));
-
-        for (int currIteration = 1; currIteration <= totalIterations; currIteration++) {
+        for (int iterationIndex = 1; iterationIndex <= totalIterations; iterationIndex++) {
             // SINGLE THREAD EXECUTION WITHIN FOR LOOP!
 
-            int iteration = iterationManager.getIterationRef(currIteration - 1);
+            int iterationRef = iterationManager.getIterationRef(iterationIndex - 1);
             Excel testScript = null;
             boolean allPass = true;
 
@@ -172,35 +163,29 @@ public final class ExecutionThread extends Thread {
             execDef.infuseIntraExecutionData(intraExecutionData);
 
             ExecutionSummary iterSummary = new ExecutionSummary();
-            iterSummary.setName(currIteration + " of " + totalIterations);
+            iterSummary.setName(iterationIndex + " of " + totalIterations);
             iterSummary.setExecutionLevel(ITERATION);
             iterSummary.setStartTime(System.currentTimeMillis());
             iterSummary.setScriptFile(scriptLocation);
-            iterSummary.setIterationIndex(currIteration);
+            iterSummary.setIterationIndex(iterationIndex);
             iterSummary.setIterationTotal(totalIterations);
 
             try {
-                testScript = ExecutionInputPrep.prep(runId, execDef, iteration, currIteration);
+                testScript = ExecutionInputPrep.prep(runId, execDef, iterationIndex);
                 iterSummary.setTestScript(testScript.getOriginalFile());
                 context.useTestScript(testScript);
 
-                context.startIteration(currIteration, firstUse);
-                final String iterationId = SQLiteManager.get();
-                context.setIterationId(iterationId);
-                iterSummary.setId(iterationId);
-
-                EventTracker.INSTANCE.track(new NexialIterationStartEvent(iterationId, iterSummary.getName(),
-                                                                          scriptId, currIteration));
+                context.startIteration(iterationIndex, iterationRef, totalIterations, firstScript);
 
                 ExecutionLogger logger = context.getLogger();
-                logger.log(context, "executing iteration #" + currIteration + " of " + totalIterations +
-                                    "; Iteration Index " + iteration);
+                logger.log(context, "executing iteration #" + iterationIndex + " of " + totalIterations +
+                                    "; Iteration Id " + iterationRef);
                 allPass = context.execute();
 
-                onIterationComplete(context, iterSummary, currIteration);
+                onIterationComplete(context, iterSummary, iterationIndex);
                 if (shouldStopNow(context, allPass)) { break; }
             } catch (Throwable e) {
-                onIterationException(context, iterSummary, currIteration, e);
+                onIterationException(context, iterSummary, iterationIndex, e);
                 if (shouldStopNow(context, allPass)) { break; }
             } finally {
                 context.setData(ITERATION_ENDED, true);
@@ -235,8 +220,7 @@ public final class ExecutionThread extends Thread {
                         iterSummary.generateExcelReport(testScriptFile);
                     }
 
-                    EventTracker.INSTANCE.track(
-                        new NexialIterationCompleteEvent(scriptLocation, currIteration, iterSummary));
+                    EventTracker.track(new NexialIterationCompleteEvent(scriptLocation, iterationIndex, iterSummary));
                     executionSummary.addNestSummary(iterSummary);
 
                     // report status at iteration level
@@ -250,27 +234,12 @@ public final class ExecutionThread extends Thread {
                     //     ConsoleUtils.error("Error saving execution output: " + e.getMessage());
                     // }
 
-                    if (isAutoOpenResult()) {
-                        String spreadsheetExe = context.getStringData(SPREADSHEET_PROGRAM, DEF_SPREADSHEET);
-                        System.setProperty(SPREADSHEET_PROGRAM, spreadsheetExe);
-
-                        if (StringUtils.equals(spreadsheetExe, SPREADSHEET_PROGRAM_WPS)) {
-                            if (!context.hasData(WPS_EXE_LOCATION)) {
-                                // lightweight: resolve now to save time later
-                                context.setData(WPS_EXE_LOCATION, Excel.resolveWpsExecutablePath());
-                            }
-                            if (context.hasData(WPS_EXE_LOCATION)) {
-                                System.setProperty(WPS_EXE_LOCATION, context.getStringData(WPS_EXE_LOCATION));
-                            }
-                        }
-
-                        Excel.openExcel(testScriptFile);
-                    }
+                    ExecutionReporter.openExecutionResult(context, testScriptFile);
 
                     completedTests.add(testScriptFile);
                 }
 
-                collectIntraExecutionData(context, currIteration);
+                collectIntraExecutionData(context, iterationRef);
                 ExecutionMailConfig.configure(context);
 
                 context.endIteration();
@@ -281,13 +250,10 @@ public final class ExecutionThread extends Thread {
             }
         }
 
-        onScriptComplete(context, executionSummary, iterationManager, ticktock);
+        System.setProperty(OPT_OPEN_EXEC_REPORT,
+                           context.getStringData(OPT_OPEN_EXEC_REPORT, getDefault(OPT_OPEN_EXEC_REPORT)));
 
-        // handling onExecutionComplete
-        if (lastUse) {
-            CloudWebTestingPlatform.reportCloudBrowserStatus(context, executionSummary, ExecutionComplete);
-            context.getExecutionEventListener().onExecutionComplete();
-        }
+        onScriptComplete(context, executionSummary, iterationManager, ticktock);
 
         ExecutionThread.unset();
         MemManager.recordMemoryChanges(scriptName + " completed");
@@ -299,6 +265,52 @@ public final class ExecutionThread extends Thread {
 
     public ExecutionDefinition getExecDef() { return execDef; }
 
+    protected boolean shouldFailNow(ExecutionContext context) {
+        if (context == null) { return true; }
+
+        ExecutionLogger logger = context.getLogger();
+        if (context.isFailImmediate()) {
+            logger.log(context, MSG_SCENARIO_FAIL_IMMEDIATE);
+            collectIntraExecutionData(context, 0);
+            return true;
+        }
+
+        if (execDef.isFailFast() && !context.getBooleanData(OPT_LAST_OUTCOME)) {
+            if (context.getBooleanData(RESET_FAIL_FAST, getDefaultBool(RESET_FAIL_FAST))) {
+                // reset and pretend nothing's wrong.  Current script will be executed..
+                context.setData(OPT_LAST_OUTCOME, true);
+            } else {
+                logger.log(context, MSG_SCENARIO_FAIL_FAST);
+                collectIntraExecutionData(context, 0);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected boolean shouldStopNow(ExecutionContext context, boolean allPass) {
+        if (context == null) { return true; }
+
+        ExecutionLogger logger = context.getLogger();
+        if (!allPass && context.isFailFast()) {
+            logger.log(context, MSG_EXEC_FAIL_FAST);
+            return true;
+        }
+
+        if (context.isFailImmediate()) {
+            logger.log(context, MSG_EXEC_FAIL_IMMEDIATE);
+            return true;
+        }
+
+        if (context.isEndImmediate()) {
+            logger.log(context, MSG_EXEC_END_IF);
+            return true;
+        }
+
+        return false;
+    }
+
     protected Map<String, Object> getIntraExecutionData() { return intraExecutionData; }
 
     protected void setIntraExecutionData(Map<String, Object> intraExecutionData) {
@@ -309,30 +321,19 @@ public final class ExecutionThread extends Thread {
         if (context == null) { return; }
 
         context.fillIntraExecutionData(intraExecutionData);
+
         // override, if found, previous "last completed iteration count"
         intraExecutionData.put(LAST_ITERATION, completeIteration);
-    }
 
-    protected boolean shouldStopNow(ExecutionContext context, boolean allPass) {
-        if (context == null) { return true; }
-
-        ExecutionLogger logger = context.getLogger();
-        if (!allPass && context.isFailFast()) {
-            logger.log(context, "failure found, fail-fast in effect - test execution will stop now.");
-            return true;
+        // for last iteration, finalize the execution summary's custom header and footer
+        if (context.getBooleanData(IS_LAST_ITERATION)) {
+            if (context.hasData(SUMMARY_CUSTOM_HEADER)) {
+                System.setProperty(SUMMARY_CUSTOM_HEADER, context.getStringData(SUMMARY_CUSTOM_HEADER));
+            }
+            if (context.hasData(SUMMARY_CUSTOM_FOOTER)) {
+                System.setProperty(SUMMARY_CUSTOM_FOOTER, context.getStringData(SUMMARY_CUSTOM_FOOTER));
+            }
         }
-
-        if (context.isFailImmediate()) {
-            logger.log(context, "fail-immediate in effect - test execution will stop now.");
-            return true;
-        }
-
-        if (context.isEndImmediate()) {
-            logger.log(context, "test execution ending due to EndIf() flow control activated.");
-            return true;
-        }
-
-        return false;
     }
 
     protected void onIterationException(ExecutionContext context,
@@ -373,11 +374,11 @@ public final class ExecutionThread extends Thread {
         }
 
         ConsoleUtils.error(runId,
-                           "\n" +
-                           "/-TEST FAILED!!-----------------------------------------------------------------\n" +
-                           "| Test Output:    " + testScript + "\n" +
-                           "| Iteration:      " + iteration + "\n" +
-                           "\\-------------------------------------------------------------------------------\n" +
+                           NL +
+                           "/-TEST FAILED!!-----------------------------------------------------------------" + NL +
+                           "| Test Output:    " + testScript + NL +
+                           "| Iteration:      " + iteration + NL +
+                           "\\-------------------------------------------------------------------------------" + NL +
                            (e != null ? "» Error:          " + e.getMessage() : ""),
                            (e instanceof AssertionError) ? null : e);
     }
@@ -399,14 +400,14 @@ public final class ExecutionThread extends Thread {
         });
 
         ConsoleUtils.log(context.getRunId(),
-                         "\n" +
-                         "/-TEST COMPLETE-----------------------------------------------------------------\n" +
-                         "| Test Output:    " + context.getTestScript().getFile() + "\n" +
-                         "| Iteration:      " + iteration + "\n" +
-                         "\\-------------------------------------------------------------------------------\n" +
-                         "» Execution Time: " + (context.getEndTimestamp() - context.getStartTimestamp()) + " ms\n" +
-                         "» Test Steps:     " + total[0] + "\n" +
-                         "» Error(s):       " + failCount[0] + "\n\n\n");
+                         NL +
+                         "/-TEST COMPLETE-----------------------------------------------------------------" + NL +
+                         "| Test Output:    " + context.getTestScript().getFile() + NL +
+                         "| Iteration:      " + iteration + NL +
+                         "\\-------------------------------------------------------------------------------" + NL +
+                         "» Execution Time: " + (context.getEndTimestamp() - context.getStartTimestamp()) + " ms" + NL +
+                         "» Test Steps:     " + total[0] + NL +
+                         "» Error(s):       " + failCount[0] + NL + NL + NL);
         MemManager.gc(this);
     }
 
@@ -417,7 +418,7 @@ public final class ExecutionThread extends Thread {
         ticktock.stop();
         summary.setEndTime(System.currentTimeMillis());
         summary.aggregatedNestedExecutions(context);
-        EventTracker.INSTANCE.track(new NexialScriptCompleteEvent(summary.getScriptFile(), summary));
+        EventTracker.track(new NexialScriptCompleteEvent(summary.getScriptFile(), summary));
 
         CloudWebTestingPlatform.reportCloudBrowserStatus(context, summary, ScriptComplete);
 
@@ -428,35 +429,78 @@ public final class ExecutionThread extends Thread {
         summary.getNestedExecutions().forEach(nested -> {
             handleTestScript(context, nested);
             cloudOutputBuffer.append("» Iteration ").append(nested.getName()).append(": ")
-                             .append(nested.getTestScriptLink()).append("\n");
+                             .append(nested.getTestScriptLink()).append(NL);
         });
 
         ConsoleUtils.log(context.getRunId(),
-                         "\n" +
-                         "/-TEST COMPLETE-----------------------------------------------------------------\n" +
-                         "| Test Script:    " + execDef.getTestScript() + "\n" +
-                         "\\-------------------------------------------------------------------------------\n" +
-                         "» Execution Time: " + (ticktock.getTime()) + " ms\n" +
-                         "» Iterations:     " + iterationManager + "\n" +
-                         "» Test Steps:     " + summary.getTotalSteps() + "\n" +
-                         "» Passed:         " + summary.getPassCount() + "\n" +
-                         "» Error(s):       " + summary.getFailCount() + "\n" +
-                         //"» Warnings:       " + summary.getWarnCount() + "\n" +
-                         StringUtils.defaultIfBlank(cloudOutputBuffer.toString(), "") + "\n\n");
+                         NL +
+                         "/-TEST COMPLETE-----------------------------------------------------------------" + NL +
+                         "| Test Script:    " + execDef.getTestScript() + NL +
+                         "\\-------------------------------------------------------------------------------" + NL +
+                         "» Execution Time: " + (ticktock.getTime()) + " ms" + NL +
+                         "» Iterations:     " + iterationManager + NL +
+                         "» Test Steps:     " + summary.getTotalSteps() + NL +
+                         "» Passed:         " + summary.getPassCount() + NL +
+                         "» Error(s):       " + summary.getFailCount() + NL +
+                         //"» Warnings:       " + summary.getWarnCount() + NL +
+                         StringUtils.defaultIfBlank(cloudOutputBuffer.toString(), "") + NL + NL);
+
+        // special handling of mail config, make sure we get latest/greatest from context
+        ExecutionMailConfig mailConfig = ExecutionMailConfig.get();
+        if (mailConfig != null && mailConfig.isReady()) { ExecutionMailConfig.configure(context); }
 
         context.getExecutionEventListener().onScriptComplete();
 
         if (context.hasData(LAST_PLAN_STEP)) {
-            System.setProperty(LAST_PLAN_STEP, context.getStringData(LAST_PLAN_STEP, DEF_LAST_PLAN_STEP));
+            System.setProperty(LAST_PLAN_STEP, context.getStringData(LAST_PLAN_STEP, getDefault(LAST_PLAN_STEP)));
         }
 
         if (MapUtils.isNotEmpty(intraExecutionData)) { intraExecutionData.remove(LAST_ITERATION); }
+
+        if (lastScript) {
+            CloudWebTestingPlatform.reportCloudBrowserStatus(context, executionSummary, ExecutionComplete);
+            context.getExecutionEventListener().onExecutionComplete();
+            handleBrowserMetrics(context);
+        }
 
         // we don't want the reference data from this script to taint the next
         context.clearScenarioRefData();
         context.clearScriptRefData();
 
         MemManager.gc(execDef);
+    }
+
+    /** handle browser metrics */
+    private void handleBrowserMetrics(ExecutionContext context) {
+        System.clearProperty(WEB_METRICS_GENERATED);
+        if (!context.getBooleanData(WEB_PERF_METRICS_ENABLED, getDefaultBool(WEB_PERF_METRICS_ENABLED))) { return; }
+        if (context.isInteractiveMode()) { return; }
+
+        String outputBase = (new Syspath().out("fullpath")) + separator;
+        File metricsFile = new File(outputBase + WEB_METRICS_JSON);
+        if (!FileUtil.isFileReadable(metricsFile, 100)) { return; }
+
+        try {
+            String json = FileUtils.readFileToString(metricsFile, DEF_FILE_ENCODING);
+            String html = StringUtils.replace(ResourceUtils.loadResource(WEB_METRICS_HTML_LOC + WEB_METRICS_HTML),
+                                              WEB_METRICS_TOKEN,
+                                              json);
+            File webMetricFile = new File(outputBase + WEB_METRICS_HTML);
+            FileUtils.writeStringToFile(webMetricFile, html, DEF_FILE_ENCODING);
+            System.setProperty(WEB_METRICS_GENERATED, "true");
+
+            if (context.isOutputToCloud()) {
+                NexialS3Helper otc = context.getOtc();
+                if (otc != null && otc.isReadyForUse() && FileUtil.isFileReadable(webMetricFile, 1024)) {
+                    // upload HTML report to cloud
+                    String url = otc.importToS3(webMetricFile, otc.resolveOutputDir(), true);
+                    ConsoleUtils.log("Web Performance Metric exported to " + url);
+                }
+            }
+        } catch (IOException e) {
+            // unable to read JSON, read HTML or write HTML to output
+            ConsoleUtils.error("Unable to generate browser metrics HTML: " + e.getMessage());
+        }
     }
 
     private static void handleTestScript(ExecutionContext context, ExecutionSummary execution) {
@@ -466,10 +510,8 @@ public final class ExecutionThread extends Thread {
         File testScript = execution.getTestScript();
         if (context.isOutputToCloud()) {
             try {
-                NexialS3Helper otc = context.getOtc();
                 // when saving test output to cloud, we might NOT want to remove it locally - esp. when open-result is on
-                String testScriptUrl = otc.importFile(testScript, !isAutoOpenResult());
-                execution.setTestScriptLink(testScriptUrl);
+                execution.setTestScriptLink(context.getOtc().importFile(testScript, !isAutoOpenResult()));
             } catch (IOException e) {
                 ConsoleUtils.error(toCloudIntegrationNotReadyMessage(testScript.toString()) + ": " + e.getMessage());
             }

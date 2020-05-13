@@ -22,20 +22,17 @@ import java.text.MessageFormat;
 import org.junit.Assert;
 import org.junit.Test;
 
-/**
- *
- */
 public class PercentFormatTest {
 
-    @Test
-    public void testFormat() throws Exception {
-        String rateFormat = "{0,number,0.00%}";
+	@Test
+	public void testFormat() throws Exception {
+		String rateFormat = "{0,number,0.00%}";
 
-        Assert.assertEquals("100.00%", MessageFormat.format(rateFormat, 1.00));
-        Assert.assertEquals("86.21%", MessageFormat.format(rateFormat, 0.8621));
-        Assert.assertEquals("50.00%", MessageFormat.format(rateFormat, 0.5));
-        Assert.assertEquals("0.00%", MessageFormat.format(rateFormat, 0));
-        Assert.assertEquals("0.44%", MessageFormat.format(rateFormat, 0.00443));
-        Assert.assertEquals("0.00%", MessageFormat.format(rateFormat, 0.0000443));
-    }
+		Assert.assertEquals("100.00%", MessageFormat.format(rateFormat, 1.00));
+		Assert.assertEquals("86.21%", MessageFormat.format(rateFormat, 0.8621));
+		Assert.assertEquals("50.00%", MessageFormat.format(rateFormat, 0.5));
+		Assert.assertEquals("0.00%", MessageFormat.format(rateFormat, 0));
+		Assert.assertEquals("0.44%", MessageFormat.format(rateFormat, 0.00443));
+		Assert.assertEquals("0.00%", MessageFormat.format(rateFormat, 0.0000443));
+	}
 }

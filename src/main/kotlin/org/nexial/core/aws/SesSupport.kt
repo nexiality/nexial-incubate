@@ -22,9 +22,20 @@ import com.amazonaws.services.simpleemail.AmazonSimpleEmailServiceAsyncClientBui
 import com.amazonaws.services.simpleemail.model.*
 import org.apache.commons.collections4.CollectionUtils
 import org.apache.commons.lang3.StringUtils
+import org.jsoup.Jsoup
 import org.nexial.core.NexialConst.DEF_FILE_ENCODING
 import org.nexial.core.utils.ConsoleUtils
-import javax.validation.constraints.NotNull
+import java.util.regex.Pattern
+import java.util.regex.Pattern.DOTALL
+
+private const val MSG_UNVERIFIED_DOMAIN = "\tCheck the target email address(es) and ensure the specified mail\n" +
+                                          "\tdomain has been verified in the corresponding AWS account. For\n" +
+                                          "\tmore details, please check \n" +
+                                          "\thttps://docs.aws.amazon.com/ses/latest/DeveloperGuide/verify-domain-procedure.html"
+private const val ERR_UNVERIFIED_DOMAIN = "Domain contains illegal character"
+private const val HTML_FOOTER_PREFIX = "<br/><br/><div style=\"text-align:right;font-size:9pt;color:#aaa\">"
+private const val HTML_FOOTER_POSTFIX = "</div><br/>"
+private val REGEX_HAS_TAG: Pattern = Pattern.compile(".*<[^>]+>.*", DOTALL)
 
 class SesSupport : AwsSupport() {
 
@@ -48,13 +59,15 @@ class SesSupport : AwsSupport() {
         if (StringUtils.isBlank(config.from)) throw IllegalArgumentException("from address is required")
         if (CollectionUtils.isEmpty(config.to)) throw IllegalArgumentException("to address is required")
         if (StringUtils.isBlank(config.subject)) throw IllegalArgumentException("subject is required")
-        if (StringUtils.isBlank(config.html) && StringUtils.isBlank(config.plainText)) {
+        if (StringUtils.isBlank(config.html) && StringUtils.isBlank(config.plainText))
             throw IllegalArgumentException("Either HTML or plain text email content is required")
-        }
 
         // here we go
-        val request = SendEmailRequest(config.from, toDestination(config), toMessage(config, toSubject(config)))
-        request.withConfigurationSetName(config.configurationSetName)
+        val request = SendEmailRequest()
+            .withSource(config.from)
+            .withDestination(toDestination(config))
+            .withMessage(toMessage(config, toSubject(config)))
+            .withConfigurationSetName(config.configurationSetName)
         if (CollectionUtils.isNotEmpty(config.replyTo)) request.withReplyToAddresses(config.replyTo)
 
         sendMail(request)
@@ -69,9 +82,14 @@ class SesSupport : AwsSupport() {
             .withCredentials(resolveCredentials(region))
             .build()
 
-        ConsoleUtils.log("scheduling sent-mail via AWS SES...")
+        ConsoleUtils.log("scheduling sent-mail via AWS SES to ${request.destination.toAddresses}")
         client.sendEmailAsync(request, object : AsyncHandler<SendEmailRequest, SendEmailResult> {
-            override fun onError(e: Exception) = ConsoleUtils.error("FAILED to send email via AWS SES: ${e.message}")
+            override fun onError(e: Exception) {
+                ConsoleUtils.error("FAILED to send email via AWS SES: ${e.message}" +
+                                   if (StringUtils.contains(e.message, ERR_UNVERIFIED_DOMAIN))
+                                       "\n$MSG_UNVERIFIED_DOMAIN"
+                                   else "")
+            }
 
             override fun onSuccess(request: SendEmailRequest, sendEmailResult: SendEmailResult) {
                 ConsoleUtils.log("Email sent via AWS SES: $sendEmailResult")
@@ -79,26 +97,31 @@ class SesSupport : AwsSupport() {
         })
     }
 
-    @NotNull
     private fun toMessage(config: SesConfig, subject: Content): Message {
         val body = Body()
 
+        val xmailer = StringUtils.defaultIfEmpty(config.xmailer, "")
+
         if (StringUtils.isNotBlank(config.html)) {
-            body.withHtml(Content().withCharset(DEF_FILE_ENCODING)
-                              .withData("${config.html}\n" +
-                                        "<br/><br/><br/><div style=\"text-align:right;font-size:9pt;color:#aaa\">" +
-                                        "${StringUtils.defaultIfEmpty(config.xmailer, "")}" +
-                                        "</div><br/>"))
-        }
-        if (StringUtils.isNotBlank(config.plainText)) {
-            body.withText(Content().withCharset(DEF_FILE_ENCODING)
-                              .withData("${config.plainText}\n\n\n\n${StringUtils.defaultIfEmpty(config.xmailer, "")}"))
+            val footer = "$HTML_FOOTER_PREFIX$xmailer$HTML_FOOTER_POSTFIX"
+            val content = if (REGEX_HAS_TAG.matcher(config.html).matches()) {
+                val document = Jsoup.parse(config.html)
+                document.body().append(footer)
+                document.html()
+            } else {
+                "<html><body>${config.html}\n$footer</body></html>"
+            }
+
+            body.withHtml(Content().withCharset(DEF_FILE_ENCODING).withData(content))
         }
 
-        return Message(subject, body)
+        if (StringUtils.isNotBlank(config.plainText)) {
+            body.withText(Content().withCharset(DEF_FILE_ENCODING).withData("${config.plainText}\n\n\n\n$xmailer"))
+        }
+
+        return Message().withSubject(subject).withBody(body)
     }
 
-    @NotNull
     private fun toDestination(config: SesConfig): Destination {
         val destination = Destination().withToAddresses(config.to)
         if (CollectionUtils.isNotEmpty(config.cc)) destination.withCcAddresses(config.cc)
@@ -106,7 +129,6 @@ class SesSupport : AwsSupport() {
         return destination
     }
 
-    @NotNull
     private fun toSubject(config: SesConfig) = Content().withCharset(DEF_FILE_ENCODING).withData(config.subject)
 
     companion object {

@@ -31,22 +31,45 @@ else
 fi
 PROJECT_NAME="`basename "${PROJECT_HOME}"`"
 echo "  PROJECT_HOME:   ${PROJECT_HOME}"
-echo "  PROJECT_NAME:   ${PROJECT_NAME}"
+#echo "  PROJECT_NAME:   ${PROJECT_NAME}"
+
+# create project.id file to uniquely identify a "project" across enterprise (i.e. same SCM)
+PROJECT_ID="${PROJECT_HOME}/.meta/project.id"
+if [[ -f "${PROJECT_ID}" ]] ; then
+  PROJECT_NAME=$(cat "${PROJECT_ID}" | tr -dc '[[:print:]]')
+fi
+
+echo
+echo "» currently project id is set to '${PROJECT_NAME}'."
+echo "» to change it, enter new project id below or press ENTER to keep it as is"
+if [[ "${NEXIAL_OS}" = "Mac" ]]; then
+    echo -n "  Enter project id [${PROJECT_NAME}]: "
+    read user_project_name
+else
+    read -p "  Enter project id [${PROJECT_NAME}]: " user_project_name
+fi
+
+if [[ "${user_project_name}" != "" ]]; then
+    PROJECT_NAME="${user_project_name}"
+fi
 
 echo
 echo "» (re)creating project home at ${PROJECT_HOME}"
 mkdir -p "${PROJECT_HOME}/.meta" > /dev/null 2>&1
+mkdir -p "${PROJECT_HOME}/artifact/bin" > /dev/null 2>&1
 mkdir -p "${PROJECT_HOME}/artifact/script" > /dev/null 2>&1
 mkdir -p "${PROJECT_HOME}/artifact/data" > /dev/null 2>&1
 mkdir -p "${PROJECT_HOME}/artifact/plan" > /dev/null 2>&1
 mkdir -p "${PROJECT_HOME}/output" > /dev/null 2>&1
 
-# create project.id file to uniquely identify a "project" across enterprise (i.e. same SCM)
-PROJECT_ID="${PROJECT_HOME}/.meta/project.id"
-if [[ ! -s "${PROJECT_ID}" ]] ; then
-    echo "» create ${PROJECT_ID}"
-    mkdir -p "${PROJECT_HOME}/.meta"
-    echo ${PROJECT_NAME} > "${PROJECT_ID}"
+echo "» (re)creating ${PROJECT_ID} with ${PROJECT_NAME}"
+echo "${PROJECT_NAME}" > "${PROJECT_ID}"
+
+## create empty project.properties file if it does not exist
+if [[ -e "${PROJECT_HOME}/artifact/project.properties" ]]; then
+ echo "» skip over the creation of project.properties"
+else
+ touch "${PROJECT_HOME}/artifact/project.properties"
 fi
 
 SKIP_DEF_SCRIPTS=true
@@ -92,7 +115,7 @@ echo
 
 cd "${PROJECT_HOME}"
 chmod -fR 755 "${PROJECT_HOME}"
-find "${PROJECT_HOME}" | sort -n
+find "${PROJECT_HOME}" -name "*.xlsx" -o -name "*.properties" | sort -n
 
 echo
 echo

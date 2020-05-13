@@ -46,9 +46,7 @@ import static com.amazonaws.regions.Regions.DEFAULT_REGION;
 import static com.amazonaws.services.s3.model.CannedAccessControlList.PublicRead;
 import static com.amazonaws.services.s3.model.StorageClass.ReducedRedundancy;
 import static org.nexial.commons.utils.FilePathFilter.REGEX_FOR_ANY;
-import static org.nexial.commons.utils.FilePathFilter.REGEX_PREFIX;
-import static org.nexial.core.NexialConst.S3_PATH_SEPARATOR;
-import static org.nexial.core.NexialConst.S3_PUBLIC_URL;
+import static org.nexial.core.NexialConst.*;
 
 public class AwsS3Helper {
     // characters that must be escaped in order NOT to be mistaken as part of regex
@@ -109,8 +107,8 @@ public class AwsS3Helper {
     public void parseObjectPath(String path) {
         if (StringUtils.isBlank(path)) { return; }
 
-        bucketName = StringUtils.substringBefore(path, S3_PATH_SEPARATOR);
-        subDir = StringUtils.substringAfter(path, S3_PATH_SEPARATOR);
+        bucketName = StringUtils.substringBefore(path, S3_PATH_SEP);
+        subDir = StringUtils.substringAfter(path, S3_PATH_SEP);
     }
 
     public PutObjectResult copyToS3(File file, PutOption options) {
@@ -238,11 +236,11 @@ public class AwsS3Helper {
     public List<String> listFiles(@NotNull final String s3Path) {
         if (StringUtils.isEmpty(s3Path)) { return null; }
         // assumes that the path before first / is the bucket
-        bucketName = StringUtils.substringBefore(s3Path, S3_PATH_SEPARATOR);
-        String path = StringUtils.substringAfter(s3Path, S3_PATH_SEPARATOR);
-        subDir = StringUtils.substringBefore(StringUtils.substringBefore(path, REGEX_PREFIX), "*");
+        bucketName = StringUtils.substringBefore(s3Path, S3_PATH_SEP);
+        String path = StringUtils.substringAfter(s3Path, S3_PATH_SEP);
+        subDir = StringUtils.substringBefore(StringUtils.substringBefore(path, PREFIX_REGEX), "*");
 
-        if (!StringUtils.contains(path, REGEX_PREFIX)) {
+        if (!StringUtils.contains(path, PREFIX_REGEX)) {
             // [bucket]
             // [bucket]/
             // [bucket]/subdir
@@ -269,7 +267,7 @@ public class AwsS3Helper {
     public static String toPattern(String path) {
         if (StringUtils.isEmpty(path)) { return StringUtils.defaultString(path); }
 
-        String delim = (StringUtils.startsWith(path, REGEX_PREFIX)) ? REGEX_PREFIX : (S3_PATH_SEPARATOR + REGEX_PREFIX);
+        String delim = (StringUtils.startsWith(path, PREFIX_REGEX)) ? PREFIX_REGEX : (S3_PATH_SEP + PREFIX_REGEX);
         int delimLength = delim.length();
 
         int regexStartPos = StringUtils.indexOf(path, delim);

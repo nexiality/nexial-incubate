@@ -31,9 +31,11 @@ import org.nexial.core.utils.ConsoleUtils;
 
 import static org.apache.commons.lang3.StringUtils.rightPad;
 import static org.nexial.core.NexialConst.DATE_FORMAT_NOW;
+import static org.nexial.core.NexialConst.NL;
+import static org.nexial.core.plugins.db.SqlComponent.Type.UNKNOWN;
 
 public class JdbcResult implements Serializable {
-    protected static final int TO_STRING_KEY_LENGTH = 12;
+    protected static final int TO_STRING_KEY_LENGTH = 14;
 
     protected String sql;
     protected long startTime;
@@ -52,6 +54,7 @@ public class JdbcResult implements Serializable {
             try {
                 sqlType = Type.toType(sqlStart);
             } catch (IllegalArgumentException e) {
+                sqlType = UNKNOWN;
                 ConsoleUtils.log("Unknown SQL type from SQL: '" + sql + "'");
             }
         }
@@ -62,6 +65,8 @@ public class JdbcResult implements Serializable {
         this.sql = sql;
         this.rowCount = rowCount;
     }
+
+    protected JdbcResult() { }
 
     public Type getSqlType() { return sqlType; }
 
@@ -129,13 +134,13 @@ public class JdbcResult implements Serializable {
 
     @Override
     public String toString() {
-        return rightPad("sql", TO_STRING_KEY_LENGTH) + "=" + sql + "\n" +
-               rightPad("startTime", TO_STRING_KEY_LENGTH) + "=" + formatStartTime(startTime) + "\n" +
-               rightPad("elapsedTime", TO_STRING_KEY_LENGTH) + "=" + elapsedTime + " ms\n" +
-               (StringUtils.isNotBlank(error) ? rightPad("error", TO_STRING_KEY_LENGTH) + "=" + error + "\n" : "") +
-               rightPad("rowCount", TO_STRING_KEY_LENGTH) + "=" + rowCount + "\n" +
-               (CollectionUtils.isNotEmpty(data) ? rightPad("data", TO_STRING_KEY_LENGTH) + "=" + data + "\n" : "") +
-               (isRolledBack() ? "TRANSACTION ROLLBACKED\n" : "");
+        return rightPad("sql", TO_STRING_KEY_LENGTH) + "=" + sql + NL +
+               rightPad("startTime", TO_STRING_KEY_LENGTH) + "=" + formatStartTime(startTime) + NL +
+               rightPad("elapsedTime", TO_STRING_KEY_LENGTH) + "=" + elapsedTime + " ms" + NL +
+               (StringUtils.isNotBlank(error) ? rightPad("error", TO_STRING_KEY_LENGTH) + "=" + error + NL : "") +
+               rightPad("rowCount", TO_STRING_KEY_LENGTH) + "=" + rowCount + NL +
+               (CollectionUtils.isNotEmpty(data) ? rightPad("data", TO_STRING_KEY_LENGTH) + "=" + data + NL : "") +
+               (isRolledBack() ? "TRANSACTION ROLLBACKED" + NL : "");
     }
 
     protected <T extends JdbcResult> T setTiming(long startTime) {

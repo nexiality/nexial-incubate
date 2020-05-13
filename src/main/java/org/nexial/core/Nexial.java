@@ -21,12 +21,8 @@ import java.io.File;
 import java.io.IOException;
 import java.security.Security;
 import java.text.MessageFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
 
@@ -43,40 +39,41 @@ import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.xssf.usermodel.XSSFRow;
-import org.nexial.commons.utils.DateUtility;
-import org.nexial.commons.utils.EnvUtils;
-import org.nexial.commons.utils.FileUtil;
-import org.nexial.commons.utils.RegexUtils;
-import org.nexial.commons.utils.TextUtils;
+import org.nexial.commons.utils.*;
 import org.nexial.core.aws.NexialS3Helper;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.integration.IntegrationManager;
 import org.nexial.core.interactive.NexialInteractive;
+import org.nexial.core.mail.NexialMailer;
 import org.nexial.core.model.*;
 import org.nexial.core.reports.ExecutionMailConfig;
 import org.nexial.core.reports.ExecutionNotifier;
 import org.nexial.core.reports.ExecutionReporter;
-import org.nexial.core.reports.NexialMailer;
 import org.nexial.core.service.EventTracker;
-import org.nexial.core.service.SQLiteManager;
-import org.nexial.core.service.ServiceLauncher;
-import org.nexial.core.service.WatcherThread;
+import org.nexial.core.service.ReadyLauncher;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.ExecUtils;
 import org.nexial.core.utils.InputFileUtils;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 
 import static java.io.File.separator;
+import static java.lang.System.lineSeparator;
+import static org.apache.commons.lang3.SystemUtils.IS_OS_WINDOWS;
 import static org.apache.commons.lang3.SystemUtils.USER_NAME;
 import static org.nexial.core.NexialConst.CLI.*;
 import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Exec.*;
+import static org.nexial.core.NexialConst.NL;
 import static org.nexial.core.NexialConst.ExitStatus.*;
 import static org.nexial.core.NexialConst.Project.*;
+import static org.nexial.core.SystemVariables.getDefault;
+import static org.nexial.core.SystemVariables.getDefaultInt;
 import static org.nexial.core.excel.Excel.MIN_EXCEL_FILE_SIZE;
 import static org.nexial.core.excel.ExcelConfig.*;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.EXECUTION;
+import static org.nexial.core.utils.ExecUtils.NEXIAL_MANIFEST;
 
 /**
  * Main class to run nexial from command line:
@@ -190,10 +187,9 @@ public class Nexial {
     private TestProject project;
     private List<ExecutionDefinition> executions;
     private int threadWaitCounter;
-    private int listenPort = -1;
-    private String listenerHandshake;
-    private boolean integrationMode;
-    private boolean interactiveMode;
+    private ExecutionMode executionMode;
+
+    enum ExecutionMode {EXECUTE_SCRIPT, EXECUTE_PLAN, INTERACTIVE, INTEGRATION, READY}
 
     @SuppressWarnings("PMD.DoNotCallSystemExit")
     public static void main(String[] args) {
@@ -221,60 +217,55 @@ public class Nexial {
 
         ExecutionSummary summary = null;
         try {
+            // shutdown hook for Control-C and SIGTERM
+            Runtime.getRuntime().addShutdownHook(new Thread(ShutdownAdvisor::forcefullyTerminate));
+
             // integration mode, only for metrics and post-exec analysis
             if (main.isIntegrationMode()) { return; }
 
-            // listen mode, only for studio integration
-            if (main.isListenMode()) {
-                main.listen();
-                ConsoleUtils.log("Nexial Services ready...");
+            // beReady mode, only for studio integration
+            if (main.isReadyMode()) {
+                main.beReady();
                 return;
             }
 
             // interactive mode, only for stepwise or blockwise execution. to be integrated into studio
             if (main.isInteractiveMode()) {
+                if (ExecUtils.isRunningInZeroTouchEnv()) {
+                    ConsoleUtils.error(NL + NL + "Nexial Interactive is disabled unit testing or in CI/CD environment");
+                    System.exit(RC_NOT_SUPPORT_ZERO_TOUCH_ENV);
+                    return;
+                }
                 main.interact();
                 return;
             }
 
             // normal execution
             MemManager.recordMemoryChanges("before execution");
-            WatcherThread thread = new WatcherThread();
-            thread.start();
             summary = main.execute();
             main.trackEvent(new NexialExecutionCompleteEvent(summary));
-
-            // wait till thread terminate
-            while (thread.isAlive()) {
-                ConsoleUtils.log("waiting for watcher thread to complete");
-                Thread.sleep(4000);
-            }
-            ConsoleUtils.log("watcher thread " + thread + "is terminated");
-
             MemManager.recordMemoryChanges("after execution");
 
         } catch (Throwable e) {
             ConsoleUtils.error("Unknown/unexpected error occurred: " + e.getMessage());
             e.printStackTrace();
         } finally {
-            ConsoleUtils.log("Exiting Nexial...");
-            System.exit(main.beforeShutdown(summary));
+            if (!main.isReadyMode()) {
+                ConsoleUtils.log("exiting Nexial...");
+                System.exit(main.beforeShutdown(summary));
+            }
         }
     }
 
-    protected void listen() throws Exception { ServiceLauncher.main(new String[]{}); }
+    protected boolean isReadyMode() { return executionMode == ExecutionMode.READY; }
 
-    protected boolean isListenMode() { return listenPort > 0 && StringUtils.isNotBlank(listenerHandshake); }
+    protected boolean isIntegrationMode() { return executionMode == ExecutionMode.INTEGRATION; }
 
-    protected boolean isIntegrationMode() { return integrationMode; }
-
-    protected boolean isInteractiveMode() { return interactiveMode; }
+    protected boolean isInteractiveMode() { return executionMode == ExecutionMode.INTERACTIVE; }
 
     protected Options addMsaOptions(Options options) {
         Options optionsAdded = new Options();
         options.getOptions().forEach(optionsAdded::addOption);
-        optionsAdded.addOption("listen", true, "start Nexial in listen mode on the specified port");
-        optionsAdded.addOption("listenCode", true, "establish listener/receiver handshake");
         optionsAdded.addOption(ANNOUNCE, true, "the output directory path to announce the automation " +
                                                "report over collaboration tools");
         return optionsAdded;
@@ -293,14 +284,13 @@ public class Nexial {
                                        "unable to proceed");
         }
 
-        ConsoleUtils.log(ExecUtils.deriveJarManifest() + " starting up...");
+        ConsoleUtils.log(NEXIAL_MANIFEST + " starting up...");
 
         CommandLine cmd = new DefaultParser().parse(addMsaOptions(OPTIONS), args);
 
-        // msa treatment
-        if (cmd.hasOption("listen") && cmd.hasOption("listenCode")) {
-            listenPort = NumberUtils.toInt(cmd.getOptionValue("listen"));
-            listenerHandshake = cmd.getOptionValue("listenCode");
+        // nexial-ready
+        if (cmd.hasOption(READY)) {
+            executionMode = ExecutionMode.READY;
             return;
         }
 
@@ -308,6 +298,8 @@ public class Nexial {
             // force logs to be pushed into the specified output directory (and not taint other past/concurrent runs)
             String logPath = cmd.getOptionValue(OUTPUT);
             System.setProperty(TEST_LOG_PATH, logPath);
+
+            // we don't have run id at this time... this System property should be updated when run id becomes available
             if (StringUtils.isBlank(System.getProperty(THIRD_PARTY_LOG_PATH))) {
                 System.setProperty(THIRD_PARTY_LOG_PATH, logPath);
             }
@@ -316,31 +308,36 @@ public class Nexial {
         // integration mode
         // integrate or announce or assimilate
         if (cmd.hasOption(ANNOUNCE)) {
-            integrationMode = true;
+            executionMode = ExecutionMode.INTEGRATION;
             String outputDirPath = cmd.getOptionValue(ANNOUNCE);
             initSpringContext();
-            IntegrationManager.Companion.manageIntegration(outputDirPath);
+            IntegrationManager.manageIntegration(outputDirPath);
             return;
-        }
-
-        if (cmd.hasOption(INTERACTIVE)) {
-            interactiveMode = true;
-            System.setProperty(OPT_INTERACTIVE, "true");
-            // proceed to parsing, but only script will be supported
         }
 
         // plan or script?
         if (cmd.hasOption(PLAN)) {
-            if (isInteractiveMode()) {
+            // only -script will be supported
+            if (cmd.hasOption(INTERACTIVE)) {
                 throw new ParseException("Interactive Mode is NOT support with plan files. " +
                                          "Try specifying a script instead");
             }
+
             this.executions = parsePlanExecution(cmd);
             System.setProperty(NEXIAL_EXECUTION_TYPE, NEXIAL_EXECUTION_TYPE_PLAN);
+            executionMode = ExecutionMode.EXECUTE_PLAN;
         } else {
             if (!cmd.hasOption(SCRIPT)) { fail("test script is required but not specified."); }
+
             this.executions = parseScriptExecution(cmd);
-            System.setProperty(NEXIAL_EXECUTION_TYPE, NEXIAL_EXECUTION_TYPE_SCRIPT);
+
+            if (cmd.hasOption(INTERACTIVE)) {
+                executionMode = ExecutionMode.INTERACTIVE;
+                System.setProperty(OPT_INTERACTIVE, "true");
+            } else {
+                executionMode = ExecutionMode.EXECUTE_SCRIPT;
+                System.setProperty(NEXIAL_EXECUTION_TYPE, NEXIAL_EXECUTION_TYPE_SCRIPT);
+            }
         }
 
         // any variable override?
@@ -362,8 +359,16 @@ public class Nexial {
     }
 
     protected List<ExecutionDefinition> parsePlanExecution(CommandLine cmd) throws IOException {
-        List<String> testPlanPathList = TextUtils.toList(cmd.getOptionValue(PLAN), DEF_TEXT_DELIM, true);
+        List<String> testPlanPathList = TextUtils.toList(cmd.getOptionValue(PLAN), getDefault(TEXT_DELIM), true);
         List<ExecutionDefinition> executions = new ArrayList<>();
+
+        if (cmd.hasOption(SUBPLANS) && testPlanPathList.size() > 1) {
+            fail("The " + SUBPLANS + " does't work with multiple test plans. Please try with single plan.");
+        }
+
+        List<String> subplans = cmd.hasOption(SUBPLANS) ?
+                                TextUtils.toList(cmd.getOptionValue(SUBPLANS), ",", true) :
+                                new ArrayList<>();
 
         for (String testPlanPath : testPlanPathList) {
             // String testPlanPath = cmd.getOptionValue(PLAN);
@@ -385,15 +390,11 @@ public class Nexial {
 
             // 2. parse plan file to determine number of executions (1 row per execution)
             Excel excel = new Excel(testPlanFile, DEF_OPEN_EXCEL_AS_DUP, false);
-            List<Worksheet> plans = InputFileUtils.retrieveValidPlanSequence(excel);
-            if (CollectionUtils.isEmpty(plans)) { return executions; }
-            AtomicInteger seqId = new AtomicInteger(0);
+            List<Worksheet> plans = retrieveValidPlans(subplans, excel);
 
             plans.forEach(testPlan -> {
                 int rowStartIndex = ADDR_PLAN_EXECUTION_START.getRowStartIndex();
                 int lastExecutionRow = testPlan.findLastDataRow(ADDR_PLAN_EXECUTION_START);
-                final String planId = SQLiteManager.get();
-                int planSeqId = seqId.addAndGet(1);
 
                 for (int i = rowStartIndex; i < lastExecutionRow; i++) {
                     XSSFRow row = testPlan.getSheet().getRow(i);
@@ -426,8 +427,6 @@ public class Nexial {
                     exec.setPlanFile(testPlanFile.getAbsolutePath());
                     exec.setPlanFilename(StringUtils.substringBeforeLast(testPlanFile.getName(), "."));
                     exec.setPlanName(testPlan.getName());
-                    exec.setPlanId(planId);
-                    exec.setPlanSequenceId(planSeqId);
                     exec.setPlanSequence((i - rowStartIndex + 1));
                     exec.setDescription(StringUtils.trim(readCellValue(row, COL_IDX_PLAN_DESCRIPTION)));
                     exec.setTestScript(testScript.getAbsolutePath());
@@ -465,13 +464,44 @@ public class Nexial {
         return executions;
     }
 
+    private List<Worksheet> retrieveValidPlans(List<String> subplans, Excel excel) {
+        List<Worksheet> plans = InputFileUtils.retrieveValidPlanSequence(excel);
+        // system variable for subplans included
+
+        // filter out subplans to execute if any
+        if (CollectionUtils.isEmpty(subplans)) { return plans; }
+
+        // checking for invalid subplans
+        List<String> planNames = plans.stream().map(Worksheet::getName).collect(Collectors.toList());
+        List<String> invalidSubplans = subplans.stream().filter(testPlan -> !planNames.contains(testPlan)).collect(
+            Collectors.toList());
+
+        // system variable for subplans ommitted
+        System.setProperty(SUBPLANS_OMITTED, TextUtils.toString(invalidSubplans, ","));
+
+        if (invalidSubplans.size() != 0) {
+            fail("The plan " + excel.getFile().getAbsolutePath() + " doesn't contain worksheet/s named " +
+                 invalidSubplans + ".");
+        }
+
+        List<Worksheet> validPlans = new ArrayList<>(Collections.nCopies(subplans.size(), null));
+
+        plans.stream().filter(testPlan -> subplans.contains(testPlan.getName()))
+             .forEach(testPlan -> validPlans.set(subplans.indexOf(testPlan.getName()), testPlan));
+
+        // system variable for subplans included
+        System.setProperty(SUBPLANS_INCLUDED, TextUtils.toString(subplans, ","));
+
+        return validPlans;
+    }
+
     protected File deriveScriptFromPlan(XSSFRow row, TestProject project, String testPlan) {
         String testScriptPath = readCellValue(row, COL_IDX_PLAN_TEST_SCRIPT);
         if (StringUtils.isBlank(testScriptPath)) {
             fail("Invalid test script specified in ROW " + (row.getRowNum() + 1) + " of " + testPlan + ".");
         }
 
-        testScriptPath = StringUtils.appendIfMissing(testScriptPath, ".xlsx");
+        testScriptPath = StringUtils.appendIfMissing(testScriptPath, SCRIPT_FILE_EXT);
 
         // is the script specified as full path (local PC)?
         if (!RegexUtils.isExact(testScriptPath, "[A-Za-z]\\:\\\\.+") &&
@@ -522,7 +552,7 @@ public class Nexial {
 
             try {
                 // (2018/12/16,automike): memory consumption precaution
-                excel.close();
+                if (excel != null) { excel.close(); }
             } catch (IOException e) {
                 ConsoleUtils.error("Unable to close Excel file (" + testScript + "): " + e.getMessage());
             }
@@ -552,7 +582,7 @@ public class Nexial {
 
             dataFilePath = dataFilePath1;
         } else {
-            dataFilePath = StringUtils.appendIfMissing(dataFilePath, ".xlsx");
+            dataFilePath = StringUtils.appendIfMissing(dataFilePath, SCRIPT_FILE_EXT);
 
             // dataFile is specified as a fully qualified path
             if (!FileUtil.isFileReadable(dataFilePath)) {
@@ -663,10 +693,14 @@ public class Nexial {
     }
 
     protected void deriveOutputDirectory(CommandLine cmd, TestProject project) throws IOException {
-        // command line option - output
+        // this method is designed to be called after standard/conventional directories have been set to `project`
+        // hence these are overrides
+
+        // override default via command line option - output
         String outputPath = cmd.hasOption(OUTPUT) ? cmd.getOptionValue(OUTPUT) : null;
         if (StringUtils.isNotBlank(outputPath)) { project.setOutPath(outputPath); }
 
+        // override via System properties (`-Dnexial.defaultOutBase=...`)
         String outPath = project.getOutPath();
         if (StringUtils.isBlank(outPath)) {
             // one last try: consider environment setup (NEXIAL_OUTPUT), if defined
@@ -682,12 +716,20 @@ public class Nexial {
         if (FileUtil.isFileReadable(outPath)) {
             fail("output location (" + outPath + ") cannot be accessed as a directory.");
         }
+
         if (!FileUtil.isDirectoryReadable(outPath)) { FileUtils.forceMkdir(new File(outPath)); }
 
+        // run id not yet determined... `outPath` does not contain run id in path
         System.setProperty(TEST_LOG_PATH, outPath);
         if (StringUtils.isBlank(System.getProperty(THIRD_PARTY_LOG_PATH))) {
             System.setProperty(THIRD_PARTY_LOG_PATH, outPath);
         }
+    }
+
+    protected void beReady() throws Exception {
+        initSpringContext();
+        ReadyLauncher.main(new String[]{});
+        ConsoleUtils.log("Nexial Ready now accepting connection");
     }
 
     protected void interact() {
@@ -714,11 +756,6 @@ public class Nexial {
         summary.setExecutionLevel(EXECUTION);
         summary.setStartTime(System.currentTimeMillis());
 
-        String executionId = SQLiteManager.get();
-        System.setProperty(NEXIAL_EXECUTION_ID, executionId);
-        summary.setId(executionId);
-        EventTracker.INSTANCE.track(new NexialExecutionStartEvent(executionId, project.getOutPath()));
-
         List<ExecutionThread> executionThreads = new ArrayList<>();
         Map<String, Object> intraExecution = null;
 
@@ -726,7 +763,7 @@ public class Nexial {
         try {
             for (int i = 0; i < executions.size(); i++) {
                 ExecutionDefinition exec = executions.get(i);
-                if (BooleanUtils.toBoolean(System.getProperty(LAST_PLAN_STEP, DEF_LAST_PLAN_STEP))) { break; }
+                if (BooleanUtils.toBoolean(System.getProperty(LAST_PLAN_STEP, getDefault(LAST_PLAN_STEP)))) { break; }
 
                 exec.setRunId(runId);
 
@@ -734,8 +771,8 @@ public class Nexial {
                 ConsoleUtils.log(runId, msgPrefix + "resolve RUN ID as " + runId);
 
                 ExecutionThread launcherThread = ExecutionThread.newInstance(exec);
-                if (i == 0) { launcherThread.setFirstUse(true); }
-                if (i == lastUse) { launcherThread.setLastUse(true); }
+                if (i == 0) { launcherThread.setFirstScript(true); }
+                if (i == lastUse) { launcherThread.setLastScript(true); }
                 if (MapUtils.isNotEmpty(intraExecution)) { launcherThread.setIntraExecutionData(intraExecution); }
 
                 ConsoleUtils.log(runId, msgPrefix + "new thread started");
@@ -760,7 +797,7 @@ public class Nexial {
                     exec = null;
                 } else {
                     executionThreads.add(launcherThread);
-                    ConsoleUtils.log(runId, msgPrefix + "in progress, progressing to next execution");
+                    ConsoleUtils.log(runId, msgPrefix + "in progress, proceed to next execution");
                 }
             }
 
@@ -813,9 +850,6 @@ public class Nexial {
         if (CollectionUtils.isNotEmpty(summary.getNestedExecutions())) {
             summary.getNestedExecutions().forEach(execution -> uploadLogLocations(otc, execution, logs));
         }
-
-        SQLiteManager.updateExecutionLogs(logs, true);
-
     }
 
     protected static void uploadLogLocations(NexialS3Helper otc,
@@ -871,6 +905,8 @@ public class Nexial {
 
         summary.setEndTime(stopTimeMs);
         summary.aggregatedNestedExecutions(null);
+        summary.setCustomHeader(System.getProperty(SUMMARY_CUSTOM_HEADER));
+        summary.setCustomFooter(System.getProperty(SUMMARY_CUSTOM_FOOTER));
 
         if (MapUtils.isEmpty(summary.getLogs()) && CollectionUtils.isNotEmpty(summary.getNestedExecutions())) {
             summary.getLogs().putAll(summary.getNestedExecutions().get(0).getLogs());
@@ -892,20 +928,15 @@ public class Nexial {
             if (otc == null || !otc.isReadyForUse()) {
                 // forget it...
                 ConsoleUtils.error(toCloudIntegrationNotReadyMessage("logs"));
-                SQLiteManager.updateExecutionLogs(summary.getLogs(), false);
             } else {
                 updateLogLocation(otc, summary);
             }
-        } else {
-            SQLiteManager.updateExecutionLogs(summary.getLogs(), false);
         }
-
-        boolean autoOpenExecReport = isAutoOpenExecResult();
 
         File htmlReport = null;
         try {
             htmlReport = reporter.generateHtml(summary);
-            System.setProperty(EXEC_OUTPUT_PATH, htmlReport.getAbsolutePath());
+            if (htmlReport != null) { System.setProperty(EXEC_OUTPUT_PATH, htmlReport.getAbsolutePath()); }
         } catch (IOException e) {
             ConsoleUtils.error(runId, "Unable to generate HTML report for this execution: " + e.getMessage());
         }
@@ -913,8 +944,8 @@ public class Nexial {
         File junitReport = null;
         try {
             junitReport = reporter.generateJUnitXml(summary);
-            ConsoleUtils.log("Generated JUnit report for this execution: " + junitReport.getAbsolutePath());
-            System.setProperty(JUNIT_XML_LOCATION, junitReport.getAbsolutePath());
+            ConsoleUtils.log("generated JUnit report for this execution: " + junitReport);
+            if (junitReport != null) { System.setProperty(JUNIT_XML_LOCATION, junitReport.getAbsolutePath()); }
         } catch (IOException e) {
             ConsoleUtils.error(runId, "Unable to generate JUnit report for this execution: " + e.getMessage());
         }
@@ -939,15 +970,15 @@ public class Nexial {
                 }
 
                 // can't use otc.resolveOutputDir() since we are out of context at this point in time
-                String outputDir = System.getProperty(OPT_CLOUD_OUTPUT_BASE) + "/" + project.getName() + "/" +
-                                   runId;
+                // project.name could be affected by project.id, as designed
+                String outputDir = NexialS3Helper.resolveOutputDir(project.getName(), runId);
 
                 // upload HTML report to cloud
                 if (FileUtil.isFileReadable(htmlReport, 1024)) {
                     String url = otc.importToS3(htmlReport, outputDir, true);
-                    ConsoleUtils.log("HTML output for this execution export to " + url);
+                    ConsoleUtils.log("HTML output for this execution exported to " + url);
                     System.setProperty(EXEC_OUTPUT_PATH, url);
-                    if (StringUtils.isNotBlank(url) && autoOpenExecReport) { reporter.openReport(url); }
+                    if (StringUtils.isNotBlank(url)) { ExecutionReporter.openExecutionSummaryReport(url); }
                 }
 
                 // upload JSON reports
@@ -958,14 +989,14 @@ public class Nexial {
                 // upload junit xml
                 if (FileUtil.isFileReadable(junitReport, 100)) {
                     String url = otc.importToS3(junitReport, outputDir, true);
-                    ConsoleUtils.log("JUnit XML output for this execution export to " + url);
+                    ConsoleUtils.log("JUnit XML output for this execution exported to " + url);
                     System.setProperty(JUNIT_XML_LOCATION, url);
                 }
             } catch (IOException e) {
                 ConsoleUtils.error(toCloudIntegrationNotReadyMessage("execution output") + ": " + e.getMessage());
             }
         } else {
-            if (autoOpenExecReport) { reporter.openReport(htmlReport); }
+            ExecutionReporter.openExecutionSummaryReport(htmlReport);
         }
 
         ExecutionMailConfig mailConfig = ExecutionMailConfig.get();
@@ -983,6 +1014,7 @@ public class Nexial {
     }
 
     /**
+     * todo: not used?
      * resolve data file and standard "data" directory based on either data-related commandline input or
      * {@code testScriptFile} commandline input.
      */
@@ -1066,7 +1098,7 @@ public class Nexial {
             return validateDataFile(project, dataFilePath);
         }
 
-        dataFilePath = StringUtils.appendIfMissing(dataFilePath, ".xlsx");
+        dataFilePath = StringUtils.appendIfMissing(dataFilePath, SCRIPT_FILE_EXT);
 
         // dataFile is specified as a fully qualified path
         if (FileUtil.isFileReadable(dataFilePath)) { return validateDataFile(project, dataFilePath); }
@@ -1138,7 +1170,7 @@ public class Nexial {
         // -- haven't found a way to do this more gracefully yet...
         if (ShutdownAdvisor.mustForcefullyTerminate()) { ShutdownAdvisor.forcefullyTerminate(); }
 
-        if (isIntegrationMode() || isListenMode() || isInteractiveMode()) { return 0; }
+        if (isIntegrationMode() || isReadyMode() || isInteractiveMode()) { return RC_NORMAL; }
 
         // only for normal execution mode
         int exitStatus;
@@ -1146,9 +1178,10 @@ public class Nexial {
             ConsoleUtils.error("Unable to cleanly execute tests; execution summary missing!");
             exitStatus = RC_EXECUTION_SUMMARY_MISSING;
         } else {
+            int defaultSuccessRate = getDefaultInt(MIN_EXEC_SUCCESS_RATE);
             double minExecSuccessRate =
-                NumberUtils.toDouble(System.getProperty(MIN_EXEC_SUCCESS_RATE, DEF_MIN_EXEC_SUCCESS_RATE + ""));
-            if (minExecSuccessRate < 0 || minExecSuccessRate > 100) { minExecSuccessRate = DEF_MIN_EXEC_SUCCESS_RATE; }
+                NumberUtils.toDouble(System.getProperty(MIN_EXEC_SUCCESS_RATE, defaultSuccessRate + ""));
+            if (minExecSuccessRate < 0 || minExecSuccessRate > 100) { minExecSuccessRate = defaultSuccessRate; }
             minExecSuccessRate = minExecSuccessRate / 100;
             String minSuccessRateString = MessageFormat.format(RATE_FORMAT, minExecSuccessRate);
 
@@ -1156,16 +1189,16 @@ public class Nexial {
             String successRateString = MessageFormat.format(RATE_FORMAT, successRate);
             System.setProperty(SUCCESS_RATE, successRateString);
 
-            String manifest = StringUtils.leftPad(ExecUtils.deriveJarManifest(), 15, "-");
+            String manifest = NEXIAL_MANIFEST;
             ConsoleUtils.log(
-                "\n\n" +
-                "/-END OF EXECUTION--------------------------------------------------------------\n" +
-                "| » Execution Time: " + (summary.getElapsedTime() / 1000) + " sec.\n" +
-                "| » Test Steps:     " + summary.getExecuted() + "\n" +
-                "| » Passed:         " + summary.getPassCount() + "\n" +
-                "| » Failed:         " + summary.getFailCount() + "\n" +
-                "| » Success Rate:   " + successRateString + "\n" +
-                "\\---------------------------------------------------------------" + manifest + "-" + "\n");
+                NL + NL +
+                "/-END OF EXECUTION--------------------------------------------------------------" + NL +
+                "| » Execution Time: " + (summary.getElapsedTime() / 1000) + " sec." + NL +
+                "| » Test Steps....: " + summary.getExecuted() + NL +
+                "| » Passed........: " + summary.getPassCount() + NL +
+                "| » Failed........: " + summary.getFailCount() + NL +
+                "| » Success Rate..: " + successRateString + NL +
+                "\\" + StringUtils.repeat("-", 80 - 1 - manifest.length() - 1) + manifest + "-" + NL);
 
             if (successRate != 1) {
                 if (successRate >= minExecSuccessRate) {
@@ -1188,19 +1221,11 @@ public class Nexial {
                         exitStatus = RC_WARNING_FOUND;
                     } else {
                         ConsoleUtils.log("ALL PASSED!");
-                        exitStatus = 0;
+                        exitStatus = RC_NORMAL;
                     }
                 }
             }
         }
-
-        System.setProperty(EXIT_STATUS, exitStatus + "");
-        ConsoleUtils.log("End of Execution:\n" +
-                         "OUTPUT:       " + System.getProperty(OUTPUT_LOCATION) + "\n" +
-                         "EXECUTION:    " + System.getProperty(EXEC_OUTPUT_PATH) + "\n" +
-                         "JUNIT XML:    " + System.getProperty(JUNIT_XML_LOCATION) + "\n" +
-                         "SUCCESS RATE: " + System.getProperty(SUCCESS_RATE) + "\n" +
-                         "EXIT STATUS:  " + exitStatus);
 
         // not used at this time
         // File eventPath = new File(EventTracker.INSTANCE.getStorageLocation());
@@ -1225,7 +1250,42 @@ public class Nexial {
 
         beforeShutdownMemUsage();
 
+        System.setProperty(EXIT_STATUS, exitStatus + "");
+        ConsoleUtils.log("End of Execution:" + NL +
+                         "NEXIAL_OUTPUT:         " + System.getProperty(OUTPUT_LOCATION) + NL +
+                         "NEXIAL_EXECUTION_HTML: " + System.getProperty(EXEC_OUTPUT_PATH) + NL +
+                         "NEXIAL_JUNIT_XML:      " + System.getProperty(JUNIT_XML_LOCATION) + NL +
+                         "NEXIAL_SUCCESS_RATE:   " + System.getProperty(SUCCESS_RATE) + NL +
+                         "NEXIAL_EXIT_STATUS:    " + exitStatus);
+
+        postExecBatch(exitStatus);
+
         return exitStatus;
+    }
+
+    private void postExecBatch(int exitStatus) {
+        String postExecScript = System.getProperty(POST_EXEC_SCRIPT);
+        if (StringUtils.isNotBlank(postExecScript)) {
+            Map<String, String> postExecVars =
+                TextUtils.toMap("=",
+                                "${NEXIAL_OUTPUT}=" + System.getProperty(OUTPUT_LOCATION),
+                                "${NEXIAL_EXECUTION_HTML}=" + System.getProperty(EXEC_OUTPUT_PATH),
+                                "${NEXIAL_JUNIT_XML}=" + System.getProperty(JUNIT_XML_LOCATION),
+                                "${NEXIAL_SUCCESS_RATE}=" + System.getProperty(SUCCESS_RATE),
+                                "${NEXIAL_EXIT_STATUS}=" + exitStatus);
+
+            try {
+                String batchTemplate =
+                    ResourceUtils.loadResource("org/nexial/core/postExecution." + (IS_OS_WINDOWS ? "cmd" : "sh"));
+                FileUtils.writeStringToFile(new File(postExecScript),
+                                            TextUtils.replaceStrings(batchTemplate, postExecVars),
+                                            DEF_FILE_ENCODING);
+                ConsoleUtils.log("Nexial post-execution variables (above) are captured in:" +
+                                 lineSeparator() + postExecScript);
+            } catch (IOException e) {
+                ConsoleUtils.error("FAILED to generate post-execution shell script: " + e.getMessage());
+            }
+        }
     }
 
     private static void beforeShutdownMemUsage() {
@@ -1233,8 +1293,8 @@ public class Nexial {
         MemManager.recordMemoryChanges("just before exit");
         String memUsage = MemManager.showUsage("| »      ");
         if (StringUtils.isNotBlank(memUsage)) {
-            ConsoleUtils.log("\n" +
-                             "/-MEMORY-USAGE------------------------------------------------------------------\n" +
+            ConsoleUtils.log(NL +
+                             "/-MEMORY-USAGE------------------------------------------------------------------" + NL +
                              memUsage +
                              "\\-------------------------------------------------------------------------------");
         }
@@ -1254,9 +1314,9 @@ public class Nexial {
         }
     }
 
-    private void trackEvent(NexialEvent event) { EventTracker.INSTANCE.track(event); }
+    private void trackEvent(NexialEvent event) { EventTracker.track(event); }
 
-    private void trackExecution(NexialEnv nexialEnv) { EventTracker.INSTANCE.track(nexialEnv); }
+    private void trackExecution(NexialEnv nexialEnv) { EventTracker.track(nexialEnv); }
 
     /**
      * log {@code msg} to console if the System property {@code nexial.devLogging} is {@code "true"}.

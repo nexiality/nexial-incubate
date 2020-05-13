@@ -18,26 +18,35 @@ package org.nexial.core;
 
 import org.junit.Assert;
 import org.junit.Test;
-import org.nexial.core.NexialConst.Data;
+
+import static org.nexial.core.NexialConst.handleWindowsChar;
 
 public class NexialConstTest {
 
     @Test
     public void treatCommonValueShorthand() {
 
-        Assert.assertNull(Data.treatCommonValueShorthand(null));
-        Assert.assertEquals("", Data.treatCommonValueShorthand(""));
+        Assert.assertNull(NexialConst.treatCommonValueShorthand(null));
+        Assert.assertEquals("", NexialConst.treatCommonValueShorthand(""));
 
-        Assert.assertEquals(" ", Data.treatCommonValueShorthand("(blank)"));
-        Assert.assertEquals("\t", Data.treatCommonValueShorthand("(tab)"));
-        Assert.assertEquals("\n", Data.treatCommonValueShorthand("(eol)"));
-        Assert.assertEquals("", Data.treatCommonValueShorthand("(empty)"));
+        Assert.assertEquals(" ", NexialConst.treatCommonValueShorthand("(blank)"));
+        Assert.assertEquals("\t", NexialConst.treatCommonValueShorthand("(tab)"));
+        Assert.assertEquals("\n", NexialConst.treatCommonValueShorthand("(eol)"));
+        Assert.assertEquals("", NexialConst.treatCommonValueShorthand("(empty)"));
 
-        Assert.assertEquals("   ", Data.treatCommonValueShorthand("(blank)(blank)(blank)"));
-        Assert.assertEquals(" \t ", Data.treatCommonValueShorthand("(blank)(tab)(blank)"));
-        Assert.assertEquals("\t\t\n ", Data.treatCommonValueShorthand("(tab)(tab)(eol)(blank)"));
+        Assert.assertEquals("   ", NexialConst.treatCommonValueShorthand("(blank)(blank)(blank)"));
+        Assert.assertEquals(" \t ", NexialConst.treatCommonValueShorthand("(blank)(tab)(blank)"));
+        Assert.assertEquals("\t\t\n ", NexialConst.treatCommonValueShorthand("(tab)(tab)(eol)(blank)"));
 
-        Assert.assertEquals("(empty)A", Data.treatCommonValueShorthand("(empty)A"));
-        Assert.assertEquals("  A\n  ", Data.treatCommonValueShorthand("  A\n  "));
+        Assert.assertEquals("(empty)A", NexialConst.treatCommonValueShorthand("(empty)A"));
+        Assert.assertEquals("  A\n  ", NexialConst.treatCommonValueShorthand("  A\n  "));
+    }
+
+    @Test
+    public void replaceWindowsChars() {
+        Assert.assertEquals(
+            handleWindowsChar(
+                "‘Nexial’ – as the name reflects our desire and intention to perfect the “art” and “science” of Software Testing…"),
+            "'Nexial' - as the name reflects our desire and intention to perfect the \"art\" and \"science\" of Software Testing...");
     }
 }

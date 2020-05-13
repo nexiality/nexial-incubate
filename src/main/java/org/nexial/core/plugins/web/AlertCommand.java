@@ -30,11 +30,11 @@ import org.openqa.selenium.NoAlertPresentException;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.remote.UnreachableBrowserException;
 
-import static org.nexial.core.NexialConst.Data.DEF_PREEMPTIVE_ALERT_CHECK;
-import static org.nexial.core.NexialConst.Data.OPT_PREEMPTIVE_ALERT_CHECK;
+import static org.nexial.core.NexialConst.Web.*;
+import static org.nexial.core.NexialConst.Web.WEB_PREEMPTIVE_ALERT_CHECK;
 import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.nexial.core.utils.CheckUtils.requires;
-import static org.nexial.core.utils.CheckUtils.requiresValidVariableName;
 
 public class AlertCommand extends BaseCommand implements RequireBrowser {
     protected Browser browser;
@@ -50,7 +50,7 @@ public class AlertCommand extends BaseCommand implements RequireBrowser {
     public void init(ExecutionContext context) {
         super.init(context);
         driver = null;
-        ensureWebDriver();
+        if (!context.isDelayBrowser()) { ensureWebDriver(); }
     }
 
     @Override
@@ -73,14 +73,17 @@ public class AlertCommand extends BaseCommand implements RequireBrowser {
     }
 
     public StepResult storeText(String var) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         // get current alert text (if any)
         String alertText = harvestDialogText();
-        if (StringUtils.isEmpty(alertText)) { return StepResult.fail("No dialog found"); }
-
-        context.setData(var, alertText);
-        return StepResult.success("stored dialog text '" + alertText + "' to ${" + var + "}");
+        if (StringUtils.isEmpty(alertText)) {
+            context.removeData(var);
+            return StepResult.success("No dialog found or it contains no content");
+        } else {
+            context.setData(var, alertText);
+            return StepResult.success("stored dialog text '" + alertText + "' to ${" + var + "}");
+        }
     }
 
     @NotNull
@@ -134,7 +137,9 @@ public class AlertCommand extends BaseCommand implements RequireBrowser {
     protected void preemptiveDismissAlert() { if (preemptiveCheckAlert()) { accept(); } }
 
     protected boolean preemptiveCheckAlert() {
-        return context.getBooleanData(OPT_PREEMPTIVE_ALERT_CHECK, DEF_PREEMPTIVE_ALERT_CHECK) && isDialogPresent();
+        if (browser == null || browser.isRunElectron()) { return false; }
+        return context.getBooleanData(WEB_PREEMPTIVE_ALERT_CHECK, getDefaultBool(WEB_PREEMPTIVE_ALERT_CHECK)) &&
+               isDialogPresent();
     }
 
     protected String harvestDialogText(Alert alert) {
@@ -163,12 +168,14 @@ public class AlertCommand extends BaseCommand implements RequireBrowser {
     }
 
     protected boolean isDialogPresent() {
+        if (browser == null || browser.isRunElectron()) { return false; }
+
         ensureWebDriver();
 
         try {
             driver.switchTo().alert();
             return true;
-        } catch (NoAlertPresentException e) {
+        } catch (NoAlertPresentException | UnreachableBrowserException e) {
             return false;
         }
     }

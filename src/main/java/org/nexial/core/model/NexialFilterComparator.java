@@ -59,13 +59,16 @@ public enum NexialFilterComparator {
     NotEndsWith(" not end with ", 1, String.class, 3.3),
 
     Between(" between ", 2, Number.class, 3.4),
-    Contain(" contain ", -1, String.class, 3.5),
+    Contain(" contain ", 1, String.class, 3.5),
     StartsWith(" start with ", 1, String.class, 3.6),
     EndsWith(" end with ", 1, String.class, 3.7),
     Match(" match ", 1, String.class, 3.8),
     HasLengthOf(" has length of ", 1, Number.class, 3.9),
 
-    TrueOrFalse(null, 0, Boolean.class, 4.0),
+    ReadableFile(" has file-size ", 1, Number.class, 4.0),
+    ReadablePath(" is readable-path", 0, Boolean.class, 4.1),
+
+    TrueOrFalse(null, 0, Boolean.class, 5.0),
 
     Any(null, 0, null, 10);
 

@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.SystemUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.core.utils.ConsoleUtils;
@@ -57,7 +58,7 @@ public final class RuntimeUtils {
 
     public static boolean terminateInstance(String exeName) {
         if (IS_OS_WINDOWS) { return terminateInstancesOnWIN(exeName); }
-        if (IS_OS_MAC_OSX || IS_OS_UNIX) { return terminateInstancesOnNIX(exeName);}
+        if (IS_OS_MAC_OSX || IS_OS_UNIX) { return terminateInstancesOnNIX(exeName); }
 
         ConsoleUtils.error("UNSUPPORTED OS: " + OS_NAME + ". No termination for " + exeName);
         return false;
@@ -65,7 +66,7 @@ public final class RuntimeUtils {
 
     public static boolean terminateInstance(int processId) {
         if (IS_OS_WINDOWS) { return terminateInstanceOnWIN(processId); }
-        if (IS_OS_MAC_OSX || IS_OS_UNIX) { return terminateInstanceOnNIX(processId);}
+        if (IS_OS_MAC_OSX || IS_OS_UNIX) { return terminateInstanceOnNIX(processId); }
 
         ConsoleUtils.error("UNSUPPORTED OS: " + OS_NAME + ". No termination for " + processId);
         return false;
@@ -124,6 +125,16 @@ public final class RuntimeUtils {
             String textInQuotesTreated =
                 StringUtils.replace(StringUtils.replace(textInQuotes, " ", TEMP_SPACE), "\"", TEMP_DOUBLE_QUOTES);
             escaped = StringUtils.replace(escaped, textInQuotes, textInQuotesTreated);
+        }
+
+        // if *NIX and balanced single quote
+        int singleQuoteCount = StringUtils.countMatches(escaped, "'");
+        if (!SystemUtils.IS_OS_WINDOWS && singleQuoteCount % 2 == 0) {
+            while (StringUtils.contains(escaped, "'")) {
+                String textInQuotes = RegexUtils.firstMatches(escaped, "('.*?')");
+                String textInQuotes2 = StringUtils.remove(StringUtils.replace(textInQuotes, " ", TEMP_SPACE), "'");
+                escaped = StringUtils.replace(escaped, textInQuotes, textInQuotes2);
+            }
         }
 
         // now split by space

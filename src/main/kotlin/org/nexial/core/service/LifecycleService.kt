@@ -18,7 +18,8 @@
 package org.nexial.core.service
 
 import org.nexial.commons.spring.SpringUtils
-import org.nexial.core.service.ServiceLauncher.Companion
+import org.nexial.core.NexialConst.Data.MIME_JSON
+import org.nexial.core.NexialConst.Data.MIME_PLAIN
 import org.slf4j.LoggerFactory
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestMethod.POST
@@ -30,11 +31,12 @@ import javax.annotation.PreDestroy
 @RestController("LifecycleService")
 @RequestMapping(name = "LifecycleService",
                 path = ["/lifecycle"],
-                produces = ["application/json"],
-                consumes = ["application/json", "text/plain"],
+                produces = [MIME_JSON],
+                consumes = [MIME_JSON, MIME_PLAIN],
                 method = [POST])
 @ResponseBody
-open class LifecycleService {
+class LifecycleService {
+
     private val logger = LoggerFactory.getLogger(this.javaClass)
 
     @PostConstruct
@@ -46,21 +48,21 @@ open class LifecycleService {
         if (logger.isInfoEnabled) logger.info("${SpringUtils.getMappedUri(this)} shutting down...")
     }
 
-//    @RequestMapping(path = ["refresh"])
-//    fun refresh(): Any {
-//        ServiceLauncher.refresh()
-//        return SuccessResponse(message = "nexial-service refresh complete")
-//    }
-//
+    //    @RequestMapping(path = ["refresh"])
+    //    fun refresh(): Any {
+    //        ReadyLauncher.refresh()
+    //        return SuccessResponse(message = "nexial-service refresh complete")
+    //    }
+
     @RequestMapping(path = ["restart"])
     fun restart(): Any {
-        newWorkerThread { ServiceLauncher.restart() }
+        newWorkerThread { ReadyLauncher.restart() }
         return SuccessResponse(message = "nexial-service restarting...")
     }
 
     @RequestMapping(path = ["shutdown"])
     fun stop(): Any {
-        newWorkerThread { ServiceLauncher.shutdown() }
+        newWorkerThread { ReadyLauncher.shutdown() }
         return SuccessResponse(message = "nexial-service shutting down...")
     }
 
@@ -68,7 +70,7 @@ open class LifecycleService {
         println("starting thread")
         val thread = Thread {
             Thread.sleep(2000)
-            println("running thread: " + body)
+            println("running thread: $body")
             body()
         }
         thread.isDaemon = false

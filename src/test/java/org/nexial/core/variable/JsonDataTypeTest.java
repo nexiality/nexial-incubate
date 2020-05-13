@@ -28,52 +28,52 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 public class JsonDataTypeTest {
-    @Before
-    public void setUp() throws Exception {
-    }
+	@Before
+	public void setUp() throws Exception {
+	}
 
-    @After
-    public void tearDown() throws Exception {
-    }
+	@After
+	public void tearDown() throws Exception {
+	}
 
-    @Test
-    public void toJSONObject() throws Exception {
-        JsonDataType jsonData = new JsonDataType("{ \"name\": \"John Smith\" }");
+	@Test
+	public void toJSONObject() throws Exception {
+		JsonDataType jsonData = new JsonDataType("{ \"name\": \"John Smith\" }");
 
-        Assert.assertTrue(jsonData.getValue() instanceof JsonObject);
+		Assert.assertTrue(jsonData.getValue() instanceof JsonObject);
 
-        JSONObject json = jsonData.toJSONObject();
-        Assert.assertNotNull(json);
-        Assert.assertEquals("John Smith", json.optString("name"));
+		JSONObject json = jsonData.toJSONObject();
+		Assert.assertNotNull(json);
+		Assert.assertEquals("John Smith", json.optString("name"));
 
-        // negative test
-        try {
-            jsonData.toJSONArray();
-            Assert.fail("failure expected due to mismatched data type");
-        } catch (ClassCastException e) {
-            // expected
-        }
-    }
+		// negative test
+		try {
+			jsonData.toJSONArray();
+			Assert.fail("failure expected due to mismatched data type");
+		} catch (ClassCastException e) {
+			// expected
+		}
+	}
 
-    @Test
-    public void toJSONArray() throws Exception {
-        JsonDataType jsonData = new JsonDataType("[ {\"name\":\"John Smith\"}, {\"name\":\"Jane Doe\"} ]");
+	@Test
+	public void toJSONArray() throws Exception {
+		JsonDataType jsonData = new JsonDataType("[ {\"name\":\"John Smith\"}, {\"name\":\"Jane Doe\"} ]");
 
-        Assert.assertTrue(jsonData.getValue() instanceof JsonArray);
+		Assert.assertTrue(jsonData.getValue() instanceof JsonArray);
 
-        JSONArray json = jsonData.toJSONArray();
-        Assert.assertNotNull(json);
-        Assert.assertEquals(2, json.length());
-        Assert.assertEquals("John Smith", json.optJSONObject(0).optString("name"));
-        Assert.assertEquals("Jane Doe", json.optJSONObject(1).optString("name"));
+		JSONArray json = jsonData.toJSONArray();
+		Assert.assertNotNull(json);
+		Assert.assertEquals(2, json.length());
+		Assert.assertEquals("John Smith", json.optJSONObject(0).optString("name"));
+		Assert.assertEquals("Jane Doe", json.optJSONObject(1).optString("name"));
 
-        // negative test
-        try {
-            jsonData.toJSONObject();
-            Assert.fail("failure expected due to mismatched data type");
-        } catch (ClassCastException e) {
-            // expected
-        }
-    }
+		// negative test
+		try {
+			jsonData.toJSONObject();
+			Assert.fail("failure expected due to mismatched data type");
+		} catch (ClassCastException e) {
+			// expected
+		}
+	}
 
 }

@@ -143,7 +143,7 @@ public class ExcelSpecFileParser extends RecordSpecFileParser {
             mapFunctionsToField(config, mappingConfig.getFileheaderrecord().getMapfunctions());
         }
 
-        return new RecordConfigBuilder()
+        return new RecordConfig.RecordConfigBuilder()
                    .fieldConfigList(fileFooterConfigs)
                    .mapFunctionConfigs(mapFunctionsToRecord(fileFooter.getMapfunctions()))
                    .fieldSeparator(fileFooter.getFieldseparator())
@@ -310,7 +310,7 @@ public class ExcelSpecFileParser extends RecordSpecFileParser {
             mapFunctionsToField(config, fileHeader.getMapfunctions());
         }
 
-        return new RecordConfigBuilder()
+        return new RecordConfig.RecordConfigBuilder()
                    .fieldConfigList(fileHeaderConfigs)
                    .mapFunctionConfigs(mapFunctionsToRecord(fileHeader.getMapfunctions()))
                    .fieldSeparator(fileHeader.getFieldseparator())

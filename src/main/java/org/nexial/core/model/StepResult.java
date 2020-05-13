@@ -24,7 +24,9 @@ import org.nexial.core.utils.MessageUtils;
 import org.openqa.selenium.WebDriver;
 
 import static org.apache.commons.lang3.builder.ToStringStyle.SHORT_PREFIX_STYLE;
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.OPT_ELAPSED_TIME_SLA;
+import static org.nexial.core.NexialConst.MSG_SKIPPED;
+import static org.nexial.core.NexialConst.MSG_WARN;
 
 public class StepResult {
     private static final String NOT_SUPPORTED = "()' is not supported by current version of automation driver: ";
@@ -34,6 +36,7 @@ public class StepResult {
     private boolean skipped;
     private Throwable exception;
     private Object[] paramValues;
+    private String detailedLogLink;
 
     public StepResult(boolean success) { this(success, null, null); }
 
@@ -47,7 +50,15 @@ public class StepResult {
 
     public static StepResult success(String message) { return new StepResult(true, message, null); }
 
+    public static StepResult success(String format, Object... args) {
+        return new StepResult(true, String.format(format, args), null);
+    }
+
     public static StepResult fail(String message) { return new StepResult(false, message, null); }
+
+    public static StepResult fail(String format, Object... args) {
+        return new StepResult(false, String.format(format, args), null);
+    }
 
     public static StepResult fail(String message, Throwable exception) {
         return new StepResult(false, message, exception);
@@ -79,7 +90,7 @@ public class StepResult {
 
     public boolean isError() { return !success && !isSkipped() && !isWarn(); }
 
-    public String getMessage() { return message; }
+    public String getMessage() { return message == null ? "null" : StringUtils.defaultString(message, "(empty)"); }
 
     public Throwable getException() { return exception; }
 
@@ -97,6 +108,10 @@ public class StepResult {
             message = "Elapsed time violated SLA specified via '" + OPT_ELAPSED_TIME_SLA + "'.";
         }
     }
+
+    public String getDetailedLogLink() { return detailedLogLink; }
+
+    public void setDetailedLogLink(String detailedLogLink) { this.detailedLogLink = detailedLogLink; }
 
     @Override
     public String toString() {

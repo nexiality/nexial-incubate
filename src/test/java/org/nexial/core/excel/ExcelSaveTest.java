@@ -25,6 +25,7 @@ import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+
 import org.nexial.core.NexialTestUtils;
 import org.nexial.core.excel.Excel.Worksheet;
 
@@ -32,55 +33,55 @@ import static java.io.File.separator;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
 
 public class ExcelSaveTest {
-    private File fixture;
+	private File fixture;
 
-    @Before
-    public void init() throws Exception {
-        File fixtureOrig = NexialTestUtils.getResourceFile(this.getClass(), this.getClass().getSimpleName() + ".xlsx");
-        fixture = new File(SystemUtils.getJavaIoTmpDir().getAbsolutePath() + separator + fixtureOrig.getName());
+	@Before
+	public void init() throws Exception {
+		File fixtureOrig = NexialTestUtils.getResourceFile(this.getClass(), this.getClass().getSimpleName() + ".xlsx");
+		fixture = new File(SystemUtils.getJavaIoTmpDir().getAbsolutePath() + separator + fixtureOrig.getName());
 
-        FileUtils.copyFile(fixtureOrig, fixture);
-        Assert.assertTrue(fixture.canRead());
-        Assert.assertTrue(fixture.length() > 1);
-        System.out.println("created temp fixture at " + fixture);
-    }
+		FileUtils.copyFile(fixtureOrig, fixture);
+		Assert.assertTrue(fixture.canRead());
+		Assert.assertTrue(fixture.length() > 1);
+		System.out.println("created temp fixture at " + fixture);
+	}
 
-    @After
-    public void tearDown() throws Exception {
-        FileUtils.forceDelete(fixture);
-    }
+	@After
+	public void tearDown() throws Exception {
+		FileUtils.forceDelete(fixture);
+	}
 
-    @Test
-    public void testSaveWorksheet() throws Exception {
+	@Test
+	public void testSaveWorksheet() throws Exception {
 
-        // update content in sheet 1
-        System.out.println("before first set of changes, fixture.length() = " + fixture.length());
-        Excel excel = new Excel(fixture);
-        Worksheet scenario1 = excel.worksheet("Scenario1");
-        scenario1.getSheet().getRow(4).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("PASS");
-        scenario1.getSheet().getRow(5).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("PASS");
-        scenario1.getSheet().getRow(6).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("PASS");
-        scenario1.save();
+		// update content in sheet 1
+		System.out.println("before first set of changes, fixture.length() = " + fixture.length());
+		Excel excel = new Excel(fixture);
+		Worksheet scenario1 = excel.worksheet("Scenario1");
+		scenario1.getSheet().getRow(4).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("PASS");
+		scenario1.getSheet().getRow(5).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("PASS");
+		scenario1.getSheet().getRow(6).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("PASS");
+		scenario1.save();
 
-        System.out.println("after second set of changes, fixture.length() = " + fixture.length());
-        excel = new Excel(fixture);
-        scenario1 = excel.worksheet("Scenario1");
-        Assert.assertEquals("PASS", scenario1.getSheet().getRow(4).getCell(13).getStringCellValue());
-        Assert.assertEquals("PASS", scenario1.getSheet().getRow(5).getCell(13).getStringCellValue());
-        Assert.assertEquals("PASS", scenario1.getSheet().getRow(6).getCell(13).getStringCellValue());
+		System.out.println("after second set of changes, fixture.length() = " + fixture.length());
+		excel = new Excel(fixture);
+		scenario1 = excel.worksheet("Scenario1");
+		Assert.assertEquals("PASS", scenario1.getSheet().getRow(4).getCell(13).getStringCellValue());
+		Assert.assertEquals("PASS", scenario1.getSheet().getRow(5).getCell(13).getStringCellValue());
+		Assert.assertEquals("PASS", scenario1.getSheet().getRow(6).getCell(13).getStringCellValue());
 
-        // update content in sheet 2
-        Worksheet scenario2 = excel.worksheet("Scenario2");
-        scenario2.getSheet().getRow(4).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("FAIL");
-        scenario2.getSheet().getRow(5).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("FAIL");
-        scenario2.getSheet().getRow(6).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("FAIL");
-        scenario2.save();
+		// update content in sheet 2
+		Worksheet scenario2 = excel.worksheet("Scenario2");
+		scenario2.getSheet().getRow(4).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("FAIL");
+		scenario2.getSheet().getRow(5).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("FAIL");
+		scenario2.getSheet().getRow(6).getCell(13, CREATE_NULL_AS_BLANK).setCellValue("FAIL");
+		scenario2.save();
 
-        System.out.println("after second set of changes, fixture.length() = " + fixture.length());
-        excel = new Excel(fixture);
-        scenario2 = excel.worksheet("Scenario2");
-        Assert.assertEquals("FAIL", scenario2.getSheet().getRow(4).getCell(13).getStringCellValue());
-        Assert.assertEquals("FAIL", scenario2.getSheet().getRow(5).getCell(13).getStringCellValue());
-        Assert.assertEquals("FAIL", scenario2.getSheet().getRow(6).getCell(13).getStringCellValue());
-    }
+		System.out.println("after second set of changes, fixture.length() = " + fixture.length());
+		excel = new Excel(fixture);
+		scenario2 = excel.worksheet("Scenario2");
+		Assert.assertEquals("FAIL", scenario2.getSheet().getRow(4).getCell(13).getStringCellValue());
+		Assert.assertEquals("FAIL", scenario2.getSheet().getRow(5).getCell(13).getStringCellValue());
+		Assert.assertEquals("FAIL", scenario2.getSheet().getRow(6).getCell(13).getStringCellValue());
+	}
 }

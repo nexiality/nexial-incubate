@@ -37,6 +37,7 @@
 	set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.verbose=false
 	set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.silent=false
     REM set JAVA_OPT=%JAVA_OPT% -Dwebdriver.winium.logpath=%TEMP%\winium-service.log
+	set JAVA_OPT=%JAVA_OPT% -Dorg.apache.poi.util.POILogger=org.apache.poi.util.NullLogger
 
 	goto :eof
 
@@ -99,7 +100,7 @@ REM # Make sure prerequisite environment variables are set
 :resolveEnv
 	set NEXIAL_LIB=%NEXIAL_HOME%\lib
 	set CLASSES_PATH=%NEXIAL_HOME%\classes
-	set datestr=%date:~10,4%-%date:~4,2%-%date:~7,2% %time%
+	set datestr=%date:~6,4%-%date:~0,2%-%date:~3,2% %time%
 
 	echo ENVIRONMENT:
 	echo   CURRENT TIME:   %datestr%

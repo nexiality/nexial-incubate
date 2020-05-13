@@ -26,22 +26,46 @@ if "%1"=="" goto :reportBadInputAndExit
 	)
 	echo   PROJECT_HOME:   %PROJECT_HOME%
 
+    rem determine project id
+    rem first, use current project structure to determine project id
+    set PROJECT_NAME=
+    for %%F in (%1) do set PROJECT_NAME=%%~nF
+
+    rem if project.id file exist, read its content as project id
+    set PROJECT_ID=%PROJECT_HOME%\.meta\project.id
+    if exist %PROJECT_ID% (
+		for /f "delims=" %%x in (%PROJECT_ID%) do set PROJECT_NAME=%%x
+	)
+
+    rem lastly, user gets to choose
+	set user_project_name=NUL
+    echo.
+    echo ^>^> currently project id is defined as %PROJECT_NAME%.
+    echo ^>^> to change it, enter new project id below or press ENTER to keep it as is
+    set /p user_project_name="  Enter project id [%PROJECT_NAME%]: "
+    if not "%user_project_name%"=="NUL" (
+        set PROJECT_NAME=%user_project_name%
+    )
+
 	echo.
 	echo ^>^> (re)creating project home at %PROJECT_HOME%
 	mkdir %PROJECT_HOME%\.meta 2>NUL
+	mkdir %PROJECT_HOME%\artifact\bin 2>NUL
 	mkdir %PROJECT_HOME%\artifact\script 2>NUL
 	mkdir %PROJECT_HOME%\artifact\data 2>NUL
 	mkdir %PROJECT_HOME%\artifact\plan 2>NUL
 	mkdir %PROJECT_HOME%\output 2>NUL
 
+	REM create empty project.properties file if it does not exist
+	if exist %PROJECT_HOME%\artifact\project.properties (
+		echo ^>^> skip over the creation of project.properties
+	) else (
+		type NUL > %PROJECT_HOME%\artifact\project.properties
+	)
+
     REM create project.id file to uniquely identify a "project" across enterprise (i.e. same SCM)
-    set PROJECT_ID=%PROJECT_HOME%\.meta\project.id
-    if not exist %PROJECT_ID% (
-        echo ^>^> create %PROJECT_ID%
-		set PROJECT_NAME=
-		for %%F in (%1) do set PROJECT_NAME=%%~nF
-        echo %PROJECT_NAME% > %PROJECT_ID%
-    )
+    echo ^>^> (re)creating %PROJECT_ID% with %PROJECT_NAME%"
+    echo !PROJECT_NAME!> %PROJECT_ID%
 
 	set script_name=%~n1
     set SKIP_DEF_SCRIPTS=false
@@ -69,7 +93,7 @@ if "%1"=="" goto :reportBadInputAndExit
 
 	cd %PROJECT_HOME%
 	cd
-	dir /s /b /on
+	dir /s /b /on *.xlsx *.properties
 
 	echo.
 	echo.

@@ -87,6 +87,13 @@ public final class ResourceUtils {
         return prop;
     }
 
+    /**
+     * check that {@code resource} starts with {@code http://} or {@code https://}.
+     */
+    public static boolean isWebResource(String resource) {
+        return StringUtils.isNotBlank(resource) && RegexUtils.isExact(resource.toLowerCase(), "^https?\\:\\/\\/(.+)$");
+    }
+
     /** return the file content as <code >String</code> from the provided {@code resource}. */
     public static String loadResource(URL resource) throws IOException, JSONException {
         if (resource == null) { throw new IOException("resource is null"); }

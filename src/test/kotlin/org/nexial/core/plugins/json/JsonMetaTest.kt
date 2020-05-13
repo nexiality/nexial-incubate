@@ -28,7 +28,6 @@ import java.io.FileReader
 class JsonMetaTest {
 
     private var jsonMetaParser = JsonMetaParser()
-    private val jsonParser = JsonParser()
 
     @Test
     @Throws(Throwable::class)
@@ -38,7 +37,7 @@ class JsonMetaTest {
         Assert.assertNotNull(resourcePath)
 
         val reader = BufferedReader(FileReader(resourcePath!!))
-        val subject = jsonMetaParser.parse(jsonParser.parse(reader))
+        val subject = jsonMetaParser.parse(JsonParser.parseReader(reader))
         println(subject)
 
         Assert.assertNotNull(subject)
@@ -155,7 +154,7 @@ class JsonMetaTest {
         Assert.assertNotNull(resourcePath)
 
         val reader2 = BufferedReader(FileReader(resourcePath!!))
-        val subject2 = jsonMetaParser.parse(jsonParser.parse(reader2))
+        val subject2 = jsonMetaParser.parse(JsonParser.parseReader(reader2))
         println(subject2)
 
         Assert.assertTrue(subject2.isArray)
@@ -233,8 +232,8 @@ class JsonMetaTest {
                 "answer": "Huston Rocket"
             }"""
 
-        val expected = jsonMetaParser.parse(jsonParser.parse(fixture1))
-        val actual = jsonMetaParser.parse(jsonParser.parse(fixture2))
+        val expected = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+        val actual = jsonMetaParser.parse(JsonParser.parseString(fixture2))
         val results = expected.compare(actual)
         println("results = $results")
         Assert.assertNotNull(results)
@@ -256,8 +255,8 @@ class JsonMetaTest {
                 "question": "Which one is correct team name in NBA?"
             }"""
 
-        val expected = jsonMetaParser.parse(jsonParser.parse(fixture1))
-        val actual = jsonMetaParser.parse(jsonParser.parse(fixture2))
+        val expected = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+        val actual = jsonMetaParser.parse(JsonParser.parseString(fixture2))
         val results = expected.compare(actual)
         println("results = $results")
         Assert.assertNotNull(results)
@@ -289,13 +288,16 @@ class JsonMetaTest {
                 "answer": "Huston Rocket"
             }"""
 
-        val expected = jsonMetaParser.parse(jsonParser.parse(fixture1))
-        val actual = jsonMetaParser.parse(jsonParser.parse(fixture2))
+        val expected = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+        val actual = jsonMetaParser.parse(JsonParser.parseString(fixture2))
         val results = expected.compare(actual)
         println("results = $results")
 
         assertResultSize(results, 1)
-        assertDiffNodes(results.differences[0], "$.answer", "$.answer")
+        assertDiffNodes(results.differences[0],
+                        "$.answer",
+                        "value \"Houston Rocket\" of type text",
+                        "value \"Huston Rocket\" of type text")
     }
 
     @Test
@@ -318,14 +320,20 @@ class JsonMetaTest {
                 "answer": "Huston Rocket"
             }"""
 
-        val expected = jsonMetaParser.parse(jsonParser.parse(fixture1))
-        val actual = jsonMetaParser.parse(jsonParser.parse(fixture2))
+        val expected = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+        val actual = jsonMetaParser.parse(JsonParser.parseString(fixture2))
         val results = expected.compare(actual)
         println("results = $results")
 
         assertResultSize(results, 2)
-        assertDiffNodes(results.differences[0], "$.answer", "$.answer")
-        assertDiffNodes(results.differences[1], "$.question", "$.question")
+        assertDiffNodes(results.differences[0],
+                        "$.answer",
+                        "value \"Houston Rocket\" of type text",
+                        "value \"Huston Rocket\" of type text")
+        assertDiffNodes(results.differences[1],
+                        "$.question",
+                        "value \"Which one is correct NBA team name?\" of type text",
+                        "value \"Which one is correct team name in NBA?\" of type text")
     }
 
     @Test
@@ -344,26 +352,36 @@ class JsonMetaTest {
                 "for real": false
             }"""
 
-        val expected = jsonMetaParser.parse(jsonParser.parse(fixture1))
-        val actual = jsonMetaParser.parse(jsonParser.parse(fixture2))
+        val expected = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+        val actual = jsonMetaParser.parse(JsonParser.parseString(fixture2))
         val results = expected.compare(actual)
         println("results = $results")
 
-        assertResultSize(results, 5)
+        assertResultSize(results, 7)
 
         val diff = results.differences[0]
-        val message = diff.message
-        assertDiffNodes(diff, "$", "$")
-        Assert.assertTrue(message.contains("EXPECTED has 3 nodes"))
-        Assert.assertTrue(message.contains("ACTUAL has 4 nodes"))
+        assertDiffNodes(diff, "$",
+                        "3 elements (answer, options, question)",
+                        "4 elements (answer, for real, options, question)")
+        Assert.assertTrue(diff.expected.contains("3 elements (answer, options, question)"))
+        Assert.assertTrue(diff.actual.contains("4 elements (answer, for real, options, question)"))
 
-        assertDiffNodes(results.differences[1], "$.answer", "$.answer")
-        assertDiffNodes(results.differences[2], "$.options", "$.for real")
-        assertDiffNodes(results.differences[3], "$.question", "$.options")
+        assertDiffNodes(results.differences[1], "$.answer",
+                        "value \"Golden State Warriors\" of type text",
+                        "value \"Huston Rocket\" of type text")
+        assertDiffNodes(results.differences[2], "$.options", "4 elements", "5 elements")
+        assertDiffNodes(results.differences[3], "$.options[2]",
+                        "value \"Golden State Warriors\" of type text",
+                        "value \"Chicago Fools\" of type text")
 
-        val diff5 = results.differences[4]
-        Assert.assertNull(diff5.expectedNode)
-        Assert.assertEquals("$.question", diff5.actualNode)
+        val diff4 = results.differences[4]
+        Assert.assertEquals("$.options[3]", diff4.node)
+
+        val diff5 = results.differences[5]
+        Assert.assertEquals("$.question", diff5.node)
+
+        val diff6 = results.differences[6]
+        Assert.assertEquals("$.for real", diff6.node)
     }
 
     @Test
@@ -416,8 +434,8 @@ class JsonMetaTest {
                     }
                 }]"""
 
-        val expected = jsonMetaParser.parse(jsonParser.parse(fixture1))
-        val actual = jsonMetaParser.parse(jsonParser.parse(fixture2))
+        val expected = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+        val actual = jsonMetaParser.parse(JsonParser.parseString(fixture2))
         val results = expected.compare(actual)
         println("results = $results")
 
@@ -451,8 +469,10 @@ class JsonMetaTest {
                     "q1": {
                         "question": "Which one is correct team name in NBA?",
                         "options": [
-                            "New York Bulls","Los Angeles Kings",
-                            "Golden State Warriors",  "Huston Rocket"
+                            "New York Bulls",
+                            "Los Angeles Kings",
+                            "Golden State Warriors",  
+                            "Huston Rocket"
                         ],
                         "answer": "Huston Rocket"
                     }
@@ -469,28 +489,35 @@ class JsonMetaTest {
                 }
             ]"""
 
-        val results = jsonMetaParser.parse(jsonParser.parse(fixture1))
-            .compare(jsonMetaParser.parse(jsonParser.parse(fixture2)))
+        val results = jsonMetaParser.parse(JsonParser.parseString(fixture1))
+            .compare(jsonMetaParser.parse(JsonParser.parseString(fixture2)))
         println("results = $results")
 
-        assertResultSize(results, 11)
-        assertDiffNodes(results.differences[0], "$[0].q1.options[3]", "$[0].q1.options[3]")
-        assertDiffNodes(results.differences[1], "$[1].q2.answer", "$[1].q2.answer")
-        assertDiffNodes(results.differences[2], "$[1].q2.options[0]", "$[1].q2.options[0]")
-        assertDiffNodes(results.differences[3], "$[1].q2.options[1]", "$[1].q2.options[1]")
-        assertDiffNodes(results.differences[4], "$[1].q2.options[2]", "$[1].q2.options[2]")
-        assertDiffNodes(results.differences[5], "$[1].q2.options[3]", "$[1].q2.options[3]")
-        assertDiffNodes(results.differences[6], "$[1].q2.question", "$[1].q2.question")
-        assertDiffNodes(results.differences[7], "$[2].q3", "$[2].q3")
-        assertDiffNodes(results.differences[8], "$[2].q3.answer", "$[2].q3.answer")
-        assertDiffNodes(results.differences[9], "$[2].q3.question", "$[2].q3.options")
-        assertDiffNodes(results.differences[10], null, "$[2].q3.question")
+        assertResultSize(results, 10)
+        assertDiffNodes(results.differences[0], "$[0].q1.options[3]",
+                        "value \"Houston Rocket\" of type text", "value \"Huston Rocket\" of type text")
+        assertDiffNodes(results.differences[1], "$[1].q2.answer", "null", "value \"12\" of type text")
+        assertDiffNodes(results.differences[2], "$[1].q2.options[0]",
+                        "value \"10\" of type text", "value 10 of type number")
+        assertDiffNodes(results.differences[3], "$[1].q2.options[1]",
+                        "value \"11\" of type text", "value 11 of type number")
+        assertDiffNodes(results.differences[4], "$[1].q2.options[2]",
+                        "value \"12\" of type text", "value 12 of type number")
+        assertDiffNodes(results.differences[5], "$[1].q2.options[3]",
+                        "value \"13\" of type text", "value 13 of type number")
+        assertDiffNodes(results.differences[6], "$[1].q2.question",
+                        "value \"5 - 7 = ?\" of type text", "value \"5 + 7 = ?\" of type text")
+        assertDiffNodes(results.differences[7], "$[2].q3",
+                        "2 elements (answer, question)", "3 elements (answer, options, question)")
+        assertDiffNodes(results.differences[8], "$[2].q3.answer",
+                        "value 4 of type number", "value \"4\" of type text")
+        assertDiffNodes(results.differences[9], "$[2].q3.options", "NOT FOUND", "4 elements of type array")
 
         val diffJson = results.toJson()
         println("results = $diffJson")
 
         Assert.assertNotNull(diffJson)
-        Assert.assertEquals(11, diffJson.size())
+        Assert.assertEquals(10, diffJson.size())
     }
 
     private fun assertResultSize(results: JsonComparisonResult, count: Int) {
@@ -499,9 +526,10 @@ class JsonMetaTest {
         Assert.assertEquals(count, results.differenceCount())
     }
 
-    private fun assertDiffNodes(diff: Difference, expectedNode: String?, actualNode: String) {
-        Assert.assertEquals(expectedNode, diff.expectedNode)
-        Assert.assertEquals(actualNode, diff.actualNode)
+    private fun assertDiffNodes(diff: Difference, node: String?, expected: String?, actual: String) {
+        Assert.assertEquals(node, diff.node)
+        Assert.assertEquals(expected, diff.expected)
+        Assert.assertEquals(actual, diff.actual)
     }
 
     private fun assertArray(jsonMeta: JsonMeta, expectedName: String, expectedSize: Int) {

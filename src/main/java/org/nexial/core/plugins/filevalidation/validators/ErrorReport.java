@@ -81,6 +81,8 @@ public class ErrorReport {
         return outputFile;
     }
 
+
+
     public static File createJSON(RecordData recordData) {
         File outputFile = new File(context.generateTestStepOutput("json"));
         String csvFile = context.generateTestStepOutput("csv");

@@ -22,17 +22,14 @@ import org.apache.commons.lang3.BooleanUtils
 import org.apache.commons.lang3.RandomStringUtils
 import org.apache.commons.lang3.StringUtils
 import org.apache.commons.lang3.SystemUtils
-import org.json.JSONObject
 import org.nexial.core.ExecutionThread
 import org.nexial.core.NexialConst.DEF_FILE_ENCODING
-import org.nexial.core.NexialConst.Data.*
-import org.nexial.core.NexialConst.OPT_RUN_ID
+import org.nexial.core.NexialConst.TimeTrack.*
 import org.nexial.core.model.*
 import org.nexial.core.model.ExecutionEvent.*
-import org.nexial.core.model.ExecutionSummary.ExecutionLevel
-import org.nexial.core.model.ExecutionSummary.ExecutionLevel.*
 import org.nexial.core.service.EventUtils.postfix
 import org.nexial.core.service.EventUtils.storageLocation
+import org.nexial.core.utils.ExecUtils.deriveRunId
 import org.nexial.core.utils.TrackTimeLogs
 import java.io.File
 import java.io.File.separator
@@ -41,34 +38,21 @@ import java.util.*
 
 object EventTracker {
     private val eventFileDateFormat = SimpleDateFormat("yyyyMMdd_HHmmss_SSS")
-    var testData: SortedMap<String, String> = TreeMap<String, String>()
-
     private val enableUniversalTracking =
-        BooleanUtils.toBoolean(System.getProperty("nexial.universalTracking", "false"))
+            BooleanUtils.toBoolean(System.getProperty("nexial.universalTracking", "false"))
 
-    fun getStorageLocation() = EventUtils.storageLocation
+    fun getStorageLocation() = storageLocation
 
-    fun getExtension() = EventUtils.postfix
+    fun getExtension() = postfix
 
+    @JvmStatic
     fun track(event: NexialEvent) {
-        if (event is NexialCompleteEvent) {
-            write(event.eventName, formatJson(event.json()))
-        }
-
+        write(event.eventName, event.json())
         trackEvents(event)
     }
 
+    @JvmStatic
     fun track(env: NexialEnv) = write("env", env.json())
-
-    private fun formatJson(json: String): String {
-        val jsonObject = JSONObject(json)
-
-        jsonObject.remove("levelId")
-        jsonObject.remove("warnCount")
-        jsonObject.remove("failedFast")
-        jsonObject.remove("refData")
-        return jsonObject.toString()
-    }
 
     private fun write(type: String, content: String) {
         if (enableUniversalTracking) {
@@ -87,97 +71,42 @@ object EventTracker {
         val startTime = event.startTime
         val endTime = event.endTime
         val trackTimeLogs = context?.trackTimeLogs ?: TrackTimeLogs()
-        val jsonObject = JSONObject(event.json())
 
-        when (eventName) {
-            ExecutionComplete.eventName -> {
-                if (trackEvent(TRACK_EXECUTION)) {
-                    trackTimeLogs.trackExecutionLevels(System.getProperty(OPT_RUN_ID), startTime, endTime, "Execution")
-                }
-                SQLiteManager.addExecutionDetails(jsonObject)
+        when {
+            eventName == ExecutionComplete.eventName && trackEvent(TRACK_EXECUTION)        -> {
+                trackTimeLogs.trackExecutionLevels(deriveRunId(), startTime, endTime, "Execution")
             }
 
-            ScriptComplete.eventName    -> {
-                val scriptEvent = event as NexialScriptCompleteEvent
-                val scriptId = scriptEvent.levelId
-
-                if (trackEvent(context, TRACK_SCRIPT)) {
-                    val label: String = asLabel(scriptEvent.script)
-                    trackTimeLogs.trackExecutionLevels(label, startTime, endTime, "Script")
-                }
-                SQLiteManager.insertExecutionData(SCRIPT, jsonObject)
-                SQLiteManager.insertExecutionMetaData(SCRIPT, scriptId, jsonObject.getJSONObject("refData"))
+            eventName == ScriptComplete.eventName && trackEvent(context, TRACK_SCRIPT)     -> {
+                val label: String = asLabel((event as NexialScriptCompleteEvent).script)
+                trackTimeLogs.trackExecutionLevels(label, startTime, endTime, "Script")
             }
 
-            IterationComplete.eventName -> {
+            eventName == IterationComplete.eventName                                       -> {
                 trackTimeLogs.forcefullyEndTracking()
-                val iterEvent = event as NexialIterationCompleteEvent
-                val iteration = "" + iterEvent.iteration
-                val iterationId = iterEvent.levelId
 
                 if (trackEvent(context, TRACK_ITERATION)) {
+                    val iterEvent = event as NexialIterationCompleteEvent
+                    val iteration = "" + iterEvent.iteration
                     val label: String = asLabel(iterEvent.script) + "-" +
                                         StringUtils.rightPad("0", 3 - iteration.length) + iteration
                     trackTimeLogs.trackExecutionLevels(label, startTime, endTime, "Iteration")
                 }
-
-                SQLiteManager.insertExecutionData(ExecutionLevel.ITERATION, jsonObject)
-                SQLiteManager.insertExecutionMetaData(ExecutionLevel.ITERATION, iterationId,
-                                                      jsonObject.getJSONObject("refData"))
-
-                testData.forEach { (key, value) -> SQLiteManager.insertIterationData(iterationId, key, value) }
             }
 
-            ScenarioComplete.eventName  -> {
-                val scenarioEvent = event as NexialScenarioCompleteEvent
-                if (trackEvent(context, TRACK_SCENARIO)) {
-                    trackTimeLogs.trackExecutionLevels(scenarioEvent.scenario,
-                                                       startTime, endTime, "Scenario")
-                }
-
-                SQLiteManager.insertExecutionData(SCENARIO, jsonObject)
-                SQLiteManager.insertExecutionMetaData(SCENARIO, scenarioEvent.levelId,
-                                                      jsonObject.getJSONObject("refData"))
-
-            }
-
-            ActivityComplete.eventName  -> {
-                SQLiteManager.insertExecutionData(ACTIVITY, jsonObject)
-            }
-
-            ExecutionStart.eventName    -> {
-                val runId = System.getProperty(OPT_RUN_ID)
-                var executionId = (event as NexialExecutionStartEvent).executionId
-
-                //setting sqlite configurations
-                val url = SQLiteManager.setupDB(runId, event.outPath)
-
-                SQLiteManager.insertExecutionDetails(executionId, runId, url)
-                SQLiteManager.insertExecutionEnvDetails(executionId)
-
-            }
-            ScriptStart.eventName       -> {
-                SQLiteManager.addPlanAndScriptDetails(jsonObject, context.execDef)
-            }
-
-            IterationStart.eventName    -> {
-                SQLiteManager.insertIterationDetails(context, jsonObject)
-            }
-            ScenarioStart.eventName     -> {
-                SQLiteManager.insertScenarioDetails(jsonObject)
-            }
-            ActivityStart.eventName     -> {
-                SQLiteManager.insertActivityDetails(jsonObject)
+            eventName == ScenarioComplete.eventName && trackEvent(context, TRACK_SCENARIO) -> {
+                trackTimeLogs.trackExecutionLevels((event as NexialScenarioCompleteEvent).scenario,
+                                                   startTime, endTime, "Scenario")
             }
         }
     }
 
     private fun asLabel(script: String) =
-        StringUtils.substringBeforeLast(StringUtils.substringAfterLast(StringUtils.replace(script, "\\", "/"), "/"),
-                                        ".")
+            StringUtils.substringBeforeLast(StringUtils.substringAfterLast(StringUtils.replace(script, "\\", "/"), "/"),
+                                            ".")
 
     private fun trackEvent(context: ExecutionContext, trackId: String) =
-        BooleanUtils.toBoolean(context.getStringData(trackId))
+            BooleanUtils.toBoolean(context.getStringData(trackId))
 
     private fun trackEvent(trackId: String) = BooleanUtils.toBoolean(System.getProperty(trackId))
 }

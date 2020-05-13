@@ -19,8 +19,6 @@ package org.nexial.core.plugins.web;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,12 +29,13 @@ import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nexial.commons.proc.RuntimeUtils;
 import org.nexial.commons.utils.EnvUtils;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.core.NexialConst.*;
 import org.nexial.core.ShutdownAdvisor;
-import org.nexial.core.browsermob.ProxyHandler;
 import org.nexial.core.model.BrowserCompleteEvent;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.plugins.CanTakeScreenshot;
@@ -46,11 +45,14 @@ import org.nexial.core.service.EventTracker;
 import org.nexial.core.utils.ConsoleUtils;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeDriverService;
 import org.openqa.selenium.chrome.ChromeDriverService.Builder;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.edge.EdgeDriver;
+import org.openqa.selenium.edge.EdgeOptions;
 import org.openqa.selenium.firefox.FirefoxDriver;
 import org.openqa.selenium.firefox.FirefoxOptions;
+import org.openqa.selenium.firefox.FirefoxProfile;
 import org.openqa.selenium.ie.InternetExplorerDriver;
 import org.openqa.selenium.ie.InternetExplorerOptions;
 import org.openqa.selenium.remote.DesiredCapabilities;
@@ -58,14 +60,16 @@ import org.openqa.selenium.safari.SafariDriver;
 import org.openqa.selenium.safari.SafariOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.support.PropertiesLoaderUtils;
 
 import static java.io.File.separator;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.apache.commons.lang3.SystemUtils.*;
 import static org.nexial.core.NexialConst.BrowserType.*;
-import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Data.TEST_LOG_PATH;
+import static org.nexial.core.NexialConst.Data.withProfile;
 import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Web.*;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.nexial.core.plugins.web.WebDriverCapabilityUtils.initCapabilities;
 import static org.nexial.core.utils.CheckUtils.requiresExecutableFile;
 import static org.openqa.selenium.PageLoadStrategy.EAGER;
@@ -86,35 +90,12 @@ public class Browser implements ForcefulTerminate {
     private static final Point INITIAL_POSITION = new Point(0, 0);
     private static final Point INITIAL_POSITION_SAFARI = new Point(2, 2);
 
-    private static final String USERHOME = StringUtils.appendIfMissing(USER_HOME, separator);
-    private static final List<String> POSSIBLE_NIX_CHROME_BIN_LOCATIONS = Arrays.asList(
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chrome",
-        "/bin/google-chrome",
-        "/bin/google-chrome-stable",
-        "/bin/chrome",
-        "/etc/alternatives/google-chrome",
-        "/etc/alternatives/google-chrome-stable",
-        "/etc/alternatives/chrome",
-        "/usr/bin/chromium-browser");
-    private static final List<String> POSSIBLE_OSX_CHROME_BIN_LOCATIONS = Arrays.asList(
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        USERHOME + "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        USERHOME + "/tools/Google Chrome.app/Contents/MacOS/Google Chrome");
-    private static final List<String> POSSIBLE_WIN_CHROME_BIN_LOCATIONS = Arrays.asList(
-        "C:\\Program Files (x86)\\Google\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files\\Google\\Application\\chrome.exe",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        USERHOME + "AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
-        USERHOME + "AppDataLocal\\Google\\Chrome\\chrome.exe",
-        USERHOME + "Local Settings\\Application Data\\Google\\Chrome\\chrome.exe");
-
     protected ExecutionContext context;
+    // not browser profile; this is nexial-specific profile to allow for multiple instances of the same command
+    protected String profile;
     protected WebDriver driver;
     // todo: not ready for prime time
-    protected ProxyHandler proxy;
+    // protected ProxyHandler proxy;
     protected List<String> chromeOptions;
     protected BrowserType browserType;
     protected String browserProfile;
@@ -150,25 +131,31 @@ public class Browser implements ForcefulTerminate {
     protected BrowserStackHelper browserstackHelper;
     protected CrossBrowserTestingHelper cbtHelper;
 
+    protected boolean shutdownStarted;
+
+    protected Map<String, List<String>> chromeBinLocations;
+    protected Map<String, List<String>> firefoxBinLocations;
+
     public void setContext(ExecutionContext context) { this.context = context; }
+
+    public void setProfile(String profile) { this.profile = profile; }
 
     public void setChromeOptions(List<String> chromeOptions) { this.chromeOptions = chromeOptions; }
 
     public void setFirefoxIntPrefs(Map<String, Integer> firefoxIntPrefs) { this.firefoxIntPrefs = firefoxIntPrefs;}
 
-    public void setFirefoxBooleanPrefs(Map<String, Boolean> firefoxBooleanPrefs) {
-        this.firefoxBooleanPrefs = firefoxBooleanPrefs;
-    }
+    public void setFirefoxBooleanPrefs(Map<String, Boolean> prefs) { this.firefoxBooleanPrefs = prefs; }
 
-    public void setFirefoxStringPrefs(Map<String, String> firefoxStringPrefs) {
-        this.firefoxStringPrefs = firefoxStringPrefs;
-    }
+    public void setFirefoxStringPrefs(Map<String, String> prefs) { this.firefoxStringPrefs = prefs; }
 
     public void setFirefoxBinArgs(List<String> firefoxBinArgs) { this.firefoxBinArgs = firefoxBinArgs; }
 
-    public void setProxy(ProxyHandler proxy) { this.proxy = proxy; }
+    public void setChromeBinLocations(Map<String, List<String>> locations) { this.chromeBinLocations = locations; }
 
-    public ProxyHandler getProxyHandler() { return proxy; }
+    public void setFirefoxBinLocations(Map<String, List<String>> locations) { this.firefoxBinLocations = locations; }
+
+    // public void setProxy(ProxyHandler proxy) { this.proxy = proxy; }
+    // public ProxyHandler getProxyHandler() { return proxy; }
 
     public WebDriver getDriver() { return driver; }
 
@@ -221,6 +208,7 @@ public class Browser implements ForcefulTerminate {
 
     @Override
     public String toString() {
+        if (browserType == null) { return "Not yet initialized"; }
         int excelVer = NumberUtils.toInt(resolveConfig(OPT_EXCEL_VER, "2007"), 2007);
         if (excelVer >= 2012) {
             StringBuilder sb = new StringBuilder(browserType.toString());
@@ -242,7 +230,10 @@ public class Browser implements ForcefulTerminate {
     public boolean mustForcefullyTerminate() { return driver != null; }
 
     @Override
-    public void forcefulTerminate() { if (driver != null) { shutdown(); } }
+    public void forcefulTerminate() {
+        shutdownStarted = true;
+        if (driver != null) { shutdown(); }
+    }
 
     public boolean favorJSClick() { return browserType.isJsEventFavored(); }
 
@@ -251,8 +242,7 @@ public class Browser implements ForcefulTerminate {
         String browser = context.getBrowserType();
 
         if (driver != null) {
-            if (LOGGER.isDebugEnabled()) { LOGGER.debug("current browser type - " + browser); }
-
+            if (LOGGER.isDebugEnabled()) { LOGGER.debug("current browser - " + browser); }
             if (browserType != BrowserType.valueOf(browser)) {
                 // browser changed... reinitialize..
                 LOGGER.warn("current browser type (" + browser + ") " +
@@ -268,17 +258,25 @@ public class Browser implements ForcefulTerminate {
                     }
                     // everything's fine, moving on
                 } catch (Throwable e) {
-                    String error = e.getMessage();
-                    if (StringUtils.contains(error, "unexpected end of stream on Connection") ||
-                        StringUtils.contains(error, "caused connection abort: recv failed")) {
-                        LOGGER.error("webdriver readiness check: " + error);
-                    } else if (StringUtils.contains(error, "window already closed")) {
+                    if (e instanceof NoSuchWindowException) {
+                        // recalibrate window handles
                         shouldInitialize = resolveActiveWindowHandle();
+                        if (shouldInitialize) {
+                            LOGGER.error("last window no longer available; BROWSER MIGHT BE TERMINATED; RESTARTING...");
+                        }
                     } else {
-                        // something's wrong with current browser window or session, need to re-init
-                        shouldInitialize = true;
-                        LOGGER.error("webdriver readiness check: " + error + "\n" +
-                                     "BROWSER MIGHT BE TERMINATED; RESTARTING...");
+                        String error = e.getMessage();
+                        if (StringUtils.contains(error, "unexpected end of stream on Connection") ||
+                            StringUtils.contains(error, "caused connection abort: recv failed")) {
+                            LOGGER.error("webdriver readiness check: " + error);
+                        } else if (StringUtils.contains(error, "window already closed")) {
+                            shouldInitialize = resolveActiveWindowHandle();
+                        } else {
+                            // something's wrong with current browser window or session, need to re-init
+                            shouldInitialize = true;
+                            LOGGER.error("webdriver readiness check: " + error + NL +
+                                         "BROWSER MIGHT BE TERMINATED; RESTARTING...");
+                        }
                     }
                 }
             }
@@ -301,27 +299,33 @@ public class Browser implements ForcefulTerminate {
             // if browser supports implicit wait and we are not using explicit wait (`WEB_ALWAYS_WAIT`), then
             // we'll change timeout's implicit wait time
             Timeouts timeouts = driver.manage().timeouts();
-            long pollWaitMs = context.getPollWaitMs();
             boolean timeoutChangesEnabled = browserType.isTimeoutChangesEnabled();
-            boolean shouldWaitImplicitly = timeoutChangesEnabled &&
-                                           pollWaitMs > 0 &&
-                                           !context.getBooleanData(WEB_ALWAYS_WAIT, DEF_WEB_ALWAYS_WAIT);
-            if (shouldWaitImplicitly) {
-                timeouts.implicitlyWait(pollWaitMs, MILLISECONDS);
-                ConsoleUtils.log("setting browser polling wait time to " + pollWaitMs + " ms");
+            if (timeoutChangesEnabled) {
+                int loadWaitMs = context.getIntConfig("web", profile, WEB_PAGE_LOAD_WAIT_MS);
+                timeouts.pageLoadTimeout(loadWaitMs, MILLISECONDS);
+                ConsoleUtils.log("setting browser page load timeout to " + loadWaitMs + " ms");
             }
 
-            if (timeoutChangesEnabled) {
-                int pageLoadTimeout = context.getIntData(OPT_WEB_PAGE_LOAD_WAIT_MS, DEF_WEB_PAGE_LOAD_WAIT_MS);
-                timeouts.pageLoadTimeout(pageLoadTimeout, MILLISECONDS);
-                ConsoleUtils.log("setting browser page load timeout to " + pageLoadTimeout + " ms");
+            long pollWaitMs = context.getPollWaitMs();
+            boolean alwaysWait = context.getBooleanConfig("web", profile, WEB_ALWAYS_WAIT);
+            if (alwaysWait) {
+                ConsoleUtils.log("detected " + WEB_ALWAYS_WAIT + "; " +
+                                 "use fluent-wait (up to " + pollWaitMs + " ms) during web automation");
+            } else {
+                boolean shouldWaitImplicitly = timeoutChangesEnabled && pollWaitMs > 0;
+                if (shouldWaitImplicitly) {
+                    timeouts.implicitlyWait(pollWaitMs, MILLISECONDS);
+                    ConsoleUtils.log("setting browser polling wait time to " + pollWaitMs + " ms");
+                } else {
+                    ConsoleUtils.log("implicit-wait might not be supported by the current browser " + browser);
+                }
             }
         }
 
         if (StringUtils.isBlank(initialWinHandle)) {
             initialWinHandle = driver.getWindowHandle();
             lastWinHandles.clear();
-            lastWinHandles.push(initialWinHandle);
+            if (StringUtils.isNotBlank(initialWinHandle)) { lastWinHandles.push(initialWinHandle); }
         }
 
         if (LOGGER.isDebugEnabled()) { LOGGER.debug("webdriver ready for " + browser); }
@@ -329,6 +333,9 @@ public class Browser implements ForcefulTerminate {
     }
 
     public void init() {
+        // if JVM already initiated shutdown sequence, then we need to give up trying as well.
+        if (shutdownStarted) { return; }
+
         ShutdownAdvisor.addAdvisor(this);
 
         System.setProperty("webdriver.reap_profile", "true");
@@ -350,7 +357,7 @@ public class Browser implements ForcefulTerminate {
 
         // now we need to "remember" the browser type (even if it's default) so that the #data tab of output file will
         // display the browser type used during execution
-        if (!context.hasData(BROWSER)) { context.setData(BROWSER, System.getProperty(BROWSER, DEF_BROWSER)); }
+        if (!context.hasData(withProfile(profile, BROWSER))) {context.setData(withProfile(profile, BROWSER), browser); }
 
         try {
             if (isRunSafari()) { driver = initSafari(); }
@@ -373,7 +380,7 @@ public class Browser implements ForcefulTerminate {
 
             syncContextPropToSystem(BROWSER);
         } catch (Throwable e) {
-            String msg = "Error initializing browser '" + browser + "': " + e.getMessage();
+            String msg = "Error initializing browser '" + browser + "': " + ExceptionUtils.getRootCauseMessage(e);
             ConsoleUtils.error(msg);
             throw new RuntimeException(msg, e);
         }
@@ -381,44 +388,38 @@ public class Browser implements ForcefulTerminate {
 
     protected void shutdown() {
         // todo: not ready for prime time
-        if (proxy != null) {
-            proxy.stopProxy();
-            proxy = null;
-        }
-
-        if (driver == null) {
-            clearWinHandles();
-            return;
-        }
-
-        // if (isRunFireFox() || isRunFirefoxHeadless() || driver instanceof FirefoxDriver) {
-        //     // try { driver.close(); } catch (Throwable e) { }
-        //     try { driver.quit(); } catch (Throwable e) { }
-        // } else if (isRunSafari() || driver instanceof SafariDriver) {
-        //     try { driver.close(); } catch (Throwable e) { }
-        //     try { driver.quit(); } catch (Throwable e) { }
-        // } else {
-        //     try { driver.close(); } catch (Throwable e) { }
-        //     try { driver.quit(); } catch (Throwable e) { }
+        // if (proxy != null) {
+        //     proxy.stopProxy();
+        //     proxy = null;
         // }
+
+        if (context != null) { context.removeData(withProfile(profile, BROWSER_META)); }
+
+        clearWinHandles();
+
+        if (driver == null) { return; }
 
         ConsoleUtils.log("Shutting down '" + browserType.name() + "' webdriver...");
 
-        EventTracker.INSTANCE.track(new BrowserCompleteEvent(browserType.name()));
+        EventTracker.track(new BrowserCompleteEvent(browserType.name()));
 
-        try { Thread.sleep(2000);} catch (InterruptedException e) { }
+        // Logs logs = driver.manage().logs();
+        // if (logs != null) {
+        //     LogEntries logEntries = logs.get(LogType.CLIENT);
+        //     if (!IterableUtils.isEmpty(logEntries)) {
+        //         List<LogEntry> allLogs = logEntries.getAll();
+        //         if (CollectionUtils.isNotEmpty(allLogs)) {
+        //             ConsoleUtils.log("client logs: " + allLogs.size() + " 'client' log entries found");
+        //             allLogs.forEach(log -> ConsoleUtils.log(new Date(log.getTimestamp()) + "\t" +
+        //                                                     log.getLevel() + "\t" +
+        //                                                     log.getMessage()));
+        //         }
+        //
+        //         System.out.println();System.out.println();System.out.println();
+        //     }
+        // }
 
-        if (!isRunFireFox() && !isRunFirefoxHeadless() && !(driver instanceof FirefoxDriver)) {
-            // close before quite doesn't seem to work for firefox driver
-            try { driver.close(); } catch (Throwable e) { }
-        }
-
-        try { driver.quit(); } catch (Throwable e) { }
-
-        try { Thread.sleep(4000);} catch (InterruptedException e) { }
-
-        clearWinHandles();
-        driver = null;
+        // clearWinHandles();
 
         if (context != null) {
             CanTakeScreenshot agent = context.findCurrentScreenshotAgent();
@@ -433,6 +434,26 @@ public class Browser implements ForcefulTerminate {
         if (cbtHelper != null) {
             cbtHelper.terminateLocal();
             cbtHelper = null;
+        }
+
+        try { Thread.sleep(1000); } catch (InterruptedException e) { }
+
+        shutdownElectronApp();
+
+        if (!isRunFireFox() && !isRunFirefoxHeadless() && !(driver instanceof FirefoxDriver)) {
+            // close before quite doesn't seem to work for firefox driver or electron app
+            ConsoleUtils.log("Close the current window, quitting the browser if it's the last window currently open.");
+            try { driver.close(); } catch (Throwable e) { }
+        }
+
+        try {
+            ConsoleUtils.log("Quits this driver, closing every associated window.");
+            driver.quit();
+            Thread.sleep(2000);
+        } catch (Throwable e) {
+            ConsoleUtils.error("Error occurred while shutting down webdriver:" + ExceptionUtils.getRootCauseMessage(e));
+        } finally {
+            driver = null;
         }
     }
 
@@ -509,11 +530,8 @@ public class Browser implements ForcefulTerminate {
 
         resolveChromeDriverLocation();
 
-        ChromeOptions options = new ChromeOptions()
-                                    .addArguments(this.chromeOptions)
-                                    .setBinary(clientLocation);
-
-        ChromeDriver chrome = new ChromeDriver(options);
+        ChromeDriver chrome = new ChromeDriver(new ChromeOptions().addArguments(this.chromeOptions)
+                                                                  .setBinary(clientLocation));
         Capabilities capabilities = chrome.getCapabilities();
         initCapabilities(context, (MutableCapabilities) capabilities);
 
@@ -528,23 +546,41 @@ public class Browser implements ForcefulTerminate {
 
         resolveChromeDriverLocation();
 
-        ChromeOptions options = new ChromeOptions().setBinary(clientLocation).setAcceptInsecureCerts(true);
-        // options.addArguments("--disable-extensions"); // disabling extensions
+        ChromeOptions options = new ChromeOptions().setBinary(clientLocation)
+                                                   .setAcceptInsecureCerts(true)
+                                                   .setUnhandledPromptBehaviour(IGNORE);
+
+        options.addArguments("--disable-extensions"); // disabling extensions
         // options.addArguments("--disable-gpu"); // applicable to windows os only
         options.addArguments("--disable-dev-shm-usage"); // overcome limited resource problems
         options.addArguments("--no-sandbox"); // Bypass OS security model
+        handleChromeProfile(options);
+
+        int port = 12209;
+        if (NumberUtils.isDigits(context.getStringData(CHROME_REMOTE_PORT))) {
+            port = NumberUtils.toInt(context.getStringData(CHROME_REMOTE_PORT));
+        }
+        ConsoleUtils.log("enabling chrome remote port: " + port);
+        options.addArguments("--remote-debugging-port=" + port);
+
+        // options.addArguments("--auto-open-devtools-for-tabs"); // open devtools
         // options.addArguments("--headless");
 
         Builder cdsBuilder = new Builder();
-        if (context.getBooleanData(LOG_ELECTRON_DRIVER, DEF_LOG_ELECTRON_DRIVER)) {
+        if (context.getBooleanData(ELECTRON_LOG_ENABLED, getDefaultBool(ELECTRON_LOG_ENABLED))) {
             // determine chrome log file
             String appName = clientLocation;
             if (StringUtils.contains(appName, "/")) { appName = StringUtils.substringAfterLast(appName, "/"); }
             if (StringUtils.contains(appName, "\\")) { appName = StringUtils.substringAfterLast(appName, "\\"); }
             if (StringUtils.contains(appName, ".")) { appName = StringUtils.substringBeforeLast(appName, "."); }
-            cdsBuilder = cdsBuilder.withLogFile(resolveBrowserLogFile("electron-" + appName + ".log"));
+            File logFile = resolveBrowserLogFile("electron-" + appName + ".log");
+            ConsoleUtils.log("enabling logging for Electron: " + logFile.getAbsolutePath());
+
+            boolean verbose = context.getBooleanData(ELECTRON_LOG_VERBOSE, getDefaultBool(ELECTRON_LOG_VERBOSE));
+            cdsBuilder = cdsBuilder.withVerbose(verbose).withLogFile(logFile);
         }
 
+        pageSourceSupported = false;
         return new ChromeDriver(cdsBuilder.build(), options);
     }
 
@@ -553,8 +589,14 @@ public class Browser implements ForcefulTerminate {
 
         resolveChromeDriverLocation();
 
-        if (context.getBooleanData(LOG_CHROME_DRIVER, DEF_LOG_CHROME_DRIVER)) {
-            String chromeLog = resolveBrowserLogFile("chrome-browser.log").getAbsolutePath();
+        ChromeDriverService driverService = ChromeDriverService.createDefaultService();
+        // URL driverUrl = driverService.getUrl();
+        // int driverPort = driverUrl.getPort();
+
+        boolean activateLogging = context.getBooleanConfig("web", profile, CHROME_LOG_ENABLED);
+        if (activateLogging) {
+            String chromeLog = resolveBrowserLogFile("chrome-browser." + profile + ".log").getAbsolutePath();
+            ConsoleUtils.log("enabling logging for Chrome: " + chromeLog);
             System.setProperty(CHROME_DRIVER_LOG_PROPERTY, chromeLog);
             System.setProperty(CHROME_DRIVER_VERBOSE_LOG_PROPERTY, "true");
         } else {
@@ -569,27 +611,45 @@ public class Browser implements ForcefulTerminate {
         }
 
         options.addArguments(this.chromeOptions);
-        if (context.getBooleanData(BROWER_INCOGNITO, DEF_BROWSER_INCOGNITO)) { options.addArguments(KEY_INCOGNITO); }
+
+        String downloadTo = resolveDownloadTo(context);
+        if (StringUtils.isNotBlank(downloadTo)) {
+            Map<String, Object> prefs = new HashMap<>();
+            prefs.put("download.prompt_for_download", false);
+            prefs.put("download.default_directory", downloadTo);
+            prefs.put("profile.default_content_settings.popups", 0);
+            options.setExperimentalOption("prefs", prefs);
+        }
+
+        handleChromeProfile(options);
+
+        String chromeRemotePort = context.getStringConfig("web", profile, CHROME_REMOTE_PORT);
+        if (NumberUtils.isDigits(chromeRemotePort)) {
+            int port = NumberUtils.toInt(chromeRemotePort);
+            ConsoleUtils.log("enabling chrome remote port: " + port);
+            options.addArguments("--remote-debugging-port=" + port);
+        }
 
         String binaryLocation = resolveChromeBinLocation();
         if (StringUtils.isNotBlank(binaryLocation)) { options.setBinary(binaryLocation); }
 
-        if (context.getBooleanData(OPT_PROXY_REQUIRED)) {
-            try {
-                InetAddress localHost = InetAddress.getLocalHost();
-                options.addArguments("--proxy-server=http://" + localHost.getCanonicalHostName() + ":" + PROXY_PORT);
-                options.addArguments("--proxy-bypass-list=127.0.0.1,localhost");
-            } catch (UnknownHostException e) {
-                throw new RuntimeException("Unable to determine localhost hostname: " + e.getMessage());
-            }
-        }
+        // proxy code not yet ready for prime time
+        // if (context.getBooleanData(OPT_PROXY_REQUIRED)) {
+        //     try {
+        //         InetAddress localHost = InetAddress.getLocalHost();
+        //         options.addArguments("--proxy-server=http://" + localHost.getCanonicalHostName() + ":" + PROXY_PORT);
+        //         options.addArguments("--proxy-bypass-list=127.0.0.1,localhost");
+        //     } catch (UnknownHostException e) {
+        //         throw new RuntimeException("Unable to determine localhost hostname: " + e.getMessage());
+        //     }
+        // }
 
         // support mobile emulation on chrome
         // ref: http://chromedriver.chromium.org/mobile-emulation
         // ref: https://developers.google.com/web/tools/chrome-devtools/device-mode/?utm_source=dcc&utm_medium=redirect&utm_campaign=2016q3
         // issue: https://bugs.chromium.org/p/chromedriver/issues/detail?id=2144&desc=2
         // devices: https://codesearch.chromium.org/codesearch/f/chromium/src/third_party/blink/renderer/devtools/front_end/emulated_devices/module.json
-        String emuDevice = context.getStringData(KEY_EMU_DEVICE_NAME);
+        String emuDevice = context.getStringConfig("web", profile, EMU_DEVICE_NAME);
         if (StringUtils.isNotBlank(emuDevice)) {
             Map<String, String> mobileEmulation = new HashMap<>();
             mobileEmulation.put("deviceName", emuDevice);
@@ -597,13 +657,13 @@ public class Browser implements ForcefulTerminate {
             ConsoleUtils.log("setting mobile emulation on Chrome as " + emuDevice);
         }
 
-        String emuUserAgent = context.getStringData(KEY_EMU_USER_AGENT);
+        String emuUserAgent = context.getStringConfig("web", profile, EMU_USER_AGENT);
         if (StringUtils.isNotBlank(emuUserAgent)) {
             Map<String, Object> deviceMetrics = new HashMap<>();
-            deviceMetrics.put("width", context.getIntData(KEY_EMU_WIDTH, DEF_EMU_WIDTH));
-            deviceMetrics.put("height", context.getIntData(KEY_EMU_HEIGHT, DEF_EMU_HEIGHT));
-            deviceMetrics.put("pixelRatio", context.getDoubleData(KEY_EMU_PIXEL_RATIO, DEF_EMU_PIXEL_RATIO));
-            deviceMetrics.put("touch", context.getBooleanData(KEY_EMU_TOUCH, true));
+            deviceMetrics.put("width", context.getIntConfig("web", profile, EMU_WIDTH));
+            deviceMetrics.put("height", context.getIntConfig("web", profile, EMU_HEIGHT));
+            deviceMetrics.put("pixelRatio", context.getDoubleConfig("web", profile, EMU_PIXEL_RATIO));
+            deviceMetrics.put("touch", context.getBooleanConfig("web", profile, EMU_TOUCH));
 
             Map<String, Object> mobileEmulation = new HashMap<>();
             mobileEmulation.put("deviceMetrics", deviceMetrics);
@@ -612,7 +672,49 @@ public class Browser implements ForcefulTerminate {
             ConsoleUtils.log("setting mobile emulation on Chrome as " + emuUserAgent);
         }
 
-        ChromeDriver chrome = new ChromeDriver(options);
+        // starting from chrome 80, samesite is enforced by default... we need to workaround it
+        List<String> experimentalFlags = new ArrayList<>();
+        experimentalFlags.add("same-site-by-default-cookies@1");
+        experimentalFlags.add("enable-removing-all-third-party-cookies@2");
+        experimentalFlags.add("cookies-without-same-site-must-be-secure@1");
+        Map<String, Object> localState = new HashMap<>();
+        localState.put("browser.enabled_labs_experiments", experimentalFlags);
+        options.setExperimentalOption("localState", localState);
+
+        // get rid of the infobar on top of the browser window
+        //  Disable a few things considered not appropriate for automation.
+        //     - disables the password saving UI (which covers the usecase of the removed `disable-save-password-bubble` flag)
+        //     - disables infobar animations
+        //     - disables dev mode extension bubbles (?), and doesn't show some other info bars
+        //     - disables auto-reloading on network errors (source)
+        //     - means the default browser check prompt isn't shown
+        //     - avoids showing these 3 infobars: ShowBadFlagsPrompt, GoogleApiKeysInfoBarDelegate, ObsoleteSystemInfoBarDelegate
+        options.setExperimentalOption("excludeSwitches", new String[]{"enable-automation", "load-extension"});
+
+        // strategy to instruct chromedriver not to wait for full page load
+        // https://stackoverflow.com/questions/44770796/how-to-make-selenium-not-wait-till-full-page-load-which-has-a-slow-script/44771628#44771628
+        // but this doesn't work for older driver... so we need to catch exception
+        try {
+            options.setPageLoadStrategy(EAGER);
+        } catch (WebDriverException e) {
+            // oh well... i tried
+            // never mind...
+            ConsoleUtils.log("unable to page load strategy to EAGER; resetting back to default");
+        }
+
+        // if (activateLogging) {
+        //     LoggingPreferences logOptions = new LoggingPreferences();
+        //     // logOptions.enable(LogType.BROWSER, Level.ALL);
+        //     // logOptions.enable(LogType.PERFORMANCE, Level.INFO);
+        //     logOptions.enable(LogType.CLIENT, Level.ALL);
+        //     // logOptions.enable(LogType.DRIVER, Level.INFO);
+        //     options.setCapability(LOGGING_PREFS, logOptions);
+        // }
+
+        // WebDriver chrome = new Augmenter().augment(new RemoteWebDriver(driverUrl, options));
+        // Capabilities capabilities = ((HasCapabilities) chrome).getCapabilities();
+        // ChromeDriver chrome = new ChromeDriver(options);
+        ChromeDriver chrome = new ChromeDriver(driverService, options);
         Capabilities capabilities = chrome.getCapabilities();
         initCapabilities(context, (MutableCapabilities) capabilities);
 
@@ -633,75 +735,69 @@ public class Browser implements ForcefulTerminate {
 
     protected WebDriver initFirefox(boolean headless) throws IOException {
         BrowserType browserType = headless ? firefoxheadless : firefox;
-        WebDriverHelper helper = WebDriverHelper.Companion.newInstance(browserType, context);
+        WebDriverHelper helper = WebDriverHelper.newInstance(browserType, context);
         File driver = helper.resolveDriver();
 
         String driverPath = driver.getAbsolutePath();
         context.setData(SELENIUM_GECKO_DRIVER, driverPath);
         System.setProperty(SELENIUM_GECKO_DRIVER, driverPath);
+        // todo: need them?
         context.setData(MARIONETTE, true);
         System.setProperty(MARIONETTE, "true");
 
         FirefoxOptions options;
 
-        // todo: introduce auto-download feature
-        //firefoxProfile.setPreference("browser.download.dir", SystemUtils.getJavaIoTmpDir().getAbsolutePath());
-
-        // unrelated, added only to improve firefox-pdf perf.
-        //firefoxProfile.setPreference("pdfjs.disabled", true);
-
-        // options.setLogLevel(FirefoxDriverLogLevel.FATAL);
-
         try {
             DesiredCapabilities capabilities;
 
             // todo: not ready for prime time
+            // if (proxy != null) {
+            //     Proxy localProxy = proxy.getServer().seleniumProxy();
+            //
+            //     String localHost = InetAddress.getLocalHost().getHostName();
+            //     localProxy.setHttpProxy(localHost);
+            //     localProxy.setSslProxy(localHost);
+            //
+            //     capabilities = new DesiredCapabilities();
+            //     initCapabilities(context, capabilities);
+            //     capabilities.setCapability(PROXY, localProxy);
+            //
+            //     Properties browsermobProps = PropertiesLoaderUtils.loadAllProperties(
+            //         "org/nexial/core/plugins/har/browsermob.properties");
+            //     int proxyPort = Integer.parseInt(browsermobProps.getProperty("browsermob.port"));
+            //
+            //     options = new FirefoxOptions(capabilities);
+            //     options.addPreference("network.proxy.type", 1);
+            //     options.addPreference("network.proxy.http_port", proxyPort);
+            //     options.addPreference("network.proxy.ssl_port", proxyPort);
+            //     options.addPreference("network.proxy.no_proxies_on", "");
+            // } else {
+            options = new FirefoxOptions();
+            capabilities = new DesiredCapabilities();
+            initCapabilities(context, capabilities);
+            options.merge(capabilities);
+
+            Proxy proxy = (Proxy) capabilities.getCapability(PROXY);
             if (proxy != null) {
-                Proxy localProxy = proxy.getServer().seleniumProxy();
-
-                String localHost = InetAddress.getLocalHost().getHostName();
-                localProxy.setHttpProxy(localHost);
-                localProxy.setSslProxy(localHost);
-
-                capabilities = new DesiredCapabilities();
-                initCapabilities(context, capabilities);
-                capabilities.setCapability(PROXY, localProxy);
-
-                Properties browsermobProps = PropertiesLoaderUtils.loadAllProperties(
-                    "org/nexial/core/plugins/har/browsermob.properties");
-                int proxyPort = Integer.parseInt(browsermobProps.getProperty("browsermob.port"));
-
-                options = new FirefoxOptions(capabilities);
                 options.addPreference("network.proxy.type", 1);
+
+                String proxyHostAndPort = proxy.getHttpProxy();
+                String proxyHost = StringUtils.substringBefore(proxyHostAndPort, ":");
+                String proxyPort = StringUtils.substringAfter(proxyHostAndPort, ":");
+                options.addPreference("network.proxy.http", proxyHost);
                 options.addPreference("network.proxy.http_port", proxyPort);
+                options.addPreference("network.proxy.ssl", proxyHost);
                 options.addPreference("network.proxy.ssl_port", proxyPort);
-                options.addPreference("network.proxy.no_proxies_on", "");
-
-            } else {
-                options = new FirefoxOptions();
-                capabilities = new DesiredCapabilities();
-                // capabilities = DesiredCapabilities.firefox();
-                initCapabilities(context, capabilities);
-                options.merge(capabilities);
-
-                // options = new FirefoxOptions(capabilities);
-
-                Proxy proxy = (Proxy) capabilities.getCapability(PROXY);
-                if (proxy != null) {
-                    options.addPreference("network.proxy.type", 1);
-
-                    String proxyHostAndPort = proxy.getHttpProxy();
-                    String proxyHost = StringUtils.substringBefore(proxyHostAndPort, ":");
-                    String proxyPort = StringUtils.substringAfter(proxyHostAndPort, ":");
-                    options.addPreference("network.proxy.http", proxyHost);
-                    options.addPreference("network.proxy.http_port", proxyPort);
-                    options.addPreference("network.proxy.ssl", proxyHost);
-                    options.addPreference("network.proxy.ssl_port", proxyPort);
-                    options.addPreference("network.proxy.ftp", proxyHost);
-                    options.addPreference("network.proxy.ftp_port", proxyPort);
-                    options.addPreference("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
-                }
+                options.addPreference("network.proxy.ftp", proxyHost);
+                options.addPreference("network.proxy.ftp_port", proxyPort);
+                options.addPreference("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
             }
+            // }
+
+            String binaryLocation = resolveFirefoxBinLocation();
+            if (StringUtils.isNotBlank(binaryLocation)) { options.setBinary(binaryLocation); }
+
+            handleFirefoxProfile(options, capabilities);
 
             if (headless) { options.setHeadless(true); }
 
@@ -713,11 +809,15 @@ public class Browser implements ForcefulTerminate {
 
             boolean ignoreAlert = BooleanUtils.toBoolean(context.getBooleanData(OPT_ALERT_IGNORE_FLAG));
             options.setUnhandledPromptBehaviour(ignoreAlert ? IGNORE : ACCEPT);
-            if (context.getBooleanData(BROWSER_ACCEPT_INVALID_CERTS, DEF_BROWSER_ACCEPT_INVALID_CERTS)) {
+            if (context.getBooleanConfig("web", profile, BROWSER_ACCEPT_INVALID_CERTS)) {
                 options.setAcceptInsecureCerts(true);
             }
             options.setPageLoadStrategy(EAGER);
             options.setLogLevel(ERROR);
+
+            // set current output directory for download
+            String downloadTo = resolveDownloadTo(context);
+            if (StringUtils.isNotBlank(downloadTo)) { options.addPreference("browser.download.dir", downloadTo); }
 
             FirefoxDriver firefox = new FirefoxDriver(options);
 
@@ -727,20 +827,23 @@ public class Browser implements ForcefulTerminate {
             postInit(firefox);
             return firefox;
         } catch (Exception e) {
-            e.printStackTrace();
             throw new RuntimeException(e);
         }
     }
 
     protected WebDriver initEdge() throws IOException {
-        WebDriverHelper helper = WebDriverHelper.Companion.newInstance(edge, context);
+        WebDriverHelper helper = WebDriverHelper.newInstance(edge, context);
         File driver = helper.resolveDriver();
 
         String driverPath = driver.getAbsolutePath();
         context.setData(SELENIUM_EDGE_DRIVER, driverPath);
         System.setProperty(SELENIUM_EDGE_DRIVER, driverPath);
 
-        EdgeDriver edge = new EdgeDriver();
+        EdgeOptions options = new EdgeOptions();
+
+        if (context.getBooleanConfig("web", profile, BROWSER_INCOGNITO)) { options.setCapability("InPrivate", true); }
+
+        EdgeDriver edge = new EdgeDriver(options);
         postInit(edge);
 
         Capabilities capabilities = edge.getCapabilities();
@@ -748,15 +851,14 @@ public class Browser implements ForcefulTerminate {
         browserPlatform = capabilities.getPlatform();
         pageSourceSupported = false;
 
-        StringBuilder log = new StringBuilder("Edge WebDriver capabilities:\n");
-        capabilities.asMap().forEach((key, val) -> log.append("\t").append(key).append("\t=").append(val).append("\n"));
-        ConsoleUtils.log(log.toString() + "\n");
+        StringBuilder log = new StringBuilder("Edge WebDriver capabilities:" + NL);
+        capabilities.asMap().forEach((key, val) -> log.append("\t").append(key).append("\t=").append(val).append(NL));
+        ConsoleUtils.log(log.toString() + NL);
 
         return edge;
     }
 
     protected WebDriver initIE() throws IOException {
-
         resolveIEDriverLocation();
 
         // check https://github.com/SeleniumHQ/selenium/wiki/InternetExplorerDriver for details
@@ -768,7 +870,7 @@ public class Browser implements ForcefulTerminate {
         boolean runWin64 = EnvUtils.isRunningWindows64bit();
 
         if (System.getProperty(SELENIUM_IE_DRIVER) == null) {
-            runWin64 = EnvUtils.isRunningWindows64bit() && !resolveConfig(OPT_FORCE_IE_32, DEFAULT_FORCE_IE_32);
+            runWin64 = EnvUtils.isRunningWindows64bit() && !context.getBooleanConfig("web", profile, OPT_FORCE_IE_32);
         }
 
         boolean ignoreAlert = resolveConfig(OPT_ALERT_IGNORE_FLAG, false);
@@ -786,16 +888,14 @@ public class Browser implements ForcefulTerminate {
                                    .introduceFlakinessByIgnoringSecurityDomains()
         ;
 
-        if (context.getBooleanData(BROWSER_IE_REQUIRE_WINDOW_FOCUS, DEF_BROWSER_IE_REQUIRE_WINDOW_FOCUS)) {
-            capabilities.requireWindowFocus();
-        }
+        if (context.getBooleanConfig("web", profile, IE_REQUIRE_WINDOW_FOCUS)) { capabilities.requireWindowFocus(); }
 
         // Capability that defines to use whether to use native or javascript events during operations.
         capabilities.setCapability(HAS_NATIVE_EVENTS, false);
         capabilities.setCapability(SUPPORTS_WEB_STORAGE, true);
         capabilities.setCapability(SUPPORTS_ALERTS, true);
         capabilities.setCapability(ACCEPT_SSL_CERTS, true);
-        if (context.getBooleanData(BROWSER_ACCEPT_INVALID_CERTS, DEF_BROWSER_ACCEPT_INVALID_CERTS)) {
+        if (context.getBooleanConfig("web", profile, BROWSER_ACCEPT_INVALID_CERTS)) {
             capabilities.setCapability(ACCEPT_INSECURE_CERTS, true);
         }
 
@@ -831,8 +931,8 @@ public class Browser implements ForcefulTerminate {
         // The first is to start your InternetExplorer in private mode. After that InternetExplorer
         // will be started with clean session data and will not save changed session data at quiting.
         // To do so you need to pass 2 specific capabilities to driver: ie.forceCreateProcessApi with true value
-        if (context.getBooleanData(BROWER_INCOGNITO, DEF_BROWSER_INCOGNITO)) {
-            // capabilities.setCapability(FORCE_CREATE_PROCESS, true);
+        if (context.getBooleanConfig("web", profile, BROWSER_INCOGNITO)) {
+            capabilities.setCapability(FORCE_CREATE_PROCESS, true);
             // and ie.browserCommandLineSwitches with -private value.
             capabilities.setCapability(IE_SWITCHES, "-private");
         }
@@ -853,14 +953,45 @@ public class Browser implements ForcefulTerminate {
         browserPlatform = ie.getCapabilities().getPlatform();
         postInit(ie);
 
-        StringBuilder log = new StringBuilder("IEDriverServer capabilities:\n");
+        StringBuilder log = new StringBuilder("IEDriverServer capabilities:" + NL);
         ie.getCapabilities().asMap().forEach((key, val) -> log.append("\t")
                                                               .append(key).append("\t= ").append(val)
-                                                              .append("\n"));
-        log.append("\n");
+                                                              .append(NL));
+        log.append(NL);
         ConsoleUtils.log(log.toString());
 
         return ie;
+    }
+
+    protected WebDriver initSafari() {
+        // change location of safari's download location to "out" directory
+        if (!IS_OS_MAC_OSX) { throw new RuntimeException("Safari automation is only supported on Mac OSX. Sorry..."); }
+
+        String out = context.getProject().getOutPath();
+        try {
+            ConsoleUtils.log(
+                "modifying safari's download path:" + NL +
+                ExternalCommand.Companion.exec("defaults write com.apple.Safari DownloadsPath \"" + out + "\""));
+        } catch (IOException e) {
+            ConsoleUtils.error("Unable to modify safari's download path to " + out + ": " + e);
+        }
+
+        SafariOptions options = new SafariOptions();
+
+        // Whether to make sure the session has no cookies, cache entries, local storage, or databases.
+        options.setUseTechnologyPreview(context.getBooleanConfig("web", profile, SAFARI_USE_TECH_PREVIEW));
+
+        // todo: Create a SafariDriverService to specify what Safari flavour should be used and pass the service instance to a SafariDriver constructor.  When SafariDriver API updates to better code.. can't do this now
+        SafariDriver safari = new SafariDriver(options);
+        MutableCapabilities capabilities = (MutableCapabilities) safari.getCapabilities();
+        initCapabilities(context, capabilities);
+        // setCapability(capabilities, "javascriptEnabled", true);
+        // setCapability(capabilities, "databaseEnabled", true);
+
+        browserVersion = capabilities.getVersion();
+        browserPlatform = capabilities.getPlatform();
+        postInit(safari);
+        return safari;
     }
 
     protected WebDriver initBrowserStack() {
@@ -886,6 +1017,18 @@ public class Browser implements ForcefulTerminate {
         return webDriver;
     }
 
+    protected String resolveDownloadTo(ExecutionContext context) {
+        if (context == null) { return null; }
+
+        String downloadTo = context.getStringConfig("web", profile, OPT_DOWNLOAD_TO);
+        if (StringUtils.isNotBlank(downloadTo)) { return downloadTo; }
+
+        return context.getProject() != null &&
+               StringUtils.isNotBlank(context.getProject().getOutPath()) ?
+               context.getProject().getOutPath() :
+               context.getStringData(OPT_OUT_DIR);
+    }
+
     protected void setWindowSize(WebDriver driver) {
         // not suitable for cef, electron or mobile
         // for safari, we can only change position AFTER browser is opened
@@ -901,10 +1044,10 @@ public class Browser implements ForcefulTerminate {
     }
 
     protected void setWindowSizeForcefully(WebDriver driver) {
-        String windowSize = context.getStringData(BROWSER_WINDOW_SIZE);
+        String windowSize = context.getStringConfig("web", profile, BROWSER_WINDOW_SIZE);
         if ((isRunChromeHeadless() || isRunFirefoxHeadless()) && StringUtils.isBlank(windowSize)) {
             // window size required for headless browser
-            windowSize = context.getStringData(BROWSER_DEFAULT_WINDOW_SIZE);
+            windowSize = context.getStringConfig("web", profile, BROWSER_DEFAULT_WINDOW_SIZE);
             ConsoleUtils.log("No '" + BROWSER_WINDOW_SIZE + "' defined for headless browser; default to " + windowSize);
         }
 
@@ -930,6 +1073,49 @@ public class Browser implements ForcefulTerminate {
                                     (isRunCrossBrowserTesting() && cbtHelper.browser == safari);
             Point initialPosition = runningSafari ? INITIAL_POSITION_SAFARI : INITIAL_POSITION;
             window.setPosition(initialPosition);
+        }
+    }
+
+    private void handleFirefoxProfile(FirefoxOptions options, DesiredCapabilities capabilities) {
+        String userDataDir = context.getStringConfig("web", profile, BROWSER_USER_DATA);
+        if (StringUtils.isNotBlank(userDataDir)) {
+            if (FileUtil.isDirectoryReadable(userDataDir)) {
+                options.setProfile(new FirefoxProfile(new File(userDataDir)));
+                return;
+            }
+
+            ConsoleUtils.error("Unable to add user-data on " + userDataDir + " because it is NOT accessible");
+        }
+
+        if (context.getBooleanConfig("web", profile, BROWSER_INCOGNITO)) {
+            capabilities.setCapability("browser.privatebrowsing.autostart", true);
+        }
+    }
+
+    private void handleChromeProfile(ChromeOptions options) {
+        String userDataDir = context.getStringConfig("web", profile, BROWSER_USER_DATA);
+        if (StringUtils.isNotBlank(userDataDir)) {
+            if (FileUtil.isDirectoryReadable(userDataDir)) {
+                options.addArguments("--user-data-dir=" + userDataDir);
+                return;
+            }
+
+            ConsoleUtils.error("Unable to add user-data on " + userDataDir + " because it is NOT accessible");
+        }
+
+        if (context.getBooleanConfig("web", profile, BROWSER_INCOGNITO)) { options.addArguments(KEY_INCOGNITO); }
+    }
+
+    /** special handling for electron apps */
+    private void shutdownElectronApp() {
+        if (isRunElectron() &&
+            context.getBooleanData(ELECTRON_FORCE_TERMINATE, getDefaultBool(ELECTRON_FORCE_TERMINATE))) {
+            String clientLocation = context.getStringData(ELECTRON_CLIENT_LOCATION);
+            if (StringUtils.isNotBlank(clientLocation)) {
+                String exeName = StringUtils.substringAfterLast(StringUtils.replace(clientLocation, "\\", "/"), "/");
+                ConsoleUtils.log("forcefully terminating '" + exeName + "'...");
+                RuntimeUtils.terminateInstance(exeName);
+            }
         }
     }
 
@@ -987,7 +1173,8 @@ public class Browser implements ForcefulTerminate {
 
         // exhausted all possibilities..
         if (LOGGER.isDebugEnabled()) {
-            LOGGER.error("webdriver readiness check: no windows available\nBROWSER MIGHT BE TERMINATED; RESTARTING...");
+            LOGGER.error("webdriver readiness check: no windows available" + NL +
+                         "BROWSER MIGHT BE TERMINATED; RESTARTING...");
         }
 
         return true;
@@ -1008,13 +1195,19 @@ public class Browser implements ForcefulTerminate {
     }
 
     private String resolveConfig(String propName, String defaultValue) {
-        return System.getProperty(propName, StringUtils.defaultString(context.getStringData(propName), defaultValue));
+        Map<String, String> config = context.getProfileConfig("web", profile);
+        return config.getOrDefault(
+            withProfile(profile, propName),
+            System.getProperty(propName, StringUtils.defaultString(context.getStringData(propName), defaultValue)));
     }
 
     private boolean resolveConfig(String propName, boolean defaultValue) {
-        return BooleanUtils.toBoolean(System.getProperty(propName,
-                                                         StringUtils.defaultString(context.getStringData(propName),
-                                                                                   defaultValue + "")));
+        Map<String, String> config = context.getProfileConfig("web", profile);
+        return BooleanUtils.toBoolean(
+            config.getOrDefault(withProfile(profile, propName),
+                                System.getProperty(propName,
+                                                   StringUtils.defaultString(context.getStringData(propName),
+                                                                             defaultValue + ""))));
     }
 
     private String resolveConfig(String propName) { return resolveConfig(propName, null); }
@@ -1024,37 +1217,6 @@ public class Browser implements ForcefulTerminate {
         if (browserType == chrome) { browserProfile = resolveConfig(OPT_CHROME_PROFILE); }
     }
 
-    private WebDriver initSafari() {
-        // change location of safari's download location to "out" directory
-        if (!IS_OS_MAC_OSX) { throw new RuntimeException("Safari automation is only supported on Mac OSX. Sorry..."); }
-
-        String out = context.getProject().getOutPath();
-        try {
-            ConsoleUtils.log(
-                "modifying safari's download path: \n" +
-                ExternalCommand.Companion.exec("defaults write com.apple.Safari DownloadsPath \"" + out + "\""));
-        } catch (IOException e) {
-            ConsoleUtils.error("Unable to modify safari's download path to " + out + ": " + e);
-        }
-
-        SafariOptions options = new SafariOptions();
-
-        // Whether to make sure the session has no cookies, cache entries, local storage, or databases.
-        options.setUseTechnologyPreview(context.getBooleanData(SAFARI_USE_TECH_PREVIEW, DEF_SAFARI_USE_TECH_PREVIEW));
-
-        // todo: Create a SafariDriverService to specify what Safari flavour should be used and pass the service instance to a SafariDriver constructor.  When SafariDriver API updates to better code.. can't do this now
-        SafariDriver safari = new SafariDriver(options);
-        MutableCapabilities capabilities = (MutableCapabilities) safari.getCapabilities();
-        initCapabilities(context, capabilities);
-        // setCapability(capabilities, "javascriptEnabled", true);
-        // setCapability(capabilities, "databaseEnabled", true);
-
-        browserVersion = capabilities.getVersion();
-        browserPlatform = capabilities.getPlatform();
-        postInit(safari);
-        return safari;
-    }
-
     @NotNull
     private File resolveBrowserLogFile(String logFileName) {
         return new File(StringUtils.appendIfMissing(System.getProperty(TEST_LOG_PATH, JAVA_IO_TMPDIR), separator) +
@@ -1062,7 +1224,7 @@ public class Browser implements ForcefulTerminate {
     }
 
     private void resolveChromeDriverLocation() throws IOException {
-        WebDriverHelper helper = WebDriverHelper.Companion.newInstance(browserType, context);
+        WebDriverHelper helper = WebDriverHelper.newInstance(browserType, context);
         File driver = helper.resolveDriver();
 
         String driverPath = driver.getAbsolutePath();
@@ -1078,9 +1240,9 @@ public class Browser implements ForcefulTerminate {
                                "search for alternative...");
         }
 
-        List<String> possibleLocations = IS_OS_WINDOWS ? POSSIBLE_WIN_CHROME_BIN_LOCATIONS :
-                                         IS_OS_MAC ? POSSIBLE_OSX_CHROME_BIN_LOCATIONS :
-                                         IS_OS_LINUX ? POSSIBLE_NIX_CHROME_BIN_LOCATIONS : null;
+        List<String> possibleLocations = IS_OS_WINDOWS ? chromeBinLocations.get("windows") :
+                                         IS_OS_MAC ? chromeBinLocations.get("mac") :
+                                         IS_OS_LINUX ? chromeBinLocations.get("linux") : null;
         if (CollectionUtils.isEmpty(possibleLocations)) {
             ConsoleUtils.error("Unable to derive alternative Chrome binary... ");
             return null;
@@ -1094,8 +1256,32 @@ public class Browser implements ForcefulTerminate {
         return null;
     }
 
+    private String resolveFirefoxBinLocation() {
+        String configuredPath = resolveConfig(SELENIUM_FIREFOX_BIN);
+        if (StringUtils.isNotBlank(configuredPath)) {
+            if (FileUtil.isFileExecutable(configuredPath)) { return configuredPath; }
+            ConsoleUtils.error("Configured Firefox binary '" + configuredPath + "' is not executable; " +
+                               "search for alternative...");
+        }
+
+        List<String> possibleLocations = IS_OS_WINDOWS ? firefoxBinLocations.get("windows") :
+                                         IS_OS_MAC ? firefoxBinLocations.get("mac") :
+                                         IS_OS_LINUX ? firefoxBinLocations.get("linux") : null;
+        if (CollectionUtils.isEmpty(possibleLocations)) {
+            ConsoleUtils.error("Unable to derive alternative Firefox binary... ");
+            return null;
+        }
+
+        for (String location : possibleLocations) {
+            if (FileUtil.isFileExecutable(location)) { return new File(location).getAbsolutePath(); }
+        }
+
+        ConsoleUtils.error("Unable to derive alternative Firefox binary... ");
+        return null;
+    }
+
     private void resolveIEDriverLocation() throws IOException {
-        WebDriverHelper helper = WebDriverHelper.Companion.newInstance(ie, context);
+        WebDriverHelper helper = WebDriverHelper.newInstance(ie, context);
         File driver = helper.resolveDriver();
 
         String ieDriverPath = driver.getAbsolutePath();
@@ -1104,8 +1290,9 @@ public class Browser implements ForcefulTerminate {
     }
 
     private void syncContextPropToSystem(String prop) {
-        if (System.getProperty(prop) == null) {
-            if (context.hasData(prop)) { System.setProperty(prop, context.getStringData(prop)); }
+        String key = withProfile(profile, prop);
+        if (System.getProperty(key) == null) {
+            if (context.hasData(key)) { System.setProperty(key, context.getStringConfig("web", profile, key)); }
         }
     }
 }

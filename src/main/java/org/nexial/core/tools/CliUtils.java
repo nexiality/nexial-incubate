@@ -36,10 +36,21 @@ final public class CliUtils {
      * @return {@link Option} value created.
      */
     @NotNull
-    public static Option newArgOption(@NotNull final String opt, String longOpt, String description) {
-        Builder builder = Option.builder(opt).required(true).hasArg(true);
-        if (StringUtils.isNotBlank(longOpt)) { builder = builder.longOpt(longOpt); }
-        if (StringUtils.isNotBlank(description)) { builder = builder.desc(description); }
+    public static Option newArgOption(@NotNull final String opt, String longOpt, String description, boolean required) {
+        Builder builder = Option.builder(opt).required(required).hasArg(true);
+        if (StringUtils.isNotBlank(longOpt)) { builder.longOpt(longOpt); }
+        if (StringUtils.isNotBlank(description)) { builder.desc(description); }
+        return builder.build();
+    }
+
+    @NotNull
+    public static Option newNonArgOption(@NotNull final String opt,
+                                         String longOpt,
+                                         String description,
+                                         boolean required) {
+        Builder builder = Option.builder(opt).required(required).hasArg(false);
+        if (StringUtils.isNotBlank(longOpt)) { builder.longOpt(longOpt); }
+        if (StringUtils.isNotBlank(description)) { builder.desc(description); }
         return builder.build();
     }
 
@@ -57,7 +68,9 @@ final public class CliUtils {
             System.err.println("Unable to parse commandline options: " + e.getMessage());
 
             HelpFormatter formatter = new HelpFormatter();
+            System.out.println();
             formatter.printHelp(name, cmdOptions, true);
+            System.out.println();
 
             return null;
         }

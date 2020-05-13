@@ -50,7 +50,7 @@ import static java.io.File.separator;
 import static java.lang.System.lineSeparator;
 import static org.apache.commons.lang3.SystemUtils.JAVA_IO_TMPDIR;
 import static org.nexial.core.NexialConst.*;
-import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Compare.*;
 
 public class IoCommandTest {
 
@@ -223,6 +223,7 @@ public class IoCommandTest {
 
         IoCommand io = new IoCommand();
         io.init(context);
+        context.setData(OPT_IO_COPY_CONFIG, COPY_CONFIG_OVERRIDE);
 
         String sourcePathPattern = sourceDir + "_E5_test1_step4*.*";
         String destinationDir = testDestination1 + separator + RandomStringUtils.randomAlphanumeric(5);

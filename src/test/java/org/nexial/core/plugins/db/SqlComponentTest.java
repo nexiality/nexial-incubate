@@ -21,7 +21,9 @@ import java.util.List;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.nexial.core.plugins.db.SqlComponent;
 import org.nexial.core.plugins.db.SqlComponent.Type;
+
 
 public class SqlComponentTest {
     @Test

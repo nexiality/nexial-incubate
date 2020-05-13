@@ -46,12 +46,11 @@ import org.nexial.core.plugins.base.BaseCommand;
 
 import com.univocity.parsers.common.record.Record;
 import com.univocity.parsers.csv.CsvParser;
-import com.univocity.parsers.csv.CsvParserSettings;
 
 import static org.apache.poi.poifs.filesystem.FileMagic.OLE2;
 import static org.apache.poi.poifs.filesystem.FileMagic.OOXML;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
-import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.excel.Excel.*;
 import static org.nexial.core.utils.CheckUtils.*;
 
@@ -101,7 +100,7 @@ public class ExcelCommand extends BaseCommand {
     }
 
     public StepResult saveRange(String var, String file, String worksheet, String range) throws IOException {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         List<List<XSSFCell>> rows = fetchRows(file, worksheet, range);
         Map<String, String> data = new LinkedHashMap<>();
@@ -119,7 +118,7 @@ public class ExcelCommand extends BaseCommand {
     }
 
     public StepResult saveData(String var, String file, String worksheet, String range) throws IOException {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         List<List<XSSFCell>> rows = fetchRows(file, worksheet, range);
         List<List<String>> data = new ArrayList<>();
@@ -169,7 +168,7 @@ public class ExcelCommand extends BaseCommand {
     }
 
     public StepResult writeVar(String var, String file, String worksheet, String startCell) throws IOException {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(startCell, "invalid cell address", startCell);
 
         Excel excel = deriveExcel(file, true);
@@ -248,8 +247,8 @@ public class ExcelCommand extends BaseCommand {
         requiresNotBlank(range, "Invalid range", range);
         requiresNotBlank(output, "Invalid CSV output", output);
 
-        String[] ranges = StringUtils.split(range, context.getTextDelim());
         FileUtils.deleteQuietly(new File(output));
+        String[] ranges = StringUtils.split(range, context.getTextDelim());
         Arrays.stream(ranges).forEach(r -> context.replaceTokens("[EXCEL(" + file + ") => " +
                                                                  " read(" + worksheet + "," + r + ")" +
                                                                  " csv" +
@@ -298,12 +297,15 @@ public class ExcelCommand extends BaseCommand {
         String recordDelim = "\r\n";
         String csvContent = StringUtils.removeEnd(TextUtils.toCsvContent(data, delim, recordDelim), recordDelim);
 
-        CsvParserSettings settings = CsvCommand.newCsvParserSettings(delim, recordDelim, false, 0);
-        settings.setQuoteDetectionEnabled(true);
-        settings.getFormat().setQuote('"');
-        settings.setKeepQuotes(true);
+        CsvParser parser = new CsvParserBuilder().setDelim(delim)
+                                                 .setLineSeparator(recordDelim)
+                                                 .setHasHeader(false)
+                                                 .setMaxColumns(context.getIntData(CSV_MAX_COLUMNS, -1))
+                                                 .setMaxColumnWidth(context.getIntData(CSV_MAX_COLUMN_WIDTH, -1))
+                                                 .setQuote("\"")
+                                                 .setKeepQuote(true)
+                                                 .build();
 
-        CsvParser parser = new CsvParser(settings);
         List<Record> value = parser.parseAllRecords(new StringReader(csvContent));
 
         csvContent = StringUtils.removeEnd(value.stream()

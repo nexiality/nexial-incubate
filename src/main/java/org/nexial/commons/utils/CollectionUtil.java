@@ -22,6 +22,7 @@ import java.util.*;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.lang3.RandomUtils;
 import org.apache.commons.lang3.StringUtils;
 
 public final class CollectionUtil {
@@ -77,22 +78,18 @@ public final class CollectionUtil {
         if (index < 0 || CollectionUtils.size(list) <= index) { return defaultIfNone; }
 
         T item = list.get(index);
-        if (item == null) { return defaultIfNone; }
-
-        return item;
+        return item == null ? defaultIfNone : item;
     }
 
     public static <T> Map<String, T> filterByPrefix(Map<String, T> map, String prefix) {
         Map<String, T> match = new LinkedHashMap<>();
-        if (MapUtils.isEmpty(map)) { return match; }
-        if (StringUtils.isEmpty(prefix)) { return map; }
+        if (MapUtils.isEmpty(map) || StringUtils.isEmpty(prefix)) { return match; }
 
-        map.keySet()
-           .stream()
-           .filter(key -> StringUtils.startsWith(key, prefix))
-           .forEach(key -> match.put(key, map.get(key)));
+        map.forEach((key, value) -> {
+            if (StringUtils.startsWith(key, prefix)) { match.put(StringUtils.substringAfter(key, prefix), value); }
+        });
+
         return match;
-
     }
 
     public static <T extends Iterable> List<List<String>> transpose(List<T> range) {
@@ -117,5 +114,25 @@ public final class CollectionUtil {
         }
 
         return transposed;
+    }
+
+    public static Map<String, String> removeEmptyEntries(Map<String, String> map) {
+        if (MapUtils.isEmpty(map)) { return map; }
+
+        String[] keys = map.keySet().toArray(new String[0]);
+        Arrays.stream(keys).forEach(key -> {
+            if (StringUtils.isEmpty(key) || StringUtils.isEmpty(map.get(key))) { map.remove(key); }
+        });
+
+        return map;
+    }
+
+    public static <T> T randomSelectOne(Collection<T> collection) {
+        if (CollectionUtils.isEmpty(collection)) { return null; }
+
+        int size = collection.size();
+        if (size == 1) { return IterableUtils.get(collection, 0); }
+
+        return IterableUtils.get(collection, RandomUtils.nextInt(0, size - 1));
     }
 }

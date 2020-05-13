@@ -25,7 +25,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 
 import static org.apache.commons.lang3.builder.ToStringStyle.SIMPLE_STYLE;
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Rdbms.*;
 
 /**
  * Encapsulation of a SQL component, which consists of:
@@ -73,7 +73,7 @@ public class SqlComponent implements Serializable {
     private String sql;
 
     public enum Type {
-        SELECT, UPDATE, INSERT, DELETE, COMMIT, ROLLBACK, CALL, WITH;
+        SELECT, UPDATE, INSERT, DELETE, COMMIT, ROLLBACK, CALL, WITH, CREATE, DROP, VACUUM, UNKNOWN;
 
         public static Type toType(String keyword) { return Type.valueOf(StringUtils.upperCase(keyword)); }
 
@@ -85,7 +85,13 @@ public class SqlComponent implements Serializable {
 
         public boolean isStoredProcedure() { return this == CALL; }
 
-        public boolean isUpdate() { return this == UPDATE || this == INSERT || this == DELETE; }
+        public boolean isUpdate() {
+            return this == UPDATE ||
+                   this == INSERT ||
+                   this == DELETE ||
+                   this == CREATE ||
+                   this == DROP;
+        }
     }
 
     public SqlComponent(String original) {

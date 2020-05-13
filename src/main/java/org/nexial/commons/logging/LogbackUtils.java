@@ -19,15 +19,17 @@ package org.nexial.commons.logging;
 
 import java.io.File;
 
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.joran.JoranConfigurator;
 import ch.qos.logback.core.joran.spi.JoranException;
 import ch.qos.logback.core.util.StatusPrinter;
 
-import static org.nexial.core.NexialConst.Data.TEST_LOG_PATH;
-import static org.nexial.core.NexialConst.Data.THIRD_PARTY_LOG_PATH;
+import static org.nexial.core.NexialConst.Data.*;
 import static org.slf4j.LoggerFactory.getILoggerFactory;
 
 public final class LogbackUtils {
@@ -41,6 +43,7 @@ public final class LogbackUtils {
      * setup env variable for logback configuration so that logs are going to the right file/path.
      */
     public static void registerLogDirectory(String outputPath) {
+        // output path should contain run id now..
         File path = new File(outputPath);
         if (!path.isDirectory() || !path.exists()) { path.mkdirs(); }
 
@@ -49,9 +52,7 @@ public final class LogbackUtils {
         EXEC_LOG_PATH[0] = newLogDirectory;
         if (!StringUtils.equals(currentLogDirectory, newLogDirectory)) {
             System.setProperty(TEST_LOG_PATH, newLogDirectory);
-            if (StringUtils.isBlank(System.getProperty(THIRD_PARTY_LOG_PATH))) {
-                System.setProperty(THIRD_PARTY_LOG_PATH, newLogDirectory);
-            }
+            System.setProperty(THIRD_PARTY_LOG_PATH, newLogDirectory);
             reloadDefaultConfig();
         }
     }
@@ -63,10 +64,37 @@ public final class LogbackUtils {
             configurator.setContext(context);
             context.reset();
             configurator.doConfigure(LogbackUtils.class.getResourceAsStream("/logback.xml"));
+
+            // support super-quiet mode
+            if (BooleanUtils.toBoolean(System.getProperty(QUIET))) {
+                quietLogger("org.nexial.seeknow");
+                quietLogger("org.nexial.core");
+                quietLogger("org.nexial.core.aws.S3Support");
+                quietLogger("org.nexial.core.utils.ExecutionLogger");
+                quietLogger("org.nexial.core.model.ExecutionContext");
+                quietLogger("org.openqa.selenium");
+                quietLogger("org.springframework.web.servlet.mvc.method.annotation");
+                quietLogger("org.apache.commons.beanutils");
+                quietLogger(Logger.ROOT_LOGGER_NAME);
+
+                // we need to omit ExecutionLogger's logger due to its use by base.verbose()
+                // quietLogger("org.nexial.core.utils.ExecutionLogger-priority");
+            }
+
         } catch (JoranException e) {
             e.printStackTrace();
         }
 
         StatusPrinter.printIfErrorsOccured(context);
+    }
+
+    protected static void quietLogger(String loggerName) {
+        Logger logger = LoggerFactory.getLogger(loggerName);
+        if (logger == null) { return ; }
+        if (logger instanceof ch.qos.logback.classic.Logger) {
+            // ((ch.qos.logback.classic.Logger) logger).setLevel(WARN);
+            ((ch.qos.logback.classic.Logger) logger).detachAppender("console-catchall");
+            ((ch.qos.logback.classic.Logger) logger).detachAppender("console-execution");
+        }
     }
 }

@@ -37,6 +37,8 @@ import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.utils.CheckUtils;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.NativeInputHelper;
+import org.nexial.core.utils.NativeInputParser;
 import org.nexial.seeknow.SeeknowData;
 import org.openqa.selenium.By;
 import org.openqa.selenium.InvalidElementStateException;
@@ -48,6 +50,7 @@ import org.openqa.selenium.winium.WiniumDriver;
 
 import winium.elements.desktop.ComboBox;
 
+import static org.nexial.core.NexialConst.NL;
 import static org.nexial.core.plugins.desktop.DesktopConst.*;
 import static org.nexial.core.plugins.desktop.DesktopUtils.*;
 import static org.nexial.core.plugins.desktop.ElementType.*;
@@ -55,10 +58,10 @@ import static org.nexial.core.utils.AssertUtils.requires;
 
 /**
  * Object representataion of a UI element in a desktop (native) application (Windows only).
- *
+ * <p>
  * A {@code DesktopElement} can be a textbox, checkbox, combo box, table, a container (see below) that can more
  * {@code DesktopElement}, etc.
- *
+ * <p>
  * A "container" may reference a UI element whose ControlType attribute could be <ul>
  * <li>ControlType.Pane</li>
  * <li>ControlType.Window</li>
@@ -136,7 +139,7 @@ public class DesktopElement {
      * <li>custom/dynamic element that mimic one of the above</li>
      * <li>a vertical or horizontal scrollbar (ControlType.ScrollBar)</li>
      * </ul>
-     *
+     * <p>
      * for dynamic element, its ControlType attribute will likely be ControlType.Custom or ControlType.Pane.  As such,
      * Nexial will derive the most appropriate type inference via inspection of its other attributes and inner elements
      */
@@ -496,10 +499,8 @@ public class DesktopElement {
     public boolean isSelected() { return element != null && element.isSelected(); }
 
     public String getText() {
-
-        if (!element.isEnabled() && elementType.isTextPatternAvailable()) {
-            return getValue(element);
-        }
+        if (elementType == null || elementType == Any) { return getValue(element); }
+        if (!element.isEnabled() && elementType.isTextPatternAvailable()) { return getValue(element); }
 
         if (elementType == SingleSelectList) {
             ComboBox winiumComboBox = new ComboBox(element);
@@ -513,8 +514,13 @@ public class DesktopElement {
         if (elementType.isCombo()) {
             targetElement = resolveComboContentElement(element);
         } else if (elementType == TextArea) {
-            element.click();
-            targetElement = element.findElement(By.xpath(LOCATOR_DOCUMENT));
+            String controlType = element.getAttribute("ControlType");
+            if (StringUtils.endsWith(controlType, "ControlType.Document")) {
+                targetElement = element;
+            } else {
+                element.click();
+                targetElement = element.findElement(By.xpath(LOCATOR_DOCUMENT));
+            }
         } else {
             targetElement = element;
         }
@@ -1188,7 +1194,7 @@ public class DesktopElement {
     protected boolean noChildElementFound() {
         this.elementType = SingleSelectComboNotEditable;
         ConsoleUtils.log("Found a " + controlType + " element with xpath as " + xpath +
-                         " without child elements: \n" + printDetails(element));
+                         " without child elements" + NL + printDetails(element));
         return true;
     }
 
@@ -1293,7 +1299,7 @@ public class DesktopElement {
 
             if (desktopElement.isContainer()) {
                 if (StringUtils.isBlank(desktopElement.getLabel())) {
-                    DesktopConst.debug("NAMELESS CONTAINER: INSPECT DEEPER:\n" + desktopElement.getXpath() + "\n");
+                    DesktopConst.debug("NAMELESS CONTAINER: INSPECT DEEPER:" + NL + desktopElement.getXpath() + NL);
                     // let this nameless container temporarily inherit the components of its parent so that we can
                     // match up all the defined elements against disovered elements.
                     desktopElement.inheritParentCompoents(getComponents());
@@ -1448,8 +1454,8 @@ public class DesktopElement {
             if (layout.isTwoLines()) { bounds.sort((o1, o2) -> ((Integer) o1.getY()).compareTo(o2.getY())); }
         });
 
-        groups.forEach(group -> DesktopConst.debug("\nGroup [" + group + "] Bounds:\n\t" +
-                                                   TextUtils.toString(boundGroups.get(group), "\n\t")));
+        groups.forEach(group -> DesktopConst.debug(NL + "Group [" + group + "] Bounds:" + NL + "\t" +
+                                                   TextUtils.toString(boundGroups.get(group), NL + "\t")));
 
         return boundGroups;
     }
@@ -1597,8 +1603,7 @@ public class DesktopElement {
     }
 
     protected void refreshElement() {
-        if (StringUtils.isBlank(xpath)) { return; }
-        setElement(driver.findElement(By.xpath(xpath)));
+        if (StringUtils.isNotBlank(xpath)) { setElement(driver.findElement(By.xpath(xpath)));}
     }
 
     protected StepResult typeTextComponent(boolean append, String... text) {
@@ -1611,19 +1616,27 @@ public class DesktopElement {
     protected StepResult typeTextComponent(boolean useSendKeys, boolean append, String... text) {
         requires(ArrayUtils.isNotEmpty(text), "at least one text parameter is required");
 
-        if (append) {
-            String shortcuts = forceShortcutSyntax("[CTRL-END]") + joinShortcuts(text);
-            if (StringUtils.isNotEmpty(shortcuts)) {
-                try {
-                    driver.executeScript(SCRIPT_PREFIX_SHORTCUT + shortcuts, element);
-                } catch (WebDriverException e) {
-                    ConsoleUtils.error("Error when typing'" + ArrayUtils.toString(text) + "' on '" + label + "': " +
-                                       e.getMessage());
-                }
-            }
+        ExecutionContext context = ExecutionThread.get();
+        if (context != null && context.getBooleanData(DESKTOP_USE_TYPE_KEYS, DEF_DESKTOP_USE_TYPE_KEYS)) {
+            String keystrokes = (append ? "[CTRL-END]\n" : "") + TextUtils.toString(text, "\n", "", "");
+            keystrokes = NativeInputParser.handleKeys(keystrokes);
+            NativeInputHelper.typeKeys(TextUtils.toList(StringUtils.remove(keystrokes, "\r"), "\n", false));
         } else {
-            // join text into 1 string, parse the entire combined string and loop through each token to type
-            parseTextInputWithShortcuts(TextUtils.toString(text, "", "", "")).forEach(txt -> type(txt, useSendKeys));
+            if (append) {
+                String shortcuts = forceShortcutSyntax("[CTRL-END]") + joinShortcuts(text);
+                if (StringUtils.isNotEmpty(shortcuts)) {
+                    try {
+                        driver.executeScript(SCRIPT_PREFIX_SHORTCUT + shortcuts, element);
+                    } catch (WebDriverException e) {
+                        ConsoleUtils.error("Error when typing'" + ArrayUtils.toString(text) + "' on '" + label + "': " +
+                                           e.getMessage());
+                    }
+                }
+            } else {
+                // join text into 1 string, parse the entire combined string and loop through each token to type
+                parseTextInputWithShortcuts(TextUtils.toString(text, "", "", ""))
+                    .forEach(txt -> type(txt, useSendKeys));
+            }
         }
 
         autoClearModalDialog();
@@ -1733,15 +1746,11 @@ public class DesktopElement {
 
     /** This is to check the set value is equal with entered text **/
     protected boolean isActualAndTextMatched(WebElement element, String actual, String text) {
-        if (actual.isEmpty()) {
-            actual = element.getAttribute("Name");
-        }
-        return StringUtils.equals(text, actual.trim());
+        if (StringUtils.isEmpty(actual)) { actual = element.getAttribute("Name"); }
+        return StringUtils.equals(StringUtils.remove(text.trim(), '\r'), StringUtils.remove(actual.trim(), '\r'));
     }
 
-    protected boolean setValue(WebElement element, String text) {
-        return setValue(false, element, text);
-    }
+    protected boolean setValue(WebElement element, String text) { return setValue(false, element, text); }
 
     /** This Method will set the value for TextBox Element **/
     protected boolean setValue(boolean useSendKeys, WebElement element, String text) {

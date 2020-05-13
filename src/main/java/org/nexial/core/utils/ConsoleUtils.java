@@ -25,20 +25,25 @@ import java.util.Scanner;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.nexial.commons.logging.LogbackUtils;
 import org.nexial.commons.utils.DateUtility;
-import org.nexial.core.ExecutionEventListener;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.model.ExecutionEventListener;
 import org.nexial.core.model.TestCase;
 import org.nexial.core.model.TestStep;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 
-import static org.nexial.core.NexialConst.FlowControls.*;
+import static org.nexial.core.NexialConst.Data.QUIET;
+import static org.nexial.core.NexialConst.FlowControls.OPT_INSPECT_ON_PAUSE;
+import static org.nexial.core.NexialConst.FlowControls.RESUME_FROM_PAUSE;
+import static org.nexial.core.NexialConst.NL;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.slf4j.event.Level.ERROR;
 import static org.slf4j.event.Level.INFO;
 
@@ -63,36 +68,34 @@ public final class ConsoleUtils {
     private static final Logger LOGGER = LoggerFactory.getLogger(ConsoleUtils.class);
     private static final List<Pair<Level, String>> PRE_EXEC_READY_BUFFER = new ArrayList<>();
 
+    public enum LogType {LOG, ERROR}
+
     private ConsoleUtils() { }
 
     @SuppressWarnings("PMD.SystemPrintln")
-    public static void log(String msg) {
-        if (System.out == null) { throw new RuntimeException("System.out is null!"); }
-        System.out.println(DateUtility.getCurrentTimeForLogging() + " >> " + msg);
-        logAs(INFO, msg);
-    }
-
-    @SuppressWarnings("PMD.SystemPrintln")
-    public static void error(String msg) {
-        if (System.err == null) { throw new RuntimeException("System.err is null!"); }
-        System.err.println(DateUtility.getCurrentTimeForLogging() + " >> " + msg);
-        logAs(ERROR, msg);
-    }
+    public static void log(String msg) { log(null, msg); }
 
     @SuppressWarnings("PMD.SystemPrintln")
     public static void log(String id, String msg) {
-        assert StringUtils.isNotBlank(id);
         if (System.out == null) { throw new RuntimeException("System.out is null!"); }
-        System.out.println(DateUtility.getCurrentTimeForLogging() + " >> [" + id + "] " + msg);
-        logAs(INFO, "[" + id + "] " + msg);
+
+        String label = StringUtils.isNotBlank(id) ? "[" + id + "] " : "";
+        if (!BooleanUtils.toBoolean(System.getProperty(QUIET))) {
+            System.out.println(DateUtility.getCurrentTimeForLogging() + " >> " + label + msg);
+        }
+        logAs(INFO, label + msg);
     }
 
     @SuppressWarnings("PMD.SystemPrintln")
+    public static void error(String msg) { error(null, msg); }
+
+    @SuppressWarnings("PMD.SystemPrintln")
     public static void error(String id, String msg) {
-        assert StringUtils.isNotBlank(id);
         if (System.err == null) { throw new RuntimeException("System.err is null!"); }
-        System.err.println(DateUtility.getCurrentTimeForLogging() + " >> [" + id + "] " + msg);
-        logAs(ERROR, "[" + id + "] " + msg);
+
+        String label = StringUtils.isNotBlank(id) ? "[" + id + "] " : "";
+        System.err.println(DateUtility.getCurrentTimeForLogging() + " >> " + label + msg);
+        logAs(ERROR, label + msg);
     }
 
     @SuppressWarnings("PMD.SystemPrintln")
@@ -100,8 +103,17 @@ public final class ConsoleUtils {
         error(id, msg);
         if (e != null) {
             e.printStackTrace(System.err);
-            System.err.print("\n\n");
+            System.err.print(NL + NL);
             logAs(ERROR, "[" + id + "] " + msg + e.getMessage());
+        }
+    }
+
+    public static void log(LogType type, String id, String format, Object... args) {
+        switch (type) {
+            case LOG:
+                log(id, String.format(format, args));
+            case ERROR:
+                error(id, String.format(format, args));
         }
     }
 
@@ -138,22 +150,28 @@ public final class ConsoleUtils {
 
     @SuppressWarnings("PMD.SystemPrintln")
     public static void doPause(ExecutionContext context, String msg) {
+        pauseAndInspect(context, msg, context != null && context.getBooleanData(OPT_INSPECT_ON_PAUSE,
+                                                                                getDefaultBool(OPT_INSPECT_ON_PAUSE)));
+    }
+
+    @SuppressWarnings("PMD.SystemPrintln")
+    public static void pauseAndInspect(ExecutionContext context, String msg, boolean inspect) {
         System.out.println();
         System.out.println(msg);
 
-        if (context != null && context.getBooleanData(OPT_INSPECT_ON_PAUSE, DEF_INSPECT_ON_PAUSE)) {
+        if (inspect) {
             // inspect mode
             System.out.println("/------------------------------------------------------------------------------\\");
             System.out.println(MARGIN_RIGHT + centerPrompt("INSPECT ON PAUSE", PROMPT_LINE_WIDTH - 2) + MARGIN_RIGHT);
             System.out.println("\\------------------------------------------------------------------------------/");
             System.out.println("> Enter statement to inspect.  Press ENTER or " + RESUME_FROM_PAUSE + " to resume " +
-                               "execution\n");
+                               "execution" + NL);
             System.out.print("inspect-> ");
             Scanner in = new Scanner(System.in);
             String input = in.nextLine();
 
             while (StringUtils.isNotBlank(input) && !StringUtils.equals(StringUtils.trim(input), RESUME_FROM_PAUSE)) {
-                System.out.println(context.replaceTokens(input));
+                System.out.println(context.replaceTokens(input, true));
                 System.out.println();
                 System.out.print("inspect-> ");
                 input = in.nextLine();
@@ -221,17 +239,18 @@ public final class ConsoleUtils {
         // not applicable when running in Jenkins environment
         if (!isPauseReady()) { return null; }
 
-        ExecutionEventListener listener = context.getExecutionEventListener();
-        listener.onPause();
+        ExecutionEventListener listener = null;
+        if (context != null) {
+            listener = context.getExecutionEventListener();
+            listener.onPause();
+            printStepHeader(HDR_START + "OBSERVATION" + HDR_END, context);
+        }
 
-        printStepHeader(HDR_START + "OBSERVATION" + HDR_END, context);
         printStepPrompt(prompt);
-
         System.out.print("> ");
-
         String input = new Scanner(System.in).nextLine();
 
-        listener.afterPause();
+        if (listener != null) { listener.afterPause(); }
 
         return input;
     }

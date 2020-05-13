@@ -93,7 +93,7 @@ class BaiFile : BaiModel {
             fileHeaderMeta.type  -> TextDataType(header!!.get(name))
             fileTrailerMeta.type -> TextDataType(trailer!!.get(name))
 
-            else                 -> {
+            else         -> {
                 val builder = StringBuilder()
                 records.forEach { baiGroup -> builder.append(baiGroup.field(recordType, name).textValue).append(",") }
                 TextDataType(builder.toString().removeSuffix(","))

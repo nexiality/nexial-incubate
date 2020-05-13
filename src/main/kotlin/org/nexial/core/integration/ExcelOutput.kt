@@ -19,12 +19,13 @@ package org.nexial.core.integration
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.poi.xssf.usermodel.XSSFCell
+import org.nexial.core.NexialConst.Data.SUMMARY_TAB_NAME
 import org.nexial.core.excel.Excel
 import org.nexial.core.excel.Excel.Worksheet
 import org.nexial.core.excel.Excel.getCellValue
 import org.nexial.core.excel.ExcelAddress
 import org.nexial.core.excel.ExcelArea
-import org.nexial.core.excel.ExcelConfig
+import org.nexial.core.excel.ExcelConfig.*
 import org.nexial.core.model.TestScenarioMeta
 import java.io.File
 
@@ -41,13 +42,12 @@ class ExcelOutput(file: File) {
     fun parse(): IterationOutput {
         val iterationOutput = IterationOutput()
         iterationOutput.fileName = excel!!.file.name
-        val summarySheet: Worksheet = excel!!.worksheet("#summary")
+        val summarySheet: Worksheet = excel!!.worksheet(SUMMARY_TAB_NAME)
         iterationOutput.summary = parseSummaryOutput(summarySheet)
-//         summarySheet.findLastDataRow(ExcelAddress(scenarioStartAddress))
         val scenarioEndRow = summarySheet.sheet.lastRowNum
         val scenarioCells = summarySheet.cells(ExcelAddress("$scenarioStartAddress:A$scenarioEndRow"))
         val cellValues = mutableListOf<String>()
-        scenarioCells.forEach { row -> row.forEach { cell -> cellValues.add(Excel.getCellValue(cell)) } }
+        scenarioCells.forEach { row -> row.forEach { cell -> cellValues.add(getCellValue(cell)) } }
         cellValues.forEach { name ->
             if (StringUtils.isNotBlank(name)) {
                 val scenarioSheet = excel!!.worksheet(name)
@@ -57,21 +57,13 @@ class ExcelOutput(file: File) {
             }
         }
 
-        // parse data sheet if needed
-        // data = parseDataSheet(excel.worksheet("#data"))
         return iterationOutput
-
     }
-
-    /*private fun parseDataSheet(worksheet: Worksheet): Map<String, String>? {
-        return null
-    }*/
-
 
     private fun parseSummaryOutput(worksheet: Worksheet): SummaryOutput {
         val addrTestCaseName = ExcelAddress("A1")
         val cell: XSSFCell = worksheet.cell(addrTestCaseName)
-        val title = Excel.getCellValue(cell)
+        val title = getCellValue(cell)
 
         val execSummary = readExecutionSummary(worksheet)
         val summaryOutput = SummaryOutput()
@@ -80,16 +72,13 @@ class ExcelOutput(file: File) {
         return summaryOutput
     }
 
-
     private fun readExecutionSummary(worksheet: Worksheet): Map<String, String> {
         val cols: List<Char> = listOf('B', 'C')
         val map: MutableMap<String, String> = mutableMapOf()
         // summary rows range (2..12)
         (2..12).forEach { row ->
-            val key = Excel
-                .getCellValue(worksheet.cell(ExcelAddress("${cols[0]}$row")))
-            val value = Excel
-                .getCellValue(worksheet.cell(ExcelAddress("${cols[1]}$row")))
+            val key = getCellValue(worksheet.cell(ExcelAddress("${cols[0]}$row")))
+            val value = getCellValue(worksheet.cell(ExcelAddress("${cols[1]}$row")))
             map[key] = value
         }
         return map
@@ -104,7 +93,7 @@ class ExcelOutput(file: File) {
         scenarioOutput.projects = projects
         val cell = worksheet.cell(ExcelAddress("L2"))
         if (cell != null) {
-            val scenarioResult = Excel.getCellValue(cell)
+            val scenarioResult = getCellValue(cell)
             scenarioOutput.scenarioSummaryMap = parseScenarioResult(scenarioResult)
         }
         return scenarioOutput
@@ -114,7 +103,6 @@ class ExcelOutput(file: File) {
         val projectList = mutableListOf<ProjectInfo>()
         val projects = StringUtils.split(meta.project, "\n") ?: return projectList
         projects.forEach { projectKey ->
-
             val key = StringUtils.substringBetween(projectKey, "[", "]")
             val projectProfile = StringUtils.substringBefore(key, ":")
             val project = StringUtils.substringAfter(key, ":")
@@ -138,8 +126,7 @@ class ExcelOutput(file: File) {
         cellValues.forEach { value ->
             val ref = StringUtils.substringBetween(value, "[", "]")
             if (StringUtils.substringBefore(ref, ":") == projectProfile) {
-                val refValue = StringUtils.substringAfter(ref, ":")
-                refValues.add(refValue)
+                refValues.add(StringUtils.substringAfter(ref, ":"))
             }
         }
         return refValues
@@ -148,11 +135,10 @@ class ExcelOutput(file: File) {
     private fun parseStepResults(worksheet: Worksheet): ScenarioOutput {
 
         val scenarioOutput = ScenarioOutput()
-        val lastCommandRow = worksheet.findLastDataRow(ExcelConfig.ADDR_COMMAND_START)
-        val startRowIndex = ExcelConfig.ADDR_COMMAND_START.rowStartIndex!! + 1
+        val lastCommandRow = worksheet.findLastDataRow(ADDR_COMMAND_START)
+        val startRowIndex = ADDR_COMMAND_START.rowStartIndex!! + 1
         val area = ExcelArea(worksheet,
-                             ExcelAddress("" + ExcelConfig.COL_TEST_CASE + startRowIndex + ":" +
-                                          ExcelConfig.COL_REASON + lastCommandRow), false)
+                             ExcelAddress("$COL_TEST_CASE$startRowIndex:$COL_REASON$lastCommandRow"), false)
 
         val steps = mutableMapOf<Int, List<String>>()
 
@@ -164,20 +150,16 @@ class ExcelOutput(file: File) {
             val step = mutableListOf<String>()
             val row = area.wholeArea[i]
 
-            if (getCellValue(row[0]).isNotBlank()) {
-                activity = getCellValue(row[0])
-            }
-            if (getCellValue(row[1]).isNotBlank()) {
-                description = getCellValue(row[1])
-            }
+            if (getCellValue(row[0]).isNotBlank()) activity = getCellValue(row[0])
+            if (getCellValue(row[1]).isNotBlank()) description = getCellValue(row[1])
             if (getCellValue(row[13]).contains("FAIL")) {
                 scenarioOutput.isFailed = true
                 row.forEach { cell -> step.add(getCellValue(cell)) }
                 steps[rowNumber] = step
             }
             if (step.isNotEmpty()) {
-                step.set(0, activity)
-                step.set(1, description)
+                step[0] = activity
+                step[1] = description
             }
             rowNumber++
             i++

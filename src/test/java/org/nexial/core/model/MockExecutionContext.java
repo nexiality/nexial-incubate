@@ -43,6 +43,7 @@ import static java.io.File.separator;
 import static org.apache.commons.lang3.SystemUtils.JAVA_IO_TMPDIR;
 import static org.nexial.core.NexialConst.DEF_CHARSET;
 import static org.nexial.core.NexialConst.Data.TEST_LOG_PATH;
+import static org.nexial.core.NexialConst.OPT_OUT_DIR;
 import static org.nexial.core.NexialConst.Project.DEF_REL_LOC_TEST_SCRIPT;
 import static org.nexial.core.NexialConst.Project.NEXIAL_HOME;
 
@@ -57,9 +58,10 @@ public class MockExecutionContext extends ExecutionContext {
         super();
 
         hostname = StringUtils.upperCase(EnvUtils.getHostName());
-        executionLogger = new ExecutionLogger(this);
         runId = DateUtility.createTimestampString(System.currentTimeMillis());
         System.setProperty(TEST_LOG_PATH, JAVA_IO_TMPDIR);
+        System.setProperty(OPT_OUT_DIR, JAVA_IO_TMPDIR);
+        executionLogger = new ExecutionLogger(this);
 
         if (withSpring) {
             this.springContext = new ClassPathXmlApplicationContext("classpath:/nexial.xml");

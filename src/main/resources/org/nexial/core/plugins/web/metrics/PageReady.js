@@ -1,0 +1,1 @@
+metrics.PageReady = formatPerfNum(JSON.parse(localStorage.getItem('n')).map(x => x.domComplete - x.domInteractive).pop());

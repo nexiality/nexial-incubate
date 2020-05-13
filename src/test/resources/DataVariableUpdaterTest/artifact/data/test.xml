@@ -1,6 +1,6 @@
 <a>
 	<b>
-        <c>${nexial.browser}</c>
+		<c>${nexial.browser}</c>
 	</b>
-    <d e="${nexial.failFast}">${nexial.textDelim}</d>
+	<d e="${nexial.failFast}">${nexial.textDelim}</d>
 </a>

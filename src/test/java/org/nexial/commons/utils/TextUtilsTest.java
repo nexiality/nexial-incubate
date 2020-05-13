@@ -27,10 +27,12 @@ import java.util.Map;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
 import static java.io.File.separator;
+import static org.nexial.commons.utils.TextUtils.CleanNumberStrategy.CSV;
 import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
 public class TextUtilsTest {
@@ -45,6 +47,18 @@ public class TextUtilsTest {
         Assert.assertEquals("bracket", TextUtils.substringBetweenFirstPair("[[[[bracket]]", "[", "]"));
         Assert.assertEquals("", TextUtils.substringBetweenFirstPair("[][[[bracket]]", "[", "]"));
         Assert.assertNull(TextUtils.substringBetweenFirstPair("bracket]bracket[[[bracket]]", "[", "]"));
+    }
+
+    @Test
+    public void testSubstringBetweenClosestPair_includeSep() {
+        Assert.assertEquals("(a)", TextUtils.substringBetweenFirstPair("((a))", "(", ")", true));
+        Assert.assertEquals("(jolly good)", TextUtils.substringBetweenFirstPair("((jolly good))", "(", ")", true));
+
+        Assert.assertEquals("[bracket]", TextUtils.substringBetweenFirstPair("[bracket]", "[", "]", true));
+        Assert.assertEquals("[bracket]", TextUtils.substringBetweenFirstPair("[bracket]]]", "[", "]", true));
+        Assert.assertEquals("[bracket]", TextUtils.substringBetweenFirstPair("[[[[bracket]]", "[", "]", true));
+        Assert.assertEquals("[]", TextUtils.substringBetweenFirstPair("[][[[bracket]]", "[", "]", true));
+        Assert.assertNull(TextUtils.substringBetweenFirstPair("bracket]bracket[[[bracket]]", "[", "]", true));
     }
 
     @Test
@@ -458,6 +472,7 @@ public class TextUtilsTest {
                              "all.the.kings.horse=and king's men\n" +
                              "couldn't put=Humpty Dumpty together again\n" +
                              "\n" +
+                             "my.datasource.url=jdbc://myserver:1099/dbname;prop1=value1;prop2=#hash2;prop3=!what\n" +
                              "broken==\n" +
                              "rotten=\n" +
                              "gotten=";
@@ -474,8 +489,26 @@ public class TextUtilsTest {
         Assert.assertEquals("=", propMap.get("broken"));
         Assert.assertEquals("", propMap.get("gotten"));
         Assert.assertEquals("${nexial.web.alwaysWait}", propMap.get("nexial.lenientStringCompare"));
+        Assert.assertEquals("jdbc://myserver:1099/dbname;prop1=value1;prop2=#hash2;prop3=!what",
+                            propMap.get("my.datasource.url"));
 
         FileUtils.deleteQuietly(tmpProp);
+    }
+
+    @Test
+    public void testLoadPropertiesFileWithSpacesInValues() throws Exception {
+        String testFixture = ResourceUtils.getResourceFilePath("/dummy-test.project.properties");
+
+        Map<String, String> propMap = TextUtils.loadProperties(testFixture);
+        assert propMap != null;
+        Assert.assertEquals(propMap.size(), 7);
+        Assert.assertEquals(propMap.get("environment"), "PROD");
+        Assert.assertEquals(propMap.get("mySite.url"), "https://abcdefg.qwertyu.com/user21/logon.aspx?key1=Integon&key2=63befb2pdosk8e358adf39f95e63700e&partnerId=qpwoslkgRater&redirectUrl=~/rating/Default.aspx ");
+        Assert.assertEquals(propMap.get("yoursite.url"), "http://1qazxswedfg.xvbghy.com/PolicyReview/ ");
+        Assert.assertEquals(propMap.get("theirSite.url"), "https://rfgthyuj.mvncbxvs.com/09sidu7/logon.aspx?key1=Integon&key2=63befb211f2cfe358w23er455e63700e&partnerId=asdfrtyu7890jhg&redirectUrl=~//rating/search/quotesearch.aspx \t\t\t\t\t");
+        Assert.assertEquals(propMap.get("username"), "tech21					");
+        Assert.assertEquals(propMap.get("passwordClue"), "agency19	");
+        Assert.assertEquals(propMap.get("mySuperDuperDB.url"), "jdbc:sqlserver://myserver09sdb04:1433;databaseName=dbase21;integratedSecurity=true;authenticationScheme=JavaKerberos");
     }
 
     @Test
@@ -529,22 +562,32 @@ public class TextUtilsTest {
         Assert.assertEquals("09392394", TextUtils.keepOnly("sd0g9w3ihps9g23unap9w4", "0123456789"));
         Assert.assertEquals("0123abbey", TextUtils.keepOnly("0123abbey", "0123abbey"));
         Assert.assertEquals("0123abbey", TextUtils.keepOnly("0@1#2%3^^&*aKLRURTYbZXCBZDFGbWEWRey", "0123abbey"));
+        Assert.assertEquals("4567321.004", TextUtils.keepOnly("-$4,567,321.004", "0123456789."));
+    }
 
+    @Test
+    public void removeOnly() {
+        Assert.assertEquals("", TextUtils.removeOnly("", ""));
+        Assert.assertEquals("", TextUtils.removeOnly("", "12345"));
+        Assert.assertEquals("12345", TextUtils.removeOnly("12345", ""));
+        Assert.assertEquals("12345", TextUtils.removeOnly("12345", " "));
+        Assert.assertEquals("12345", TextUtils.removeOnly("12345", "abcdef"));
+        Assert.assertEquals("Thatet", TextUtils.removeOnly("This is a test", " is"));
     }
 
     @Test
     public void base64() {
         Assert.assertEquals("WVBxVFd6ejlWbkZidGNsNE1hYmpOaDZRRW5nak5OQUg6UlNkRnRSYWdBZmtIZnNPbw==",
-                            TextUtils.base64encoding("YPqTWzz9VnFbtcl4MabjNh6QEngjNNAH:RSdFtRagAfkHfsOo"));
+                            TextUtils.base64encode("YPqTWzz9VnFbtcl4MabjNh6QEngjNNAH:RSdFtRagAfkHfsOo"));
         Assert.assertEquals("UVJHZ2tCRDNZSHp2SGdBMGVhSWgyWEd4R2VBM0FHb1k6VVV1QUhOY0xlb00yZTBWZg==",
-                            TextUtils.base64encoding("QRGgkBD3YHzvHgA0eaIh2XGxGeA3AGoY:UUuAHNcLeoM2e0Vf"));
+                            TextUtils.base64encode("QRGgkBD3YHzvHgA0eaIh2XGxGeA3AGoY:UUuAHNcLeoM2e0Vf"));
 
         Assert.assertEquals("YPqTWzz9VnFbtcl4MabjNh6QEngjNNAH:RSdFtRagAfkHfsOo",
                             TextUtils
-                                .base64decoding("WVBxVFd6ejlWbkZidGNsNE1hYmpOaDZRRW5nak5OQUg6UlNkRnRSYWdBZmtIZnNPbw=="));
+                                .base64decode("WVBxVFd6ejlWbkZidGNsNE1hYmpOaDZRRW5nak5OQUg6UlNkRnRSYWdBZmtIZnNPbw=="));
         Assert.assertEquals("QRGgkBD3YHzvHgA0eaIh2XGxGeA3AGoY:UUuAHNcLeoM2e0Vf",
                             TextUtils
-                                .base64decoding("UVJHZ2tCRDNZSHp2SGdBMGVhSWgyWEd4R2VBM0FHb1k6VVV1QUhOY0xlb00yZTBWZg=="));
+                                .base64decode("UVJHZ2tCRDNZSHp2SGdBMGVhSWgyWEd4R2VBM0FHb1k6VVV1QUhOY0xlb00yZTBWZg=="));
     }
 
     @Test
@@ -565,5 +608,29 @@ public class TextUtilsTest {
                             TextUtils.demarcate("This is a test. Do not be alarmed!!", 5, "<**>"));
         Assert.assertEquals("This is a test.... Do not be alar...med!!",
                             TextUtils.demarcate("This is a test. Do not be alarmed!!", 15, "..."));
+    }
+
+    @Test
+    public void cleanNumber_simple() {
+        Assert.assertEquals(7.7, NumberUtils.createDouble(TextUtils.cleanNumber("7.7", CSV)), 0);
+        Assert.assertEquals(7.7, NumberUtils.createDouble(TextUtils.cleanNumber("7.70", CSV)), 0);
+        Assert.assertEquals(7.7, NumberUtils.createDouble(TextUtils.cleanNumber("7.70000000", CSV)), 0);
+        Assert.assertEquals(-7.7, NumberUtils.createDouble(TextUtils.cleanNumber("-07.7000", CSV)), 0);
+        Assert.assertEquals(-7.700123, NumberUtils.createDouble(TextUtils.cleanNumber("-07.700123", CSV)), 0);
+        Assert.assertEquals(0, NumberUtils.createDouble(TextUtils.cleanNumber("0.00", CSV)), 0);
+        Assert.assertEquals(0, NumberUtils.createDouble(TextUtils.cleanNumber("000.0", CSV)), 0);
+        Assert.assertEquals(0, NumberUtils.createDouble(TextUtils.cleanNumber("-0.00", CSV)), 0);
+    }
+
+    @Test
+    public void insertAfter() {
+        Assert.assertNull(TextUtils.insertAfter(null, "a", "b"));
+        Assert.assertEquals("", TextUtils.insertAfter("", "a", "b"));
+        Assert.assertEquals("abc", TextUtils.insertAfter("abc", "", "b"));
+        Assert.assertEquals("abc", TextUtils.insertAfter("abc", "a", ""));
+        Assert.assertEquals("abbc", TextUtils.insertAfter("abc", "a", "b"));
+        Assert.assertEquals("abbc", TextUtils.insertAfter("abc", "ab", "b"));
+        Assert.assertEquals("nexial.browser.MY_PROFILE.command",
+                            TextUtils.insertAfter("nexial.browser.command", "nexial.browser", ".MY_PROFILE"));
     }
 }

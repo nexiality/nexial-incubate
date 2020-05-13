@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Iterator;
+import java.util.List;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -38,14 +39,21 @@ import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.apache.poi.xssf.usermodel.XSSFRow;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.nexial.commons.utils.FileUtil;
+import org.nexial.core.excel.Excel;
+import org.nexial.core.excel.Excel.Worksheet;
+import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
+import org.nexial.core.plugins.db.DaoUtils;
 import org.nexial.core.utils.ConsoleUtils;
 
 import static java.lang.System.lineSeparator;
 import static org.apache.poi.ss.usermodel.CellType.NUMERIC;
 import static org.apache.poi.ss.usermodel.CellType.STRING;
 import static org.nexial.core.NexialConst.DEF_CHARSET;
+import static org.nexial.core.NexialConst.Project.SCRIPT_FILE_EXT;
+import static org.nexial.core.excel.Excel.MIN_EXCEL_FILE_SIZE;
 
 public class ExcelHelper {
     private static final DateFormat DEF_EXCEL_DATE_FORMAT = new SimpleDateFormat("MM/dd/yyyy");
@@ -55,7 +63,7 @@ public class ExcelHelper {
 
     public StepResult saveCsvToFile(File excelFile, String worksheet, String csvFile) {
         String excel = excelFile.getAbsolutePath();
-        boolean newerFormat = StringUtils.endsWith(excel, ".xlsx");
+        boolean newerFormat = StringUtils.endsWith(excel, SCRIPT_FILE_EXT);
         try {
             StringBuilder csv = newerFormat ? xlsx2csv(excelFile, worksheet) : xls2csv(excelFile, worksheet);
             return saveCSVContentToFile(csvFile, csv);
@@ -64,11 +72,23 @@ public class ExcelHelper {
         }
     }
 
+    public static void csv2xlsx(String file, String sheet, String startCell, List<List<String>> rowsAndColumns)
+        throws IOException {
+        // either write access or write down would work.
+        if (StringUtils.isBlank(startCell)) { startCell = "A1"; }
+
+        File f = new File(file);
+        Excel excel = FileUtil.isFileReadable(file, MIN_EXCEL_FILE_SIZE) ? new Excel(f) : Excel.newExcel(f);
+        Worksheet worksheet = excel.worksheet(sheet, true);
+        worksheet.writeAcross(new ExcelAddress(startCell), rowsAndColumns);
+    }
+
     protected StringBuilder xlsx2csv(File excelFile, String worksheet) throws IOException {
         XSSFWorkbook workBook = new XSSFWorkbook(new FileInputStream(excelFile));
         XSSFSheet excelSheet = workBook.getSheet(worksheet);
         Iterator rowIterator = excelSheet.rowIterator();
         StringBuilder csv = new StringBuilder();
+        String delim = context.getTextDelim();
 
         while (rowIterator.hasNext()) {
             XSSFRow row = (XSSFRow) rowIterator.next();
@@ -77,11 +97,11 @@ public class ExcelHelper {
             String value;
             for (int i = 0; i < row.getLastCellNum(); i++) {
                 value = returnCellValue(row.getCell(i));
-                if (StringUtils.isEmpty(value)) { continue; }
-                oneRow += value + ",";
+                if (StringUtils.isEmpty(value)) { value = ""; }
+                oneRow += value + delim;
             }
 
-            oneRow = StringUtils.trim(StringUtils.removeEnd(oneRow, ","));
+            oneRow = StringUtils.trim(StringUtils.removeEnd(oneRow, delim));
             if (!oneRow.isEmpty()) { csv.append(oneRow).append(lineSeparator()); }
         }
 
@@ -93,6 +113,7 @@ public class ExcelHelper {
         HSSFSheet excelSheet = workBook.getSheet(worksheet);
         Iterator rowIterator = excelSheet.rowIterator();
         StringBuilder csv = new StringBuilder();
+        String delim = context.getTextDelim();
 
         while (rowIterator.hasNext()) {
             HSSFRow row = (HSSFRow) rowIterator.next();
@@ -102,12 +123,11 @@ public class ExcelHelper {
             for (int i = 0; i < row.getLastCellNum(); i++) {
                 HSSFCell cell = row.getCell(i);
                 value = returnCellValue(cell);
-                if (StringUtils.isEmpty(value)) { continue; }
-
-                oneRow += value + ",";
+                if (StringUtils.isEmpty(value)) { value = ""; }
+                oneRow += value + delim;
             }
 
-            oneRow = StringUtils.trim(StringUtils.removeEnd(oneRow, ","));
+            oneRow = StringUtils.trim(StringUtils.removeEnd(oneRow, delim));
             if (!oneRow.isEmpty()) { csv.append(oneRow).append(lineSeparator()); }
         }
 
@@ -117,8 +137,8 @@ public class ExcelHelper {
     protected StepResult saveCSVContentToFile(String file, StringBuilder csv) {
         String content = csv.toString();
         if (context.isVerbose()) {
-            context.getLogger().log(context, "writing " + StringUtils.countMatches(content, "\n")
-                                             + " row(s) to '" + file + "'");
+            context.getLogger().log(context,
+                                    "writing " + StringUtils.countMatches(content, "\n") + " row(s) to '" + file + "'");
         }
 
         File target = new File(file);
@@ -140,24 +160,32 @@ public class ExcelHelper {
 
     protected String returnCellValue(Cell cell) {
         try {
+            String value;
+
             switch (cell.getCellTypeEnum()) {
                 case STRING:
                 case BOOLEAN:
-                    return cell.getRichStringCellValue().toString();
+                    value = cell.getRichStringCellValue().toString();
+                    break;
                 case NUMERIC:
-                    return formattedCellToString(cell);
+                    value = formattedCellToString(cell);
+                    break;
                 case FORMULA:
                     CellType resultType = cell.getCachedFormulaResultTypeEnum();
                     if (resultType == STRING) {
-                        return cell.getRichStringCellValue().toString();
+                        value = cell.getRichStringCellValue().toString();
                     } else if (resultType == NUMERIC) {
-                        return formattedCellToString(cell);
+                        value = formattedCellToString(cell);
                     } else {
-                        return cell.getStringCellValue();
+                        value = cell.getStringCellValue();
                     }
+
+                    break;
                 default:
-                    return cell.getStringCellValue();
+                    value = cell.getStringCellValue();
             }
+
+            return DaoUtils.csvFriendly(value, context.getTextDelim(), true);
         } catch (Exception e) {
             return null;
         }

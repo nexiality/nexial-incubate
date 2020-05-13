@@ -18,15 +18,12 @@ package org.nexial.core.plugins.web;
 
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.nexial.core.WebProxy;
 import org.nexial.core.model.ExecutionContext;
-import org.nexial.core.utils.ConsoleUtils;
 import org.openqa.selenium.MutableCapabilities;
 
-import static org.nexial.core.NexialConst.Data.BROWSER_ACCEPT_INVALID_CERTS;
-import static org.nexial.core.NexialConst.Data.DEF_BROWSER_ACCEPT_INVALID_CERTS;
-import static org.nexial.core.NexialConst.OPT_ALERT_IGNORE_FLAG;
-import static org.nexial.core.NexialConst.OPT_PROXY_DIRECT;
+import static org.nexial.core.NexialConst.Web.BROWSER_ACCEPT_INVALID_CERTS;
+import static org.nexial.core.NexialConst.Web.OPT_ALERT_IGNORE_FLAG;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.openqa.selenium.UnexpectedAlertBehaviour.ACCEPT;
 import static org.openqa.selenium.UnexpectedAlertBehaviour.IGNORE;
 import static org.openqa.selenium.remote.CapabilityType.*;
@@ -49,7 +46,7 @@ class WebDriverCapabilityUtils {
         capabilities.setCapability(HAS_NATIVE_EVENTS, true);
         capabilities.setCapability(SUPPORTS_LOCATION_CONTEXT, false);
         capabilities.setCapability(ACCEPT_SSL_CERTS, true);
-        if (context.getBooleanData(BROWSER_ACCEPT_INVALID_CERTS, DEF_BROWSER_ACCEPT_INVALID_CERTS)) {
+        if (context.getBooleanData(BROWSER_ACCEPT_INVALID_CERTS, getDefaultBool(BROWSER_ACCEPT_INVALID_CERTS))) {
             capabilities.setCapability(ACCEPT_INSECURE_CERTS, true);
         }
 
@@ -68,9 +65,9 @@ class WebDriverCapabilityUtils {
         //     capabilities.setCapability(PROXY, WebProxy.getSeleniumProxy());
         // }
 
-        if (context.getBooleanData(OPT_PROXY_DIRECT, false)) {
-            ConsoleUtils.log("setting direct connection for webdriver");
-            capabilities.setCapability(PROXY, WebProxy.getDirect());
-        }
+        // if (context.getBooleanData(OPT_PROXY_DIRECT, false)) {
+        //     ConsoleUtils.log("setting direct connection for webdriver");
+        //     capabilities.setCapability(PROXY, WebProxy.getDirect());
+        // }
     }
 }

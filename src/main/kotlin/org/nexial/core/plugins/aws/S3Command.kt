@@ -19,10 +19,11 @@ package org.nexial.core.plugins.aws
 import org.apache.commons.collections4.CollectionUtils
 import org.apache.commons.io.FileUtils
 import org.apache.commons.lang3.StringUtils
+import org.nexial.commons.utils.FileUtil
 import org.nexial.commons.utils.IOFilePathFilter
 import org.nexial.commons.utils.TextUtils
 import org.nexial.core.IntegrationConfigException
-import org.nexial.core.NexialConst.S3_PATH_SEPARATOR
+import org.nexial.core.NexialConst.S3_PATH_SEP
 import org.nexial.core.aws.AwsS3Helper
 import org.nexial.core.aws.NexialS3Helper
 import org.nexial.core.model.StepResult
@@ -55,7 +56,7 @@ class S3Command : BaseCommand() {
      */
     @Throws(IntegrationConfigException::class)
     fun copyTo(`var`: String, profile: String, local: String, remote: String) =
-        moveOrCopyToS3(`var`, profile, local, remote, false, COPY_TO)
+            moveOrCopyToS3(`var`, profile, local, remote, false, COPY_TO)
 
     /**
      * Same as [S3Command.copyTo]. Except that it deletes the files from the
@@ -64,7 +65,7 @@ class S3Command : BaseCommand() {
      */
     @Throws(IntegrationConfigException::class)
     fun moveTo(`var`: String, profile: String, local: String, remote: String) =
-        moveOrCopyToS3(`var`, profile, local, remote, true, MOVE_TO)
+            moveOrCopyToS3(`var`, profile, local, remote, true, MOVE_TO)
 
     /**
      * This is a nexial command to download file(s) from S3 bucket. The file path can contain the directory name so
@@ -78,7 +79,7 @@ class S3Command : BaseCommand() {
      */
     @Throws(IntegrationConfigException::class)
     fun copyFrom(`var`: String, profile: String, remote: String, local: String) =
-        moveOrCopyFromS3(`var`, profile, remote, local, false, COPY_FROM)
+            moveOrCopyFromS3(`var`, profile, remote, local, false, COPY_FROM)
 
     /**
      * Same as [S3Command.copyFrom]. Except that it deletes the files from the
@@ -86,7 +87,7 @@ class S3Command : BaseCommand() {
      */
     @Throws(IntegrationConfigException::class)
     fun moveFrom(`var`: String, profile: String, remote: String, local: String) =
-        moveOrCopyFromS3(`var`, profile, remote, local, true, MOVE_FROM)
+            moveOrCopyFromS3(`var`, profile, remote, local, true, MOVE_FROM)
 
     /**
      * This is a nexial command used to delete the files from the s3 bucket based on the criteria provided
@@ -99,7 +100,7 @@ class S3Command : BaseCommand() {
      */
     @Throws(IntegrationConfigException::class)
     fun delete(`var`: String, profile: String, remotePath: String): StepResult {
-        requiresValidVariableName(`var`)
+        requiresValidAndNotReadOnlyVariableName(`var`)
 
         val outcome = RemoteFileActionOutcome().setProtocol(AWS).setAction(DELETE).setRemotePath(remotePath)
         val helper = initS3helper(resolveAWSSettings(profile))
@@ -118,7 +119,7 @@ class S3Command : BaseCommand() {
         if (CollectionUtils.isNotEmpty(keys)) {
             // reverse the list so that we can delete the most significant object first
             keys.reverse()
-            val bucketName = StringUtils.substringBefore(remotePath, S3_PATH_SEPARATOR)
+            val bucketName = StringUtils.substringBefore(remotePath, S3_PATH_SEP)
             for (key in keys) {
                 val filePath = "$bucketName/$key"
                 try {
@@ -155,7 +156,7 @@ class S3Command : BaseCommand() {
      * @return [StepResult] which specifies success or failure.
      */
     fun list(`var`: String, profile: String, remotePath: String): StepResult {
-        requiresValidVariableName(`var`)
+        requiresValidAndNotReadOnlyVariableName(`var`)
 
         val outcome = RemoteFileActionOutcome().setProtocol(AWS).setAction(LIST).setRemotePath(remotePath)
         val keys: List<String>?
@@ -262,7 +263,10 @@ class S3Command : BaseCommand() {
                                  removeFromBucket: Boolean,
                                  action: RemoteFileActionOutcome.TransferAction): StepResult {
 
-        s3CommandValidations(`var`, s3BucketPath, systemPath, true)
+        // if `systemPath` is already a valid file, then we shouldn't check if it is a read/write dir
+        val isSystemPathValidFile = FileUtil.isFileReadWritable(systemPath, -1)
+        s3CommandValidations(`var`, s3BucketPath, systemPath, !isSystemPathValidFile)
+
         val outcome = RemoteFileActionOutcome().setLocalPath(systemPath)
             .setRemotePath(s3BucketPath)
             .setProtocol(AWS)
@@ -286,8 +290,12 @@ class S3Command : BaseCommand() {
                 val filePath = "$bucketName/$key"
                 try {
                     val content = helper.copyFromS3(bucketName, key, removeFromBucket)
-                    val affectedFile = StringUtils.appendIfMissing(systemPath, separator) +
-                                       if (key.contains("/")) StringUtils.substringAfterLast(key, "/") else key
+                    val affectedFile = if (isSystemPathValidFile)
+                        systemPath
+                    else {
+                        StringUtils.appendIfMissing(systemPath, separator) +
+                        if (key.contains("/")) StringUtils.substringAfterLast(key, "/") else key
+                    }
                     FileUtils.writeByteArrayToFile(File(affectedFile), content)
                     outcome.addAffected(affectedFile)
                 } catch (e: Exception) {
@@ -307,11 +315,11 @@ class S3Command : BaseCommand() {
             StepResult.fail("Following downloads from S3 failed: $failedFiles.")
         } else
             StepResult.success(
-                if (CollectionUtils.isEmpty(keys))
-                    msgNoMatches
-                else
-                    "The file(s) are ${if (removeFromBucket) "moved" else "uploaded"} " +
-                    "to the local path '$systemPath'. The files are ${outcome.affected}.")
+                    if (CollectionUtils.isEmpty(keys))
+                        msgNoMatches
+                    else
+                        "The file(s) are ${if (removeFromBucket) "moved" else "uploaded"} " +
+                        "to the local path '$systemPath'. The files are ${outcome.affected}.")
     }
 
     /**
@@ -412,6 +420,9 @@ class S3Command : BaseCommand() {
         requiresNotBlank(localPath, "Local path cannot be blank.")
         requiresNotNull(localPath, "Local path cannot be null.")
 
-        if (readWriteDir) requiresReadWritableDirectory(localPath, "read/write permissions required", localPath)
+        if (readWriteDir) {
+            val localDir = StringUtils.trim(localPath)
+            requiresReadWritableDirectory(localDir, "read/write permissions required", localDir)
+        }
     }
 }

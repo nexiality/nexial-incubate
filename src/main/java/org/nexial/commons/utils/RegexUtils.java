@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -44,6 +45,7 @@ public final class RegexUtils {
         if (StringUtils.isEmpty(text)) { return text; }
         if (StringUtils.isEmpty(regex)) { return text; }
 
+        replace = StringUtils.defaultString(replace);
         Pattern p = Pattern.compile(regex, REGEX_FLAGS);
 
         StringBuilder sb = new StringBuilder();
@@ -120,6 +122,7 @@ public final class RegexUtils {
         return collectGroups(text, regex, acceptBlank, false);
     }
 
+    @NotNull
     public static List<String> collectGroups(String text, String regex, boolean acceptBlank, boolean multiline) {
         List<String> list = new ArrayList<>();
         if (!acceptBlank && StringUtils.isBlank(text)) { return list; }
@@ -186,5 +189,19 @@ public final class RegexUtils {
         }
 
         return null;
+    }
+
+    public static List<String> extract(String text, String regex) {
+        List<String> extracted = new ArrayList<>();
+
+        if (StringUtils.isEmpty(text) || StringUtils.isEmpty(regex)) { return extracted; }
+
+        Matcher matcher = Pattern.compile(regex, REGEX_FLAGS).matcher(text);
+        while (matcher.find()) {
+            MatchResult result = matcher.toMatchResult();
+            extracted.add(StringUtils.substring(text, result.start(), result.end()));
+        }
+
+        return extracted;
     }
 }

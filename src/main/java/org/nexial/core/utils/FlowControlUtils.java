@@ -28,16 +28,13 @@ import org.nexial.core.model.FlowControl.Directive;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.plugins.desktop.DesktopNotification;
-import org.nexial.core.reports.JenkinsVariables;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import static org.apache.commons.lang3.SystemUtils.IS_OS_WINDOWS;
+import static org.nexial.core.NexialConst.MSG_ABORT;
 import static org.nexial.core.model.FlowControl.Directive.*;
 import static org.nexial.core.plugins.desktop.DesktopNotification.NotificationLevel.warn;
 
 public final class FlowControlUtils {
-    private static final Logger LOGGER = LoggerFactory.getLogger(FlowControlUtils.class);
 
     private FlowControlUtils() { }
 
@@ -123,29 +120,32 @@ public final class FlowControlUtils {
 
         if (!isMatched(context, flowControl)) { return null; }
 
-        String flowText = serializeDirectives(flowControl);
+        String flowControlText = directive + "(" + serializeDirectives(flowControl) + ")";
+        ExecutionLogger logger = context.getLogger();
 
         switch (directive) {
             case FailIf:
-                if (LOGGER.isInfoEnabled()) { LOGGER.info("step " + testStep.showPosition() + " failed: " + flowText); }
+                logger.log(testStep, MSG_ABORT + "due to flow control " + flowControlText);
                 context.setFailImmediate(true);
-                return StepResult.fail("current step failed: " + flowText);
+                return StepResult.fail("current step failed: " + flowControlText);
 
             case EndIf:
-                if (LOGGER.isInfoEnabled()) { LOGGER.info("test ends at " + testStep.showPosition() + ": " + flowText);}
+                logger.log(testStep, MSG_ABORT + "due to flow control " + flowControlText);
                 context.setEndImmediate(true);
-                return StepResult.success("test execution ends here: " + flowText);
+                return StepResult.success("test execution ends here: " + flowControlText);
 
             case SkipIf:
-                if (LOGGER.isInfoEnabled()) { LOGGER.info("step " + testStep.showPosition() + " skipped: " + flowText);}
-                return StepResult.skipped("current step skipped: " + flowText);
+                // logger.log(testStep, "skipped due to flow control " + flowControlText);
+                return StepResult.skipped("current step skipped: " + flowControlText);
 
             case EndLoopIf:
-                if (LOGGER.isInfoEnabled()) {
-                    LOGGER.info("current iteration ends at " + testStep.showPosition() + ": " + flowText);
-                }
+                logger.log(testStep, MSG_ABORT + "loop ends due to flow control " + flowControlText);
                 context.setBreakCurrentIteration(true);
-                return StepResult.skipped("current iteration ends here: " + flowText);
+                return StepResult.skipped("current iteration ends here: " + flowControlText);
+
+            case ProceedIf:
+                logger.log(testStep, "proceed due to flow control " + flowControlText);
+                return StepResult.success("current step proceeds on " + flowControlText);
 
             default:
                 throw new RuntimeException("Unknown/unsupported directive " + directive);
@@ -162,7 +162,7 @@ public final class FlowControlUtils {
      * no pausing when we run via castle/jenkins
      */
     private static boolean mustNotPause(ExecutionContext context, TestStep testStep) {
-        return context == null || testStep == null || JenkinsVariables.getInstance(context).isInvokedFromJenkins();
+        return context == null || testStep == null || ExecUtils.isRunningInZeroTouchEnv();
     }
 
     private static boolean isMatched(ExecutionContext context, FlowControl flowControl) {

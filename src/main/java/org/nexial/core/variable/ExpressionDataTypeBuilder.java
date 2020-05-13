@@ -26,13 +26,15 @@ import java.util.Map;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.utils.ConsoleUtils;
 
-import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
+import static org.nexial.core.NexialConst.Data.TEXT_DELIM;
+import static org.nexial.core.SystemVariables.getDefault;
 import static org.nexial.core.variable.ExpressionConst.REGEX_VALID_TYPE_PREFIX;
 import static org.nexial.core.variable.ExpressionConst.REGEX_VALID_TYPE_SUFFIX;
 import static org.nexial.core.variable.ExpressionUtils.handleExternal;
@@ -58,9 +60,8 @@ final class ExpressionDataTypeBuilder {
         try {
             return (ExpressionDataType) constr.invoke(this, value);
         } catch (IllegalAccessException | InvocationTargetException e) {
-            ConsoleUtils.error("Unable to construct new instance of " + dataType + ": " + e.getMessage());
-            Throwable ex = e instanceof InvocationTargetException ?
-                           ((InvocationTargetException) e).getTargetException() : e;
+            Throwable ex = ExceptionUtils.getRootCause(e);
+            ConsoleUtils.error("Unable to construct " + dataType + ": " + ExceptionUtils.getMessage(ex));
             if (ex instanceof TypeConversionException) { throw (TypeConversionException) ex; }
             throw new TypeConversionException(dataType, value, ex.getMessage(), ex);
         }
@@ -93,7 +94,8 @@ final class ExpressionDataTypeBuilder {
 
     ListDataType newListDataType(String value) {
         ListDataType data = resumeExpression(value, ListDataType.class);
-        return data != null ? data : new ListDataType(value, context != null ? context.getTextDelim() : DEF_TEXT_DELIM);
+        return data != null ?
+               data : new ListDataType(value, context != null ? context.getTextDelim() : getDefault(TEXT_DELIM));
     }
 
     DateDataType newDateDataType(String value) throws TypeConversionException {
@@ -134,6 +136,11 @@ final class ExpressionDataTypeBuilder {
     SqlDataType newSqlDataType(String value) throws TypeConversionException {
         SqlDataType data = resumeExpression(value, SqlDataType.class);
         return data != null ? data : new SqlDataType(handleExternal("SQL", value));
+    }
+
+    WebDataType newWebDataType(String value) throws TypeConversionException {
+        WebDataType data = resumeExpression(value, WebDataType.class);
+        return data != null ? data : new WebDataType(handleExternal("WEB", value));
     }
 
     private static String resolveValidTypeRegex(Map<String, Method> newInstanceMethods) {

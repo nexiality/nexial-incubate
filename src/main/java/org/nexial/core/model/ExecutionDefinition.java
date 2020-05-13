@@ -19,6 +19,7 @@ package org.nexial.core.model;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -51,8 +52,6 @@ public class ExecutionDefinition {
     private String planFilename;
     private String planName;
     private int planSequence;
-    private String planId;
-    private int planSequenceId;
 
     public ExecutionDefinition() { }
 
@@ -113,7 +112,7 @@ public class ExecutionDefinition {
     public TestData getTestData(boolean refetch) {
         if (refetch) {
             try {
-                ConsoleUtils.log("refetching data from " + dataFile);
+                ConsoleUtils.log("refetch data from " + dataFile);
                 parse();
             } catch (IOException e) {
                 String error = "Unable to successfully read/parse data file " + dataFile + ": " + e.getMessage();
@@ -147,14 +146,6 @@ public class ExecutionDefinition {
 
     public void setPlanSequence(int planSequence) { this.planSequence = planSequence; }
 
-    public String getPlanId() { return planId; }
-
-    public void setPlanId(String planId) { this.planId = planId; }
-
-    public int getPlanSequenceId() { return planSequenceId; }
-
-    public void setPlanSequenceId(int planSequenceId) { this.planSequenceId = planSequenceId; }
-
     public void parse() throws IOException {
         if (this.dataFile == null) {
             throw new IllegalArgumentException("data file not specified for this script: " + this.testScript);
@@ -165,9 +156,11 @@ public class ExecutionDefinition {
         }
 
         Excel dataFile = new Excel(this.dataFile, DEF_OPEN_EXCEL_AS_DUP, false);
+        Map<String, List<String>> runtimeDataMap = testData == null ? new HashMap<>() : testData.getRuntimeDataMap();
 
         // parse and collect all relevant test data so we can merge then into iteration-bound test script
         testData = new TestData(dataFile, dataSheets);
+        testData.addExistingRuntimeData(runtimeDataMap);
 
         // (2018/12/16,automike): memory consumption precaution
         dataFile.close();

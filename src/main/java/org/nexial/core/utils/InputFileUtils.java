@@ -41,6 +41,7 @@ import static org.apache.poi.ss.usermodel.CellType.STRING;
 import static org.nexial.core.NexialConst.Data.DEF_OPEN_EXCEL_AS_DUP;
 import static org.nexial.core.NexialConst.Data.SHEET_SYSTEM;
 import static org.nexial.core.excel.ExcelConfig.*;
+import static org.nexial.core.utils.ExecUtils.BIN_SCRIPT_EXT;
 
 public final class InputFileUtils {
     private static final Logger LOGGER = LoggerFactory.getLogger(InputFileUtils.class);
@@ -50,13 +51,15 @@ public final class InputFileUtils {
                                                       ArrayUtils.toString(ADDR_HEADER_SCENARIO_INFO1) + "," +
                                                       ArrayUtils.toString(ADDR_HEADER_SCENARIO_INFO2) + "," +
                                                       ArrayUtils.toString(ADDR_HEADER_TEST_STEP) + "; please run " +
-                                                      "bin/nexial-script-update.cmd to update your test script";
+                                                      "bin/nexial-script-update" + BIN_SCRIPT_EXT +
+                                                      " to update your test script";
     private static final String MSG_HEADER_NOT_FOUND = "required script header NOT found at " +
                                                        ArrayUtils.toString(ADDR_HEADER_SCENARIO_INFO1) + "," +
                                                        ArrayUtils.toString(ADDR_HEADER_SCENARIO_INFO2);
     private static final String MSG_V1_SCRIPT_HEADER = "Outdated format found at " +
                                                        ArrayUtils.toString(ADDR_HEADER_TEST_STEP) + "; please run " +
-                                                       "bin/nexial-script-update.cmd to update your test script";
+                                                       "bin/nexial-script-update" + BIN_SCRIPT_EXT +
+                                                       " to update your test script";
     private static final String MSG_SCRIPT_HEADER_NOT_FOUND = "required script header not found at " +
                                                               ArrayUtils.toString(ADDR_HEADER_TEST_STEP);
     private static final String MSG_MISSING_TEST_ACTIVITY = "First test step must be accompanied by a test activity";
@@ -272,7 +275,7 @@ public final class InputFileUtils {
             if (!Excel.isRowTextFound(sheet,
                                       Collections.singletonList(HEADER_EXEC_SUMMARY),
                                       ADDR_SCENARIO_EXEC_SUMMARY_HEADER)) {
-                LOGGER.info(errPrefix1 + "required script header not found at " +
+                LOGGER.debug(errPrefix1 + "required script header not found at " +
                             ArrayUtils.toString(ADDR_SCENARIO_EXEC_SUMMARY_HEADER) + "; ignoring this worksheet...");
                 return false;
             }
@@ -356,7 +359,7 @@ public final class InputFileUtils {
 
             // check test script header
             if (!Excel.isRowTextFound(sheet, HEADER_MACRO_TEST_STEPS, ADDR_HEADER_MACRO)) {
-                LOGGER.info(errPrefix1 + "required macro header not found at " +
+                LOGGER.debug(errPrefix1 + "required macro header not found at " +
                             ArrayUtils.toString(HEADER_MACRO_TEST_STEPS) + "; ignoring this worksheet...");
                 return false;
             }
@@ -453,7 +456,7 @@ public final class InputFileUtils {
         List<Worksheet> allSheets = excel.getWorksheetsStartWith("");
         if (CollectionUtils.isEmpty(allSheets)) {
             if (LOGGER.isInfoEnabled()) { LOGGER.info(deriveFileErrorPrefix(excel) + "is missing test plans."); }
-            return null;
+            return new ArrayList<>();
         }
 
         // check that every test scenario is of right format (warn only if format is wrong)

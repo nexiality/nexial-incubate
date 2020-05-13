@@ -32,7 +32,6 @@ import org.nexial.core.excel.ExcelAddress;
 
 import static java.lang.System.lineSeparator;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
-import static org.nexial.core.excel.Excel.MIN_EXCEL_FILE_SIZE;
 
 public class ExcelDataType extends ExpressionDataType<Excel> {
     private ExcelTransformer transformer = new ExcelTransformer();
@@ -52,9 +51,7 @@ public class ExcelDataType extends ExpressionDataType<Excel> {
     public String getName() { return "EXCEL"; }
 
     @Override
-    public String toString() {
-        return getName() + "(" + lineSeparator() + getTextValue() + lineSeparator() + ")";
-    }
+    public String toString() { return getName() + "(" + lineSeparator() + getTextValue() + lineSeparator() + ")"; }
 
     public String getFilePath() { return filePath; }
 
@@ -104,7 +101,7 @@ public class ExcelDataType extends ExpressionDataType<Excel> {
         }
 
         try {
-            if (!FileUtil.isFileReadable(textValue, MIN_EXCEL_FILE_SIZE)) {
+            if (!FileUtil.isFileReadable(textValue)) {
                 value = Excel.newExcel(new File(textValue));
             } else {
                 value = new Excel(new File(textValue), false, false);

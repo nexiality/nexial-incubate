@@ -24,13 +24,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import javax.validation.constraints.NotNull;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.nexial.commons.utils.CollectionUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.plugins.base.BaseCommand;
@@ -45,17 +48,22 @@ import com.github.fge.jsonschema.main.JsonSchema;
 import com.github.fge.jsonschema.main.JsonSchemaFactory;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.DEF_CHARSET;
 import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.GSON;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.nexial.core.utils.CheckUtils.*;
 
-/**
- *
- */
 public class JsonCommand extends BaseCommand {
+    private static final String DIFF_HIGHLIGHT_HTML_START = "<span class=\"diff-highlight\"" +
+                                                            " style=\"background:#fee;color:red;font-weight:bold\">";
+    private static final String DIFF_HIGHLIGHT_HTML_END = "</span>";
+    private static final String DIFF_NULL_HTML_START = "<code class=\"diff-null\" style=\"color:#777\">";
+    private static final String DIFF_NULL_HTML_END = "</code>";
     private static final JsonSchemaFactory JSON_SCHEMA_FACTORY = JsonSchemaFactory.byDefault();
 
     @Override
@@ -67,15 +75,17 @@ public class JsonCommand extends BaseCommand {
 
         String expectedJson;
         try {
-            expectedJson = OutputFileUtils.resolveContent(expected, context, true, true);
-        } catch (IOException e) {
+            // expectedJson = OutputFileUtils.resolveContent(expected, context, true, true);
+            expectedJson = new OutputResolver(expected, context, false, true).getContent();
+        } catch (Throwable e) {
             return StepResult.fail("EXPECTED json is invalid or not readable: " + e.getMessage());
         }
 
         String actualJson;
         try {
-            actualJson = OutputFileUtils.resolveContent(actual, context, true, true);
-        } catch (IOException e) {
+            // actualJson = OutputFileUtils.resolveContent(actual, context, true, true);
+            actualJson = new OutputResolver(actual, context, false, true).getContent();
+        } catch (Throwable e) {
             return StepResult.fail("ACTUAL json is invalid or not readable: " + e.getMessage());
         }
 
@@ -93,20 +103,25 @@ public class JsonCommand extends BaseCommand {
     public StepResult assertElementPresent(String json, String jsonpath) {
         String match = find(json, jsonpath);
         boolean isMatched = match != null;
-        String message = "JSON " + (isMatched ? "matches " : " DOES NOT match ") + jsonpath;
+        String message = "JSON " + (isMatched ? "matches " : "DOES NOT match ") + jsonpath;
         return new StepResult(isMatched, message, null);
     }
 
     public StepResult assertElementNotPresent(String json, String jsonpath) {
         String match = find(json, jsonpath);
         boolean isMatched = match != null;
-        String message = "JSON " + (isMatched ? "matches " : " DOES NOT matches ") + jsonpath;
+        String message = "JSON " + (isMatched ? "matches " : "DOES NOT match ") + jsonpath;
         return new StepResult(!isMatched, message, null);
     }
 
     public StepResult assertElementCount(String json, String jsonpath, String count) {
-        int countInt = toPositiveInt(count, "count");
-        return super.assertEqual(countInt + "", count(json, jsonpath) + "");
+        int expected = toPositiveInt(count, "count");
+        int actual = count(json, jsonpath);
+        if (expected == actual) {
+            return StepResult.success("EXPECTED element count found");
+        } else {
+            return StepResult.fail("element count (" + actual + ") DID NOT match expected (" + count + ")");
+        }
     }
 
     public StepResult storeValue(String json, String jsonpath, String var) {
@@ -118,21 +133,61 @@ public class JsonCommand extends BaseCommand {
         return extractJsonValue(json, jsonpath, var);
     }
 
+    public StepResult storeCount(String json, String jsonpath, String var) {
+        requiresValidAndNotReadOnlyVariableName(var);
+        context.setData(var, count(json, jsonpath));
+        return StepResult.success("match count stored to ${" + var + "}");
+    }
+
+    public StepResult storeKeys(String json, String jsonpath, String var) {
+        requiresValidAndNotReadOnlyVariableName(var);
+
+        Object obj = toJSONObject(json);
+        if (obj instanceof JSONArray) {
+            context.removeData(var);
+            return StepResult.success("No JSON keys can be retrieved from a JSON array");
+        }
+
+        if (obj instanceof JSONObject) {
+            JSONObject jsonObject = (JSONObject) obj;
+
+            Set<String> keys;
+            if (StringUtils.isEmpty(jsonpath)) {
+                keys = jsonObject.keySet();
+            } else {
+                keys = JSONPath.keys(jsonObject, jsonpath);
+            }
+
+            updateDataVariable(var, TextUtils.toString(keys, context.getTextDelim()));
+            return StepResult.success("JSON keys from " + jsonpath + " stored to data variable '" + var + "'");
+        }
+
+        return StepResult.fail("Specified JSON did not resolve to a valid JSON document");
+    }
+
     /**
-     * add {@code data} to {@code var}, which should represents a JSON object, at a location specified via {@code jsonpath}.
-     *
-     * Optionally, {@code jsonpath} can be empty to represent top level.
+     * add {@code input} to {@code json}, which should represents a JSON object, at a location specified via
+     * {@code jsonpath}.  The final output is captured as {@code var}. Optionally, {@code jsonpath} can be empty to
+     * represent top level.
      */
     public StepResult addOrReplace(String json, String jsonpath, String input, String var) {
+        requiresValidAndNotReadOnlyVariableName(var);
+
         try {
-            json = OutputFileUtils.resolveContent(json, context, false, true);
-        } catch (IOException e) {
+            // json = OutputFileUtils.resolveContent(json, context, false, true);
+            json = new OutputResolver(json, context).getContent();
+        } catch (Throwable e) {
             ConsoleUtils.log("Unable to read JSON as a file; considering it as is...");
         }
         requiresNotBlank(json, "invalid/malformed json", json);
 
-        requiresNotBlank(input, "Invalid input", json);
-        requiresValidVariableName(var);
+        try {
+            // input = OutputFileUtils.resolveContent(input, context, false, true);
+            input = new OutputResolver(input, context).getContent();
+        } catch (Throwable e) {
+            ConsoleUtils.log("Unable to read 'input' as a JSON file; considering it as is...");
+        }
+        requiresNotBlank(input, "Invalid input", input);
 
         JsonEditorConfig config = new JsonEditorConfig();
         config.setRemoveNull(true);
@@ -144,16 +199,10 @@ public class JsonCommand extends BaseCommand {
             ConsoleUtils.log("JSON modified to null");
             context.removeData(var);
         } else {
-            context.setData(var, modified.toString());
+            updateDataVariable(var, modified.toString());
         }
 
         return StepResult.success("JSON modified and stored to ${" + var + "}");
-    }
-
-    public StepResult storeCount(String json, String jsonpath, String var) {
-        requiresNotBlank(var, "invalid variable", var);
-        context.setData(var, count(json, jsonpath));
-        return StepResult.success("match count stored to ${" + var + "}");
     }
 
     public StepResult assertValue(String json, String jsonpath, String expected) {
@@ -201,7 +250,7 @@ public class JsonCommand extends BaseCommand {
 
     public StepResult assertCorrectness(String json, String schema) {
         JsonNode jsonNode = deriveWellformedJson(json);
-        if (jsonNode == null) { StepResult.fail("invalid json: " + json); }
+        if (jsonNode == null) { return StepResult.fail("invalid json: " + json); }
 
         requires(StringUtils.isNotBlank(schema) && !context.isNullValue(schema), "empty schema", schema);
 
@@ -214,7 +263,7 @@ public class JsonCommand extends BaseCommand {
                 String schemaLocation = (StringUtils.startsWith(schema, "/") ? "" : "/") + schema;
                 jsonSchema = JSON_SCHEMA_FACTORY.getJsonSchema("resource:" + schemaLocation);
             } else {
-                // support path-based content specificaton
+                // support path-based content specification
                 schema = OutputFileUtils.resolveContent(schema, context, false);
                 if (StringUtils.isBlank(schema)) { return StepResult.fail("invalid schema: " + schema); }
 
@@ -264,51 +313,117 @@ public class JsonCommand extends BaseCommand {
         return StepResult.success("CSV '" + csv + "' converted to JSON '" + jsonFile + "'");
     }
 
-    public StepResult minify(String json, String var) {
-        requiresValidVariableName(var);
-
-        String jsonContent = retrieveJsonContent(json);
-        if (jsonContent == null) { return StepResult.fail("Unable to parse JSON content: " + json); }
-
-        JsonElement jsonElement = GSON_COMPRESSED.fromJson(jsonContent, JsonElement.class);
-        requiresNotNull(jsonElement, "invalid json", json);
-
-        String compressed = GSON_COMPRESSED.toJson(jsonElement);
-        if (StringUtils.isBlank(compressed)) { return StepResult.fail("Unable to minify JSON content"); }
-
-        context.setData(var, compressed);
-        return StepResult.success("JSON content compressed and saved to '" + var);
-    }
+    public StepResult minify(String json, String var) { return compact(var, json, "false"); }
 
     public StepResult beautify(String json, String var) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         String jsonContent = retrieveJsonContent(json);
         if (jsonContent == null) { return StepResult.fail("Unable to parse JSON content: " + json); }
 
-        JsonElement jsonElement = GSON.fromJson(jsonContent, JsonElement.class);
-        requiresNotNull(jsonElement, "invalid json", json);
-
-        String beautified = GSON.toJson(jsonElement);
+        String beautified = JsonUtils.beautify(jsonContent);
         if (StringUtils.isBlank(beautified)) { return StepResult.fail("Unable to beautify JSON content"); }
 
-        context.setData(var, beautified);
-        return StepResult.success("JSON content beautified and saved to '" + var);
+        updateDataVariable(var, beautified);
+        return StepResult.success("JSON content beautified and saved to '" + var + "'");
+    }
+
+    public StepResult compact(String var, String json, String removeEmpty) {
+        requiresValidAndNotReadOnlyVariableName(var);
+
+        String jsonContent = retrieveJsonContent(json);
+        if (jsonContent == null) { return StepResult.fail("Unable to parse JSON content: " + json); }
+
+        String compressed = JsonUtils.compact(jsonContent, BooleanUtils.toBoolean(removeEmpty));
+        if (StringUtils.isBlank(compressed)) { return StepResult.fail("Unable to minify/compact JSON content"); }
+
+        updateDataVariable(var, compressed);
+        return StepResult.success("JSON content minify/compacted and saved to '" + var);
+    }
+
+    public static Object resolveToJSONObject(String json) {
+        if (json == null) { return null; }
+
+        if (TextUtils.isBetween(json, "[", "]")) {
+            JSONArray jsonArray = JsonUtils.toJSONArray(json);
+            requiresNotNull(jsonArray, "invalid/malformed json", json);
+            return jsonArray;
+        }
+
+        JSONObject jsonObject = JsonUtils.toJSONObject(json);
+        requiresNotNull(jsonObject, "invalid/malformed json", json);
+        return jsonObject;
+    }
+
+    public static JsonElement removeEmpty(JsonElement json, boolean onlyNull) {
+        if (json == null) { return null; }
+
+        if (json.isJsonNull()) { return null; }
+
+        if (json.isJsonPrimitive() && StringUtils.isEmpty(json.getAsString())) { return null; }
+
+        if (json.isJsonObject()) {
+            JsonObject jsonObject = json.getAsJsonObject();
+            List<String> keys = CollectionUtil.toList(jsonObject.keySet());
+            if (CollectionUtils.isEmpty(keys)) { return null; }
+
+            keys.forEach(childName -> {
+                JsonElement childElement = jsonObject.get(childName);
+                if (childElement.isJsonNull()) {
+                    jsonObject.remove(childName);
+                } else if (childElement.isJsonPrimitive()) {
+                    if (!onlyNull && StringUtils.isEmpty(childElement.getAsString())) { jsonObject.remove(childName); }
+                } else {
+                    JsonElement compacted = removeEmpty(childElement, onlyNull);
+                    if (compacted == null) {
+                        jsonObject.remove(childName);
+                    } else {
+                        jsonObject.add(childName, compacted);
+                    }
+                }
+            });
+
+            if (jsonObject.isJsonNull() || jsonObject.size() == 0) { return null; }
+        }
+
+        if (json.isJsonArray()) {
+            JsonArray array = json.getAsJsonArray();
+            for (int i = 0; i < array.size(); i++) {
+                JsonElement elem = array.get(i);
+                if (elem.isJsonNull()) {
+                    array.remove(i--);
+                } else if (elem.isJsonPrimitive()) {
+                    if (!onlyNull && StringUtils.isEmpty(elem.getAsString())) { array.remove(i--); }
+                } else {
+                    JsonElement compacted = removeEmpty(elem, onlyNull);
+                    if (compacted == null) {
+                        array.remove(i--);
+                    } else {
+                        array.set(i, compacted);
+                    }
+                }
+            }
+
+            if (array.size() < 1) { return null; }
+        }
+
+        return json;
     }
 
     @NotNull
     protected StepResult extractJsonValue(String json, String jsonpath, String var) {
-        requiresNotBlank(var, "invalid variable", var);
+        requiresValidAndNotReadOnlyVariableName(var);
+
         String match = find(json, jsonpath);
         if (match == null) { return StepResult.fail("EXPECTED match against '" + jsonpath + "' was not found"); }
 
-        boolean asIs = context.getBooleanData(TREAT_JSON_AS_IS, DEF_TREAT_JSON_AS_IS);
+        boolean asIs = context.getBooleanData(TREAT_JSON_AS_IS, getDefaultBool(TREAT_JSON_AS_IS));
         if (asIs || !TextUtils.isBetween(match, "[", "]")) {
-            context.setData(var, match);
+            updateDataVariable(var, match);
         } else {
             JSONArray array = new JSONArray(match);
             if (array.length() < 1) {
-                context.setData(var, "[]");
+                updateDataVariable(var, "[]");
             } else {
                 List<String> matches = new ArrayList<>();
                 array.forEach(elem -> matches.add(elem.toString()));
@@ -327,14 +442,10 @@ public class JsonCommand extends BaseCommand {
         JsonComparisonResult results = expectedMeta.compare(actualMeta);
 
         if (results.hasDifferences()) {
-            String differences = GSON.toJson(results.toJson());
-            context.setData(LAST_JSON_COMPARE_RESULT, differences);
-            ConsoleUtils.log("JSON differences found:\n" + differences);
-            addOutputAsLink("JSON comparison resulted in " + results.differenceCount() + " differences",
-                            differences, "json");
+            handleComparisonResults(results);
             return StepResult.fail("EXPECTED json is NOT equivalent to the ACTUAL json");
         } else {
-            context.removeData(LAST_JSON_COMPARE_RESULT);
+            context.removeDataForcefully(LAST_JSON_COMPARE_RESULT);
             return StepResult.success("EXPECTED json is equivalent to the ACTUAL json");
         }
     }
@@ -356,20 +467,7 @@ public class JsonCommand extends BaseCommand {
         }
     }
 
-    protected Object toJSONObject(String json) {
-        json = retrieveJsonContent(json);
-        if (json == null) { return null; }
-
-        if (TextUtils.isBetween(json, "[", "]")) {
-            JSONArray jsonArray = JsonUtils.toJSONArray(json);
-            requiresNotNull(jsonArray, "invalid/malformed json", json);
-            return jsonArray;
-        }
-
-        JSONObject jsonObject = JsonUtils.toJSONObject(json);
-        requiresNotNull(jsonObject, "invalid/malformed json", json);
-        return jsonObject;
-    }
+    protected Object toJSONObject(String json) { return resolveToJSONObject(retrieveJsonContent(json)); }
 
     protected Object sanityCheck(String json, String jsonpath) {
         requiresNotBlank(jsonpath, "invalid jsonpath", jsonpath);
@@ -435,6 +533,50 @@ public class JsonCommand extends BaseCommand {
         if (expectedJson == null || !expectedJson.isJsonArray()) { return null; }
 
         return expectedJson.getAsJsonArray();
+    }
+
+    private void handleComparisonResults(JsonComparisonResult results) {
+        if (results == null) {
+            context.removeData(LAST_JSON_COMPARE_RESULT);
+            return;
+        }
+
+        String differences = GSON.toJson(results.toJson());
+        context.setData(LAST_JSON_COMPARE_RESULT, differences);
+        ConsoleUtils.log("JSON differences found:\n" + differences);
+
+        boolean asJson = context.getBooleanData(COMPARE_RESULT_AS_JSON, getDefaultBool(COMPARE_RESULT_AS_JSON));
+        boolean asCsv = context.getBooleanData(COMPARE_RESULT_AS_CSV, getDefaultBool(COMPARE_RESULT_AS_CSV));
+        boolean asHtml = context.getBooleanData(COMPARE_RESULT_AS_HTML, getDefaultBool(COMPARE_RESULT_AS_HTML));
+
+        String caption = "JSON comparison resulted in " + results.differenceCount() + " differences";
+
+        if (asJson) { addOutputAsLink(caption, differences, "json"); }
+
+        List<String> headers = Arrays.asList("node", "expected", "actual");
+        List<List<String>> diffList = results.toList();
+        if (asCsv) { addOutputAsLink(caption, TextUtils.createCsv(headers, diffList, "\r\n", ",", "\""), "csv"); }
+
+        if (asHtml) {
+            addOutputAsLink(caption,
+                            TextUtils.createHtmlTable(
+                                headers,
+                                diffList,
+                                (row, position) -> {
+                                    String html = row.get(position);
+                                    if (html == null || "null".equals(html) || "NOT FOUND".equals(html)) {
+                                        return DIFF_NULL_HTML_START + html + DIFF_NULL_HTML_END;
+                                    }
+
+                                    html = TextUtils.decorateTextRange(
+                                        html, "value ", " of", DIFF_HIGHLIGHT_HTML_START, DIFF_HIGHLIGHT_HTML_END);
+                                    html = TextUtils.decorateTextRange(
+                                        html, "node '", "' ", DIFF_HIGHLIGHT_HTML_START, DIFF_HIGHLIGHT_HTML_END);
+                                    return "<code>" + html + "</code>";
+                                },
+                                "compare-result-table"),
+                            "html");
+        }
     }
 
     private JsonNode deriveWellformedJson(String json) {

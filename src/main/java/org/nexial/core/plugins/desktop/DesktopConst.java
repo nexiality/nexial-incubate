@@ -22,7 +22,10 @@ import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
 import org.nexial.core.utils.ConsoleUtils;
+import org.openqa.selenium.By;
 import org.openqa.selenium.WebElement;
+import org.openqa.selenium.interactions.Actions;
+import org.openqa.selenium.winium.WiniumDriver;
 
 import com.google.gson.ExclusionStrategy;
 import com.google.gson.FieldAttributes;
@@ -31,6 +34,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.typeadapters.RuntimeTypeAdapterFactory;
 
 import static org.nexial.core.NexialConst.NAMESPACE;
+import static org.nexial.core.NexialConst.NL;
 import static org.nexial.core.plugins.desktop.DesktopUtils.printDetails;
 import static org.nexial.core.plugins.desktop.ElementType.*;
 
@@ -72,6 +76,9 @@ public class DesktopConst {
     public static final boolean DEF_AUTO_CLEAR_MODAL_DIALOG = false;
     public static final String DESKTOP_DIALOG_LOOKUP = NS_DESKTOP + "dialogLookup";
     public static final boolean DEF_DESKTOP_DIALOG_LOOKUP = false;
+
+    public static final String DESKTOP_USE_TYPE_KEYS = NS_DESKTOP + "useTypeKeys";
+    public static final boolean DEF_DESKTOP_USE_TYPE_KEYS = false;
 
     public static final String DEF_CONFIG_HOME = "/desktop/";
     public static final String DEF_CONFIG_FILENAME = "application.json";
@@ -245,16 +252,34 @@ public class DesktopConst {
 
     public static final String UNMATCHED_LABEL_PREFIX = "[[UNMATCHED]]";
     public static final boolean AUTOSCAN_DEBUG = false;
+    public static final int POST_MENU_CLICK_WAIT_MS = 2000;
 
     protected DesktopConst() { }
+
+    public static void postMenuClickWait() {
+        try {
+            Thread.sleep(POST_MENU_CLICK_WAIT_MS);
+        } catch (InterruptedException e) {
+            ConsoleUtils.error("Error while waiting for application to stabilize after menu click: " + e.getMessage());
+        }
+    }
+
+    public static void clickAppTopLeft(WiniumDriver driver, String xpath) {
+        if (driver == null || StringUtils.isBlank(xpath)) { return; }
+
+        WebElement element = driver.findElement(By.xpath(xpath));
+        if (element == null) { return; }
+
+        new Actions(driver).moveToElement(element, 3, 5).click().pause(750).build().perform();
+    }
 
     public static void debug(String msg) { if (AUTOSCAN_DEBUG) { ConsoleUtils.log(msg); } }
 
     public static void debug(String msg, DesktopElement element) {
-        if (AUTOSCAN_DEBUG) { ConsoleUtils.log(msg + "\n" + printDetails(element)); }
+        if (AUTOSCAN_DEBUG) { ConsoleUtils.log(msg + NL + printDetails(element)); }
     }
 
     public static void debug(String msg, WebElement element) {
-        if (AUTOSCAN_DEBUG) { ConsoleUtils.log(msg + "\n" + printDetails(element)); }
+        if (AUTOSCAN_DEBUG) { ConsoleUtils.log(msg + NL + printDetails(element)); }
     }
 }

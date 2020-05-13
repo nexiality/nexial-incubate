@@ -1,9 +1,10 @@
 package org.nexial.core.plugins.image;
 
 import java.awt.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class ImageDifferenceTools {
-
     // The threshold which means the max distance between non-equal pixels.
     private static int threshold = 5;
 
@@ -14,8 +15,11 @@ public class ImageDifferenceTools {
     private int regionCount = counter;
 
     private int[][] matrix;
+    private List<Difference> differences = new ArrayList<>();
 
     public void setMatrix(int[][] matrix) { this.matrix = matrix; }
+
+    public List<Difference> getDifferences() { return differences; }
 
     /**
      * Group rectangle regions in binary matrix.
@@ -41,7 +45,15 @@ public class ImageDifferenceTools {
 
         Rectangle rectangle = createRectangle(counter);
 
-        graphics.drawRect(rectangle.getMinY(), rectangle.getMinX(), rectangle.getWidth(), rectangle.getHeight());
+        int x = rectangle.getMinY();
+        int y = rectangle.getMinX();
+        int width = rectangle.getWidth();
+        int height = rectangle.getHeight();
+        // return if x or y has not been changed
+        if (x == Integer.MAX_VALUE || y == Integer.MAX_VALUE) { return; }
+
+        graphics.drawRect(x, y, width, height);
+        differences.add(new Difference(x, y, width, height));
         counter++;
         drawRectangles(graphics);
     }
@@ -89,12 +101,12 @@ public class ImageDifferenceTools {
                 if (matrix[y][x] == counter) {
                     if (x < rect.getMinX()) { rect.setMinX(x); }
                     if (x > rect.getMaxX()) { rect.setMaxX(x); }
-
                     if (y < rect.getMinY()) { rect.setMinY(y); }
                     if (y > rect.getMaxY()) { rect.setMaxY(y); }
                 }
             }
         }
+
         return rect;
     }
 }

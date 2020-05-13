@@ -21,10 +21,10 @@ import org.apache.commons.lang3.StringUtils
 import org.apache.commons.lang3.SystemUtils.*
 import org.nexial.commons.utils.EnvUtils
 import org.nexial.core.NexialConst.GSON_COMPRESSED
-import org.nexial.core.NexialConst.Project.NEXIAL_EXECUTION_ID
 import org.nexial.core.NexialConst.Project.NEXIAL_HOME
 import org.nexial.core.model.ExecutionEvent.*
 import org.nexial.core.utils.ExecUtils
+import org.nexial.core.utils.ExecUtils.NEXIAL_MANIFEST
 import java.io.Serializable
 
 class NexialEnv(@Transient val commandline: CommandLine) : Serializable {
@@ -42,7 +42,7 @@ class NexialEnv(@Transient val commandline: CommandLine) : Serializable {
                    val language: String = USER_LANGUAGE,
                    val isRunningInCI: Boolean = ExecUtils.isRunningInCi())
 
-    data class Execution(val manifest: String = ExecUtils.deriveJarManifest(),
+    data class Execution(val manifest: String = NEXIAL_MANIFEST,
                          val home: String = System.getProperty(NEXIAL_HOME, "UNKNOWN"),
                          val cmdOption: String,
                          val runPlan: Boolean)
@@ -62,10 +62,10 @@ class NexialEnv(@Transient val commandline: CommandLine) : Serializable {
     // which version of Nexial was used?
     // what was entered on command line to start this execution
     val nexial = Execution(
-        cmdOption = commandline.options.joinToString(
-            separator = "",
-            transform = { option -> "-${option.opt} ${option.value} " }).trim(),
-        runPlan = commandline.options.any { opt -> StringUtils.equals(opt.opt, "plan") })
+            cmdOption = commandline.options.joinToString(
+                    separator = "",
+                    transform = { option -> "-${option.opt} ${option.value} " }).trim(),
+            runPlan = commandline.options.any { opt -> StringUtils.equals(opt.opt, "plan") })
 
     fun json(): String = GSON_COMPRESSED.toJson(this)
 }
@@ -78,199 +78,94 @@ open class NexialEvent(val eventName: String, val startTime: Long) {
 
 open class NexialCompleteEvent(eventName: String,
                                startTime: Long,
-                               val levelId: String,
                                val steps: Int,
                                val executed: Int,
                                val pass: Int,
-                               val fail: Int,
-                               val warnCount: Int,
-                               val failedFast: Boolean,
-                               val refData: Map<String, String>?) :
-    NexialEvent(eventName = eventName, startTime = startTime)
+                               val fail: Int) :
+        NexialEvent(eventName = eventName, startTime = startTime)
 
 class NexialExecutionCompleteEvent(startTime: Long,
-                                   executionId: String,
                                    steps: Int,
                                    executed: Int,
                                    pass: Int,
-                                   fail: Int,
-                                   warnCount: Int,
-                                   failedFast: Boolean,
-                                   refData: Map<String, String>?) :
-    NexialCompleteEvent(eventName = ExecutionComplete.eventName,
-                        startTime = startTime,
-                        levelId = executionId,
-                        steps = steps,
-                        executed = executed,
-                        pass = pass,
-                        fail = fail,
-                        warnCount = warnCount,
-                        failedFast = failedFast,
-                        refData = refData) {
+                                   fail: Int) :
+        NexialCompleteEvent(eventName = ExecutionComplete.eventName,
+                            startTime = startTime,
+                            steps = steps,
+                            executed = executed,
+                            pass = pass,
+                            fail = fail) {
 
     constructor(summary: ExecutionSummary) : this(summary.startTime,
-                                                  summary.id,
                                                   summary.totalSteps,
                                                   summary.executed,
                                                   summary.passCount,
-                                                  summary.failCount,
-                                                  summary.warnCount,
-                                                  summary.isFailedFast,
-                                                  summary.referenceData)
+                                                  summary.failCount)
 }
 
 class NexialScriptCompleteEvent(val script: String,
                                 startTime: Long,
-                                scriptId: String,
                                 steps: Int,
                                 executed: Int,
                                 pass: Int,
-                                fail: Int,
-                                warnCount: Int,
-                                failedFast: Boolean,
-                                refData: Map<String, String>?) :
-    NexialCompleteEvent(eventName = ScriptComplete.eventName,
-                        startTime = startTime,
-                        levelId = scriptId,
-                        steps = steps,
-                        executed = executed,
-                        pass = pass,
-                        fail = fail,
-                        warnCount = warnCount,
-                        failedFast = failedFast,
-                        refData = refData) {
+                                fail: Int) :
+        NexialCompleteEvent(eventName = ScriptComplete.eventName,
+                            startTime = startTime,
+                            steps = steps,
+                            executed = executed,
+                            pass = pass,
+                            fail = fail) {
 
     constructor(script: String, summary: ExecutionSummary) :
-        this(script, summary.startTime, summary.id, summary.totalSteps, summary.executed, summary.passCount,
-             summary.failCount, summary.warnCount, summary.isFailedFast, summary.referenceData)
+            this(script, summary.startTime, summary.totalSteps, summary.executed, summary.passCount, summary.failCount)
 }
 
 class NexialIterationCompleteEvent(val script: String,
                                    val iteration: Int,
                                    startTime: Long,
-                                   iterationId: String,
                                    steps: Int,
                                    executed: Int,
                                    pass: Int,
-                                   fail: Int,
-                                   warnCount: Int,
-                                   failedFast: Boolean,
-                                   refData: Map<String, String>?) :
-    NexialCompleteEvent(eventName = IterationComplete.eventName,
-                        startTime = startTime,
-                        levelId = iterationId,
-                        steps = steps,
-                        executed = executed,
-                        pass = pass,
-                        fail = fail,
-                        warnCount = warnCount,
-                        failedFast = failedFast,
-                        refData = refData) {
+                                   fail: Int) :
+        NexialCompleteEvent(eventName = IterationComplete.eventName,
+                            startTime = startTime,
+                            steps = steps,
+                            executed = executed,
+                            pass = pass,
+                            fail = fail) {
 
     constructor(script: String, iteration: Int, summary: ExecutionSummary) :
-        this(script,
-             iteration,
-             summary.startTime,
-             summary.id,
-             summary.totalSteps,
-             summary.executed,
-             summary.passCount,
-             summary.failCount,
-             summary.warnCount,
-             summary.isFailedFast,
-             summary.referenceData)
+            this(script,
+                 iteration,
+                 summary.startTime,
+                 summary.totalSteps,
+                 summary.executed,
+                 summary.passCount,
+                 summary.failCount)
 }
 
 class NexialScenarioCompleteEvent(val script: String,
                                   val scenario: String,
                                   startTime: Long,
-                                  scenarioId: String,
                                   steps: Int,
                                   executed: Int,
                                   pass: Int,
-                                  fail: Int,
-                                  warnCount: Int,
-                                  failedFast: Boolean,
-                                  refData: Map<String, String>?) :
-    NexialCompleteEvent(eventName = ScenarioComplete.eventName,
-                        startTime = startTime,
-                        levelId = scenarioId,
-                        steps = steps,
-                        executed = executed,
-                        pass = pass,
-                        fail = fail,
-                        warnCount = warnCount,
-                        failedFast = failedFast,
-                        refData = refData) {
+                                  fail: Int) :
+        NexialCompleteEvent(eventName = ScenarioComplete.eventName,
+                            startTime = startTime,
+                            steps = steps,
+                            executed = executed,
+                            pass = pass,
+                            fail = fail) {
 
     constructor(summary: ExecutionSummary) : this(summary.testScript.absolutePath,
                                                   summary.name,
                                                   summary.startTime,
-                                                  summary.id,
                                                   summary.totalSteps,
                                                   summary.executed,
                                                   summary.passCount,
-                                                  summary.failCount,
-                                                  summary.warnCount,
-                                                  summary.isFailedFast,
-                                                  summary.referenceData)
+                                                  summary.failCount)
 }
-
-class NexialActivityCompleteEvent(startTime: Long,
-                                  activityId: String,
-                                  steps: Int,
-                                  executed: Int,
-                                  pass: Int,
-                                  fail: Int,
-                                  warnCount: Int,
-                                  failedFast: Boolean,
-                                  refData: Map<String, String>?) :
-    NexialCompleteEvent(eventName = ActivityComplete.eventName,
-                        startTime = startTime,
-                        levelId = activityId,
-                        steps = steps,
-                        executed = executed,
-                        pass = pass,
-                        fail = fail,
-                        warnCount = warnCount,
-                        failedFast = failedFast,
-                        refData = refData) {
-
-    constructor(summary: ExecutionSummary) : this(summary.startTime,
-                                                  summary.id,
-                                                  summary.totalSteps,
-                                                  summary.executed,
-                                                  summary.passCount,
-                                                  summary.failCount,
-                                                  summary.warnCount,
-                                                  summary.isFailedFast,
-                                                  summary.referenceData)
-}
-
-open class NexialStartEvent(eventName: String) :
-    NexialEvent(eventName = eventName, startTime = System.currentTimeMillis())
-
-class NexialExecutionStartEvent(val executionId: String, val outPath: String) :
-    NexialStartEvent(eventName = ExecutionStart.eventName)
-
-class NexialScriptStartEvent(val scriptId: String, val script: String, val executionId: String) :
-    NexialStartEvent(eventName = ScriptStart.eventName) {
-
-    constructor(scriptId: String, script: String) : this(scriptId, script,
-                                                         System.getProperty(NEXIAL_EXECUTION_ID))
-}
-
-class NexialIterationStartEvent(val iterationId: String, val name: String,
-                                val scriptId: String, val iterationSeqId: Int) :
-    NexialStartEvent(eventName = IterationStart.eventName)
-
-class NexialScenarioStartEvent(val scenarioId: String, val name: String,
-                               val iterationId: String, val scenarioSeqId: Int) :
-    NexialStartEvent(eventName = ScenarioStart.eventName)
-
-class NexialActivityStartEvent(val activityId: String, val name: String,
-                               val scenarioId: String, val activitySeqId: Int) :
-    NexialStartEvent(eventName = ActivityStart.eventName)
 
 /**
  * one-and-done event. after this, the execution will stop
@@ -279,7 +174,7 @@ class NexialActivityStartEvent(val activityId: String, val name: String,
  * @constructor
  */
 class NexialCmdErrorEvent(val args: List<String>, val error: String) :
-    NexialEvent(eventName = ErrorOccurred.eventName, startTime = System.currentTimeMillis())
+        NexialEvent(eventName = ErrorOccurred.eventName, startTime = System.currentTimeMillis())
 
 /**
  * when a failure occurred, regardless of whether the execution will continue
@@ -288,7 +183,7 @@ class NexialCmdErrorEvent(val args: List<String>, val error: String) :
  * @constructor
  */
 class NexialFailEvent(val error: String) :
-    NexialEvent(eventName = ErrorOccurred.eventName, startTime = System.currentTimeMillis()) {
+        NexialEvent(eventName = ErrorOccurred.eventName, startTime = System.currentTimeMillis()) {
 
     var exception: Throwable? = null
     var commandType: String? = null
@@ -296,7 +191,7 @@ class NexialFailEvent(val error: String) :
 }
 
 class NexialUrlInvokedEvent(val browser: String, val url: String) :
-    NexialEvent(eventName = WebOpen.eventName, startTime = System.currentTimeMillis())
+        NexialEvent(eventName = WebOpen.eventName, startTime = System.currentTimeMillis())
 
 class BrowserCompleteEvent(val browser: String) :
-    NexialEvent(eventName = BrowserComplete.eventName, startTime = System.currentTimeMillis())
+        NexialEvent(eventName = BrowserComplete.eventName, startTime = System.currentTimeMillis())

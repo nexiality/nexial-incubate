@@ -33,7 +33,7 @@ public class RecordData {
     private int totalRecordsFailed;
     private int totalRecordsWarning;
 
-    public void calculateTotalPassed() {
+    public void calculateTotalPassed(){
         totalRecordsPassed = totalRecordsProcessed - totalRecordsFailed;
     }
     public String getStartTime() {

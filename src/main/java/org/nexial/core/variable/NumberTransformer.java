@@ -20,7 +20,6 @@ package org.nexial.core.variable;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.text.DecimalFormat;
 import java.util.Map;
 import javax.validation.constraints.NotNull;
 
@@ -28,9 +27,12 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.nexial.commons.utils.RegexUtils;
+import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.plugins.base.NumberCommand;
 import org.nexial.core.utils.ConsoleUtils;
 
 import static java.math.RoundingMode.UP;
+import static org.nexial.commons.utils.TextUtils.CleanNumberStrategy.REAL;
 import static org.nexial.core.variable.ExpressionConst.REGEX_DEC_NUM;
 
 public class NumberTransformer<T extends NumberDataType> extends Transformer {
@@ -43,21 +45,34 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
 
     public TextDataType text(T data) { return super.text(data); }
 
-    public T round(T data) {
+    public T abs(T data) {
         if (data == null || data.getTextValue() == null) { return data; }
 
         Number number = data.getValue();
         if (number == null) { return data; }
 
-        if (number instanceof Float) {
-            int round = Math.round(((Float) number));
-            data.setTextValue(round + "");
-            data.setValue(round);
+        if (isDecimal(number)) {
+            double abs = Math.abs(number.doubleValue());
+            data.setTextValue(abs);
+            data.setValue(abs);
+        } else {
+            long abs = Math.abs((long) number.doubleValue());
+            data.setTextValue(abs);
+            data.setValue(abs);
         }
 
-        if (number instanceof Double) {
-            long round = Math.round(((Double) number));
-            data.setTextValue(round + "");
+        return data;
+    }
+
+    public T whole(T data) {
+        if (data == null || data.getTextValue() == null) { return data; }
+
+        Number number = data.getValue();
+        if (number == null) { return data; }
+
+        if (isDecimal(number)) {
+            long round = (long) number.doubleValue();
+            data.setTextValue(round);
             data.setValue(round);
         }
 
@@ -70,35 +85,7 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         Number number = data.getValue();
         if (number == null) { return data; }
 
-        double num = number.doubleValue();
-
-        // figure out the specified number of whole numbers and fractional digits
-        int wholeNumberCount = StringUtils.length(StringUtils.substringBefore(closestDigit, "."));
-        int fractionDigitCount = StringUtils.length(StringUtils.substringAfter(closestDigit, "."));
-
-        // we will only use this divisor if there's a whole number or if closestDigit looks like 0.xxx
-        // this means that if user specifies
-        //  - closestDigit = 0.00, then we will round number to closest 2-digit decimal
-        //  - closestDigit = 1.00, then we will round number to closest 2-digit decimal
-        //  - closestDigit =  .00, then we will round number to closest 2-digit decimal
-        //  - closestDigit = 1.0,  then we will round number to closest 1-digit decimal
-        //  - closestDigit = 9.0,  then we will round number to closest 1-digit decimal
-        //  - closestDigit = 5,    then we will round number to closest 1's whole number
-        //  - closestDigit = 10.00, then we will round number to closest 10's whole number
-        //  - closestDigit = 10.99, then we will round number to closest 10's whole number
-        //  - closestDigit = 10.0,  then we will round number to closest 10's whole number
-        double closestWhole = 0;
-        if (wholeNumberCount > 1) {
-            closestWhole = NumberUtils.toDouble("1" + StringUtils.repeat("0", wholeNumberCount - 1));
-            // since we are rounding to closest 10's or higher position, decimal places have no meaning here
-            fractionDigitCount = 0;
-        }
-
-        DecimalFormat df = new DecimalFormat();
-        df.setGroupingUsed(false);
-        df.setMaximumFractionDigits(fractionDigitCount);
-        df.setMinimumFractionDigits(fractionDigitCount);
-        String rounded = df.format(closestWhole == 0 ? num : Math.round(num / closestWhole) * closestWhole);
+        String rounded = NumberCommand.roundTo(number.doubleValue(), closestDigit);
         data.setTextValue(rounded);
         data.setValue(NumberUtils.createNumber(rounded));
 
@@ -116,7 +103,7 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         if (numberObject == null) { return data; }
 
         data.setValue(average(numberObject, numbers));
-        data.setTextValue(data.getValue() + "");
+        data.setTextValue(data.getValue());
         return data;
     }
 
@@ -131,14 +118,14 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         if (numberObject == null) { return data; }
 
         data.setValue(addSequentially(numberObject, numbers));
-        data.setTextValue(data.getValue() + "");
+        data.setTextValue(data.getValue());
         return data;
     }
 
     public T minus(T data, String... numbers) {
         if (data == null || data.getTextValue() == null) { return data; }
         if (ArrayUtils.isEmpty(numbers)) {
-            ConsoleUtils.log(data.getName() + ".minus(): cannot operate on '" + numbers + "'");
+            ConsoleUtils.log(data.getName() + ".minus(): cannot operate on '" + ArrayUtils.toString(numbers) + "'");
             return data;
         }
 
@@ -146,14 +133,14 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         if (numberObject == null) { return data; }
 
         data.setValue(minusSequentially(numberObject, numbers));
-        data.setTextValue(data.getValue() + "");
+        data.setTextValue(data.getValue());
         return data;
     }
 
     public T multiply(T data, String... numbers) {
         if (data == null || data.getTextValue() == null) { return data; }
         if (ArrayUtils.isEmpty(numbers)) {
-            ConsoleUtils.log(data.getName() + ".multiply(): cannot operate on '" + numbers + "'");
+            ConsoleUtils.log(data.getName() + ".multiply(): cannot operate on empty list of numbers");
             return data;
         }
 
@@ -161,14 +148,14 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         if (numberObject == null) { return data; }
 
         data.setValue(multiplySequentially(numberObject, numbers));
-        data.setTextValue(data.getValue() + "");
+        data.setTextValue(data.getValue());
         return data;
     }
 
     public T divide(T data, String... numbers) {
         if (data == null || data.getTextValue() == null) { return data; }
         if (ArrayUtils.isEmpty(numbers)) {
-            ConsoleUtils.log(data.getName() + ".divide(): cannot operate on '" + numbers + "'");
+            ConsoleUtils.log(data.getName() + ".divide(): cannot operate on '" + ArrayUtils.toString(numbers) + "'");
             return data;
         }
 
@@ -176,7 +163,7 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         if (numberObject == null) { return data; }
 
         data.setValue(divideSequential(numberObject, numbers));
-        data.setTextValue(data.getValue() + "");
+        data.setTextValue(data.getValue());
         return data;
     }
 
@@ -207,14 +194,8 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         Number number = data.getValue();
         if (number == null) { return data; }
 
-        if (number instanceof Float) {
-            int floor = (int) Math.floor((Float) number);
-            data.setTextValue(floor + "");
-            data.setValue(floor);
-        }
-
-        if (number instanceof Double) {
-            long floor = (long) Math.floor((Double) number);
+        if (isDecimal(number)) {
+            long floor = (long) Math.floor(number.doubleValue());
             data.setTextValue(floor + "");
             data.setValue(floor);
         }
@@ -228,14 +209,8 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
         Number number = data.getValue();
         if (number == null) { return data; }
 
-        if (number instanceof Float) {
-            int ceiling = (int) Math.ceil((Float) number);
-            data.setTextValue(ceiling + "");
-            data.setValue(ceiling);
-        }
-
-        if (number instanceof Double) {
-            long ceiling = (long) Math.ceil((Double) number);
+        if (isDecimal(number)) {
+            long ceiling = (long) Math.ceil(number.doubleValue());
             data.setTextValue(ceiling + "");
             data.setValue(ceiling);
         }
@@ -260,31 +235,38 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
     }
 
     public static Number addSequentially(Number base, String... numbers) {
+        if (base == null) { base = 0; }
         for (String number : numbers) {
-            number = StringUtils.trim(number);
-            if (!NumberUtils.isParsable(number)) {
+            try {
+                number = TextUtils.cleanNumber(number, REAL);
+                if (isDecimal(number) || base instanceof Double || base instanceof Float) {
+                    base = BigDecimal.valueOf(base.doubleValue())
+                                     .add(BigDecimal.valueOf(NumberUtils.toDouble(number)))
+                                     .doubleValue();
+                } else {
+                    base = base.longValue() + NumberUtils.toLong(number);
+                }
+            } catch (IllegalArgumentException e) {
                 ConsoleUtils.log("[" + number + "] is not a number; ignored...");
-            } else if (isDecimal(number) || base instanceof Double || base instanceof Float) {
-                base = BigDecimal.valueOf(base == null ? 0 : base.doubleValue())
-                                 .add(BigDecimal.valueOf(NumberUtils.toDouble(number)))
-                                 .doubleValue();
-            } else {
-                base = base.longValue() + NumberUtils.toLong(number);
             }
         }
+
         return base;
     }
 
     public static Number minusSequentially(Number base, String... numbers) {
+        if (base == null) { base = 0; }
         for (String number : numbers) {
-            number = StringUtils.trim(number);
-            if (!NumberUtils.isParsable(number)) {
+            try {
+                number = TextUtils.cleanNumber(number, REAL);
+                if (isDecimal(number) || base instanceof Double || base instanceof Float) {
+                    base = BigDecimal.valueOf(base.doubleValue())
+                                     .subtract(BigDecimal.valueOf(NumberUtils.toDouble(number))).doubleValue();
+                } else {
+                    base = base.longValue() - NumberUtils.toLong(number);
+                }
+            } catch (IllegalArgumentException e) {
                 ConsoleUtils.log("[" + number + "] is not a number; ignored...");
-            } else if (isDecimal(number) || base instanceof Double || base instanceof Float) {
-                base = BigDecimal.valueOf(base == null ? 0 : base.doubleValue())
-                                 .subtract(BigDecimal.valueOf(NumberUtils.toDouble(number))).doubleValue();
-            } else {
-                base = (base == null ? 0 : base.longValue()) - NumberUtils.toLong(number);
             }
         }
         return base;
@@ -292,23 +274,20 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
 
     public static Number multiplySequentially(Number base, String... numbers) {
         for (String number : numbers) {
-            number = StringUtils.trim(number);
-
-            if (!NumberUtils.isParsable(number)) {
+            try {
+                number = TextUtils.cleanNumber(number, REAL);
+                if (base == null) {
+                    base = isDecimal(number) ?
+                           BigDecimal.valueOf(NumberUtils.toDouble(number)) : NumberUtils.toLong(number);
+                } else if (isDecimal(number) || isDecimal(base)) {
+                    base = BigDecimal.valueOf(base.doubleValue())
+                                     .multiply(BigDecimal.valueOf(NumberUtils.toDouble(number)))
+                                     .doubleValue();
+                } else {
+                    base = base.longValue() * NumberUtils.toLong(number);
+                }
+            } catch (IllegalArgumentException e) {
                 ConsoleUtils.log("[" + number + "] is not a number; ignored...");
-                continue;
-            }
-
-            if (base == null) {
-                base = isDecimal(number) ? NumberUtils.toDouble(number) : NumberUtils.toLong(number);
-                continue;
-            }
-
-            if (isDecimal(number) || base instanceof Double || base instanceof Float) {
-                base = BigDecimal.valueOf(base.doubleValue())
-                                 .multiply(BigDecimal.valueOf(NumberUtils.toDouble(number))).doubleValue();
-            } else {
-                base = base.longValue() * NumberUtils.toLong(number);
             }
         }
 
@@ -316,32 +295,37 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
     }
 
     public static Number divideSequential(Number base, String... numbers) {
-        for (String number : numbers) {
-            number = StringUtils.trim(number);
-
-            if (!NumberUtils.isParsable(number)) {
-                ConsoleUtils.log("[" + number + "] is not a number; ignored...");
-                continue;
-            }
-
-            if (base == null) {
-                base = isDecimal(number) ? NumberUtils.toDouble(number) : NumberUtils.toLong(number);
-                continue;
-            }
-
-            if (isDecimal(number) || base instanceof Double || base instanceof Float) {
-                base = BigDecimal.valueOf(base.doubleValue())
-                                 .divide(BigDecimal.valueOf(NumberUtils.toDouble(number)), DEC_SCALE, ROUND)
-                                 .doubleValue();
-            } else {
-                BigDecimal result = BigDecimal.valueOf(base.longValue())
-                                              .divide(BigDecimal.valueOf(NumberUtils.toLong(number)), DEC_SCALE, ROUND);
-                if (result.doubleValue() == result.longValue()) {
-                    // maintain current "whole number" representation
-                    base = result.longValue();
-                } else {
-                    base = result.doubleValue();
+        for (String num : numbers) {
+            try {
+                String number = TextUtils.cleanNumber(num, REAL);
+                if (StringUtils.equals(number, "0") && RegexUtils.match(num, "[A-Za-z]+")) {
+                    // not a number, we want to avoid "divide by zero"
+                    ConsoleUtils.log("[" + num + "] is not a number; ignored...");
+                    continue;
                 }
+
+                if (base == null) {
+                    base = isDecimal(number) ? NumberUtils.toDouble(number) : NumberUtils.toLong(number);
+                    continue;
+                }
+
+                if (isDecimal(number) || isDecimal(base)) {
+                    base = BigDecimal.valueOf(base.doubleValue())
+                                     .divide(BigDecimal.valueOf(NumberUtils.toDouble(number)), DEC_SCALE, ROUND)
+                                     .doubleValue();
+                } else {
+                    BigDecimal result =
+                        BigDecimal.valueOf(base.longValue())
+                                  .divide(BigDecimal.valueOf(NumberUtils.toLong(number)), DEC_SCALE, ROUND);
+                    if (result.doubleValue() == result.longValue()) {
+                        // maintain current "whole number" representation
+                        base = result.longValue();
+                    } else {
+                        base = result.doubleValue();
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                ConsoleUtils.log("[" + num + "] is not a number; ignored...");
             }
         }
 
@@ -354,8 +338,9 @@ public class NumberTransformer<T extends NumberDataType> extends Transformer {
     @Override
     Map<String, Method> listSupportedMethods() { return FUNCTIONS; }
 
-    protected static boolean isDecimal(String number) {
-        return RegexUtils.isExact(number, REGEX_DEC_NUM);
-        // && !RegexUtils.isExact(number, REGEX_INT_PRETEND_DOUBLE);
+    protected static boolean isDecimal(String number) { return RegexUtils.isExact(number, REGEX_DEC_NUM); }
+
+    protected static boolean isDecimal(Number number) {
+        return number instanceof BigDecimal || number instanceof Double || number instanceof Float;
     }
 }

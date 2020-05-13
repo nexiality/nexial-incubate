@@ -17,9 +17,7 @@
 
 package org.nexial.core.tools;
 
-import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,7 +27,6 @@ import java.security.Security;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import javax.crypto.Cipher;
@@ -47,11 +44,13 @@ import org.apache.commons.lang3.StringUtils;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.core.excel.ext.CipherHelper;
 
-import static java.io.File.separator;
 import static java.util.jar.Attributes.Name.MANIFEST_VERSION;
 import static javax.crypto.Cipher.ENCRYPT_MODE;
+import static org.nexial.commons.utils.FileUtil.addToJar;
 import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.NexialConst.ExitStatus.*;
+import static org.nexial.core.tools.CliUtils.newArgOption;
+import static org.nexial.core.utils.ExecUtils.BIN_SCRIPT_EXT;
 
 /**
  * This class is a utility for encrypting the setup/data file with the given key file passed as options
@@ -84,7 +83,6 @@ public final class NexialSetup {
         "  }\n" +
         "}";
 
-    private static final String TEMP = StringUtils.appendIfMissing(System.getProperty("java.io.tmpdir"), separator);
     private static final String SETUP_FOLDER = TEMP + "nexial-setup-src/";
     private static final String SETUP_FILE_PATH = SETUP_FOLDER + "org/nexial/core/config/";
     private static final String SETUP_FILE = "Setup.java";
@@ -93,7 +91,7 @@ public final class NexialSetup {
     private static final String ENCRYPTION_ALGORITHM = "AES";
 
     private static final String MSG_MISSING_ENV = "Missing environment details. Please be sure to run via " +
-                                                  "bin/nexial-setup.cmd or bin/nexial-setup.sh script";
+                                                  "bin/nexial-setup" + BIN_SCRIPT_EXT + " script";
     private static final String MSG_CANT_WRITE_TEMP = "Unable to read/write directory '" + TEMP + "' to generate " +
                                                       "setup artifacts.  Please fix permission and re-run again.";
     private static Options cmdOptions = initCmdOptions();
@@ -183,15 +181,15 @@ public final class NexialSetup {
             FileUtils.deleteQuietly(targetJar);
             FileUtils.moveFile(new File(CLASS_FOLDER + SETUP_JAR), targetJar);
 
-            System.out.println("\n\n" +
-                               "Setup complete.\n\n" +
-                               "IMPORTANT NOTE:\n" +
-                               "> It is now safe to delete " + dataFilePath + "\n" +
-                               "> to keep it out of prying eyes.\n" +
-                               "> You can zip up " + System.getenv(ENV_NEXIAL_HOME) + " for distribution.\n" +
-                               "\n");
+            System.out.println(NL + NL +
+                               "Setup complete." + NL + NL +
+                               "IMPORTANT NOTE:" + NL +
+                               "> It is now safe to delete " + dataFilePath + NL +
+                               "> to keep it out of prying eyes." + NL +
+                               "> You can zip up " + System.getenv(ENV_NEXIAL_HOME) + " for distribution." + NL +
+                               NL);
         } catch (ParseException e) {
-            System.err.println("\nERROR: " + e.getMessage() + "\n");
+            System.err.println(NL + "ERROR: " + e.getMessage() + NL);
             HelpFormatter formatter = new HelpFormatter();
             formatter.printHelp(NexialSetup.class.getName(), cmdOptions, true);
             System.exit(RC_BAD_CLI_ARGS);
@@ -223,8 +221,8 @@ public final class NexialSetup {
     @NotNull
     private static Options initCmdOptions() {
         Options cmdOptions = new Options();
-        cmdOptions.addOption(CliUtils.newArgOption(OPT_DATA_FILE, "file", "The file containing key/value pairs."));
-        cmdOptions.addOption(CliUtils.newArgOption(OPT_SETUP_KEY, "key", "The key to encrypt data."));
+        cmdOptions.addOption(newArgOption(OPT_DATA_FILE, "file", "The file containing key/value pairs.", true));
+        cmdOptions.addOption(newArgOption(OPT_SETUP_KEY, "key", "The key to encrypt data.", true));
         return cmdOptions;
     }
 
@@ -293,51 +291,8 @@ public final class NexialSetup {
         manifest.getMainAttributes().put(MANIFEST_VERSION, "1.0");
 
         JarOutputStream target = new JarOutputStream(new FileOutputStream(jarFile), manifest);
-        add(new File(SETUP_FOLDER), target);
+        addToJar(new File(SETUP_FOLDER), target, SETUP_FOLDER);
         target.close();
-    }
-
-    /**
-     * Adds the <b>source</b> file/folder to the <b>target</b> {@link JarOutputStream}.
-     *
-     * @param source file/folder passed in to add.
-     * @param target the target {@link JarOutputStream} to which the source to be added.
-     * @throws IOException exception occurred while adding the file.
-     */
-    private static void add(@NotNull File source, @NotNull JarOutputStream target) throws IOException {
-        String name =
-            StringUtils.substringAfter(
-                StringUtils.appendIfMissing(source.getPath().replace("\\", "/"), "/").trim(),
-                StringUtils.replace(SETUP_FOLDER, "\\", "/"));
-
-        BufferedInputStream in = null;
-        try {
-            JarEntry entry = new JarEntry(name);
-            entry.setTime(source.lastModified());
-            target.putNextEntry(entry);
-
-            if (source.isDirectory()) {
-                target.closeEntry();
-                File[] files = source.listFiles();
-                if (files != null && files.length > 0) {
-                    for (File nestedFile : files) { add(nestedFile, target); }
-                }
-                return;
-            }
-
-            in = new BufferedInputStream(new FileInputStream(source));
-
-            byte[] buffer = new byte[1024];
-            while (true) {
-                int count = in.read(buffer);
-                if (count == -1) { break; }
-                target.write(buffer, 0, count);
-            }
-
-            target.closeEntry();
-        } finally {
-            if (in != null) { in.close(); }
-        }
     }
 
     /**

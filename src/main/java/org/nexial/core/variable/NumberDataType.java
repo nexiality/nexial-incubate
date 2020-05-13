@@ -21,6 +21,9 @@ import java.math.BigDecimal;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nexial.commons.utils.TextUtils;
+
+import static org.nexial.commons.utils.TextUtils.CleanNumberStrategy.REAL;
 
 public class NumberDataType extends ExpressionDataType<Number> {
     public NumberTransformer transformer = new NumberTransformer();
@@ -31,6 +34,14 @@ public class NumberDataType extends ExpressionDataType<Number> {
 
     @Override
     public String getName() { return "NUMBER"; }
+
+    public void setTextValue(Number value) {
+        if (value instanceof Double || value instanceof Float) {
+            setTextValue(BigDecimal.valueOf(value.doubleValue()).toPlainString());
+        } else {
+            setTextValue(value.longValue() + "");
+        }
+    }
 
     @Override
     Transformer getTransformer() { return transformer; }
@@ -46,39 +57,18 @@ public class NumberDataType extends ExpressionDataType<Number> {
 
     @Override
     protected void init() throws TypeConversionException {
-        String text = StringUtils.trim(textValue);
-        if (StringUtils.isBlank(text)) {
-            setToZero();
-            return;
+        try {
+            String text = TextUtils.cleanNumber(textValue, REAL);
+            if (StringUtils.contains(text, ".")) {
+                // setValue(NumberUtils.createBigDecimal(text));
+                setValue(NumberUtils.createDouble(text));
+                setTextValue(BigDecimal.valueOf(value.doubleValue()).toPlainString());
+            } else {
+                setValue(NumberUtils.createLong(text));
+                setTextValue(text);
+            }
+        } catch (IllegalArgumentException e) {
+            throw new TypeConversionException(getName(), textValue, "not a valid number");
         }
-
-        // in case start with - or +
-        boolean isNegative = StringUtils.startsWith(text, "-");
-        text = StringUtils.removeStart(text, "+");
-        text = StringUtils.removeStart(text, "-");
-
-        text = StringUtils.removeFirst(text, "^0{1,}");
-        if (StringUtils.isBlank(text)) {
-            // all zeros means 0
-            setToZero();
-            return;
-        }
-
-        if (StringUtils.startsWithIgnoreCase(text, ".")) { text = "0" + text; }
-        if (isNegative) { text = "-" + text; }
-
-        if (StringUtils.contains(text, ".")) {
-            setValue(NumberUtils.createDouble(text));
-            setTextValue(BigDecimal.valueOf(value.doubleValue()).toPlainString());
-        } else {
-            setValue(NumberUtils.createLong(text));
-            setTextValue(text);
-        }
-
-    }
-
-    private void setToZero() {
-        setValue(0);
-        setTextValue("0");
     }
 }

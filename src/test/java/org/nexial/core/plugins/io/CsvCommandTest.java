@@ -47,8 +47,8 @@ import com.google.gson.JsonObject;
 import com.univocity.parsers.csv.CsvParser;
 
 import static java.io.File.separator;
+import static org.nexial.core.NexialConst.Compare.*;
 import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
-import static org.nexial.core.NexialConst.Data.*;
 import static org.nexial.core.NexialConst.OPT_OUT_DIR;
 import static org.nexial.core.plugins.io.ComparisonResult.*;
 import static org.nexial.core.plugins.io.FileComparisonReport.GSON;
@@ -128,8 +128,7 @@ public class CsvCommandTest {
         fixture.addFileMismatch(file("file size differences found", "50952 bytes", "50112 bytes"));
         fixture.addFileMismatch(file("line count differences found", "19 lines", "17 lines"));
         fixture.addLineMismatch(line(0, "line difference found", "This is a test.  Do not be alarmed", "huh"));
-        command.logComparisonReport("LOG FILE", fixture, "log");
-        command.logComparisonReport("JSON FILE", fixture, "json");
+        command.logComparisonReport("LOG FILE", fixture);
 
         String logActual = FileUtils.readFileToString(logFile, DEF_FILE_ENCODING);
         logActual = StringUtils.trim(StringUtils.substringBefore(logActual, "*****"));
@@ -224,7 +223,7 @@ public class CsvCommandTest {
         LevenshteinResults lsr = levenshtein.apply(expected, actual);
         fixture.addLineMismatch(lineDiff(12, lsr, expected, actual));
 
-        command.logComparisonReport("LOG FILE", fixture, "log");
+        command.logComparisonReport("LOG FILE", fixture);
         // command.logComparisonReport("JSON FILE", fixture, "json");
 
         String logActual = FileUtils.readFileToString(logFile, DEF_FILE_ENCODING);
@@ -590,7 +589,11 @@ public class CsvCommandTest {
 
     @Test
     public void parseCsv_comma_newline() {
-        CsvParser parser = CsvCommand.newCsvParser("\"", ",", "\n", false, -1);
+        CsvParser parser = new CsvParserBuilder().setQuote("\"")
+                                                 .setDelim(",")
+                                                 .setLineSeparator("\n")
+                                                 .setHasHeader(false)
+                                                 .build();
 
         // test 1: last row has fewer columns
         String fixture = "col1,col2,col3,col3a\n" +
@@ -619,7 +622,12 @@ public class CsvCommandTest {
 
     @Test
     public void parseCsv_comma_newline_quote() {
-        CsvParser parser = CsvCommand.newCsvParser("\"", ",", "\n", false, -1);
+        CsvParser parser = new CsvParserBuilder().setQuote("\"")
+                                                 .setDelim(",")
+                                                 .setLineSeparator("\n")
+                                                 .setHasHeader(false)
+                                                 .setKeepQuote(true)
+                                                 .build();
 
         // test 1: last row has fewer columns AND first row has quoted value
         String fixture = "col1,col2,\"col 3\",col3a\n" +
@@ -660,7 +668,7 @@ public class CsvCommandTest {
 
     @Test
     public void parseCsv_comma_newline_quote_auto() {
-        CsvParser parser = CsvCommand.newCsvParser(null, null, null, false, -1);
+        CsvParser parser = new CsvParserBuilder().setHasHeader(false).build();
 
         // test 1: last row has fewer columns AND first row has quoted value
         String fixture = "col1,col2,\"col 3\",col3a\n" +

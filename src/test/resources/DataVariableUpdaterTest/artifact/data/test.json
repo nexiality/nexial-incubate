@@ -1,6 +1,6 @@
 {
     "a": {
         "b": "${nexial.failFast}",
-        "${nexial.textDelim}": [ "${nexial.browser}", "${nexial.browser}", "${nexial.verbose}" ]
+"${nexial.textDelim}": [ "${nexial.browser}", "${nexial.browser}", "${nexial.verbose}"]
     }
 }

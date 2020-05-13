@@ -24,13 +24,19 @@ import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
 
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.time.StopWatch;
 import org.apache.http.*;
@@ -57,150 +63,172 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.DefaultProxyRoutePlanner;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
 import org.apache.http.protocol.HttpContext;
+import org.nexial.commons.utils.DateUtility;
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.RegexUtils;
-import org.nexial.core.WebProxy;
+import org.nexial.commons.utils.TextUtils;
+import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.ExecutionLogger;
+import org.nexial.core.utils.OutputFileUtils;
+import org.nexial.core.variable.Syspath;
 
-import static org.nexial.core.NexialConst.*;
+import static java.io.File.separator;
+import static org.nexial.core.NexialConst.DEF_CHARSET;
+import static org.nexial.core.NexialConst.NL;
+import static org.nexial.core.NexialConst.Ws.*;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 
 public class WebServiceClient {
     protected static final SSLConnectionSocketFactory SSL_SF = new NaiveConnectionSocketFactory();
     protected static final String REGEX_URL_HAS_AUTH = "(.+\\ )?(http[s]?)\\:\\/\\/(.+)\\:(.+)\\@(.+)";
+    protected static final String WS_DISABLE_CONTEXT = "__DISABLE_CONTEXT_AS_CONFIG__";
+
     protected ExecutionContext context;
     protected boolean verbose = true;
+    protected Map<String, String> priorityConfigs = new HashMap<>();
 
-    public WebServiceClient(ExecutionContext context) { this.context = context; }
+    public WebServiceClient(ExecutionContext context) {
+        if (context == null) { context = ExecutionThread.get(); }
+        this.context = context;
+    }
+
+    @NotNull
+    public WebServiceClient disableContextConfiguration() {
+        priorityConfigs.put(WS_DISABLE_CONTEXT, "true");
+        return this;
+    }
+
+    /**
+     * fluid setter to muzzle additional/unnecessary log incurred during execution
+     */
+    @NotNull
+    public WebServiceClient configureAsQuiet() {
+        priorityConfigs.put(WS_LOG_DETAIL, "false");
+        priorityConfigs.put(WS_LOG_SUMMARY, "false");
+        return this;
+    }
+
+    /**
+     * fluid setter to add priority configuration that would override those set at the context level or env. level
+     */
+    @NotNull
+    public WebServiceClient setPriorityConfiguration(String name, String value) {
+        priorityConfigs.put(name, value);
+        return this;
+    }
 
     public void setVerbose(boolean verbose) { this.verbose = verbose; }
 
+    @NotNull
     public Response get(String url, String queryString) throws IOException {
-        return invokeRequest(toGetRequest(url, queryString));
+        return invokeRequest(new GetRequest(resolveContextForRequest(), url, queryString));
     }
 
+    @NotNull
     public Response download(String url, String queryString, String saveTo) throws IOException {
-        GetRequest request = toGetRequest(url, queryString);
+        GetRequest request = new GetRequest(resolveContextForRequest(), url, queryString);
         request.setPayloadLocation(saveTo);
         return invokeRequest(request);
     }
 
+    @NotNull
     public Response post(String url, String payload) throws IOException {
-        return invokeRequest(toPostRequest(url, payload));
+        return invokeRequest(new PostRequest(resolveContextForRequest(), url, payload, null));
     }
 
+    @NotNull
+    public Response post(String url, byte[] payload) throws IOException {
+        return invokeRequest(new PostRequest(resolveContextForRequest(), url, null, payload));
+    }
+
+    @NotNull
     public Response postMultipart(String url, String payload, String fileParams) throws IOException {
         return invokeRequest(toPostMultipartRequest(url, payload, fileParams));
     }
 
-    public Response head(String url) throws IOException { return invokeRequest(toHeadRequest(url)); }
+    @NotNull
+    public Response head(String url) throws IOException {
+        return invokeRequest(new HeadRequest(resolveContextForRequest(), url, null));
+    }
 
+    @NotNull
     public Response delete(String url, String queryString) throws IOException {
-        return invokeRequest(toDeleteRequest(url, queryString));
+        return invokeRequest(new DeleteRequest(resolveContextForRequest(), url, queryString));
     }
 
+    @NotNull
     public Response deleteWithPayload(String url, String payload) throws IOException {
-        return invokeRequest(toDeleteRequestWithPayload(url, payload));
+        return invokeRequest(new DeleteWithPayloadRequest(resolveContextForRequest(), url, payload, null));
     }
 
+    @NotNull
+    public Response deleteWithPayload(String url, byte[] payload) throws IOException {
+        return invokeRequest(new DeleteWithPayloadRequest(resolveContextForRequest(), url, null, payload));
+    }
+
+    @NotNull
     public Response patch(String url, String payload) throws IOException {
-        return invokeRequest(toPatchRequest(url, payload));
+        return invokeRequest(new PatchRequest(resolveContextForRequest(), url, payload, null));
     }
 
+    @NotNull
+    public Response patch(String url, byte[] payload) throws IOException {
+        return invokeRequest(new PatchRequest(resolveContextForRequest(), url, null, payload));
+    }
+
+    @NotNull
     public Response put(String url, String payload) throws IOException {
-        return invokeRequest(toPutRequest(url, payload));
+        return invokeRequest(new PutRequest(resolveContextForRequest(), url, payload, null));
     }
 
     @NotNull
-    public GetRequest toGetRequest(String url, String queryString) {
-        GetRequest request = new GetRequest(context);
-        request.setUrl(url);
-        request.setQueryString(queryString);
-        return request;
-    }
-
-    @NotNull
-    public PostRequest toPostRequest(String url, String payload) {
-        PostRequest request = new PostRequest(context);
-        request.setUrl(url);
-        request.setPayload(payload);
-        return request;
+    public Response put(String url, byte[] payload) throws IOException {
+        return invokeRequest(new PutRequest(resolveContextForRequest(), url, null, payload));
     }
 
     @NotNull
     public PostRequest toPostMultipartRequest(String url, String payload, String fileParams) {
-        PostMultipartRequest request = new PostMultipartRequest(context);
+        PostMultipartRequest request = new PostMultipartRequest(resolveContextForRequest());
         request.setUrl(url);
         request.setPayload(payload, StringUtils.split(fileParams, context.getTextDelim()));
         return request;
     }
 
     @NotNull
-    public HeadRequest toHeadRequest(String url) {
-        HeadRequest request = new HeadRequest(context);
-        request.setUrl(url);
-        return request;
-    }
-
-    @NotNull
-    public DeleteRequest toDeleteRequest(String url, String queryString) {
-        DeleteRequest request = new DeleteRequest(context);
-        request.setUrl(url);
-        if (StringUtils.isNotEmpty(queryString)) { request.setQueryString(queryString); }
-        return request;
-    }
-
-    @NotNull
-    public DeleteWithPayloadRequest toDeleteRequestWithPayload(String url, String payload) {
-        DeleteWithPayloadRequest request = new DeleteWithPayloadRequest(context);
-        request.setUrl(url);
-        request.setPayload(payload);
-        return request;
-    }
-
-    @NotNull
-    public PatchRequest toPatchRequest(String url, String payload) {
-        PatchRequest request = new PatchRequest(context);
-        request.setUrl(url);
-        request.setPayload(payload);
-        return request;
-    }
-
-    @NotNull
-    public PutRequest toPutRequest(String url, String payload) {
-        PutRequest request = new PutRequest(context);
-        request.setUrl(url);
-        request.setPayload(payload);
-        return request;
-    }
-
     public static String hideAuthDetails(RequestLine requestLine) {
         return requestLine.getMethod() + " " + hideAuthDetails(requestLine.getUri()) + " " +
                requestLine.getProtocolVersion();
     }
 
+    @NotNull
     public static String hideAuthDetails(String url) {
         return RegexUtils.match(url, REGEX_URL_HAS_AUTH) ?
                RegexUtils.replace(url, REGEX_URL_HAS_AUTH, "$1$2://$5") : url;
     }
 
-
+    @NotNull
     protected Response invokeRequest(Request request) throws IOException {
         StopWatch tickTock = new StopWatch();
         tickTock.start();
 
-        boolean requireProxy = context != null && context.getBooleanData(WS_PROXY_REQUIRED, false);
-        HttpHost proxy = requireProxy ? WebProxy.getApacheProxy(context) : null;
-        BasicCredentialsProvider credsProvider = requireProxy ? WebProxy.getApacheCredentialProvider(context) : null;
-
-        RequestConfig requestConfig = prepRequestConfig(request, proxy, credsProvider);
-        CloseableHttpClient client = prepareHttpClient(request, requestConfig, proxy, credsProvider);
+        // proxy code not ready for prime time...
+        // boolean requireProxy = context != null && context.getBooleanData(WS_PROXY_REQUIRED, false);
+        // HttpHost proxy = requireProxy ? WebProxy.getApacheProxy(context) : null;
+        // BasicCredentialsProvider credsProvider = requireProxy ? WebProxy.getApacheCredentialProvider(context) : null;
+        // RequestConfig requestConfig = prepRequestConfig(request, proxy, credsProvider);
+        // CloseableHttpClient client = prepHttpClient(request, requestConfig, proxy, credsProvider);
+        RequestConfig requestConfig = prepRequestConfig(request, null, null);
+        CloseableHttpClient client = prepHttpClient(request, requestConfig, null, null);
         HttpUriRequest http = request.prepRequest(requestConfig);
 
         CloseableHttpResponse httpResponse = null;
+        long requestStartTime = tickTock.getStartTime();
 
         try {
-            log("Executing request " + hideAuthDetails(http.getRequestLine()));
+            logRequest(http, request, requestStartTime);
 
             boolean digestAuth = isDigestAuth();
             boolean basicAuth = isBasicAuth();
@@ -213,35 +241,28 @@ public class WebServiceClient {
                 httpResponse = client.execute(http);
             }
 
-            Response response = gatherResponseData(http, request, httpResponse);
+            Response response = gatherResponseData(request, httpResponse, tickTock.getTime());
 
             tickTock.stop();
+            response.setRequestTime(requestStartTime);
             response.setElapsedTime(tickTock.getTime());
+            logResponse(http, request, httpResponse.getStatusLine(), response);
 
             return response;
+        } catch (IOException e) {
+            logResponse(requestStartTime, http, request, e);
+            throw e;
         } finally {
             if (httpResponse != null) { try { httpResponse.close(); } catch (IOException e) { } }
         }
     }
 
-    protected void log(String msg) {
-        // ExecutionContext context = ExecutionThread.get();
-        if (context != null) {
-            TestStep testStep = context.getCurrentTestStep();
-            if (testStep != null) { context.getLogger().log(testStep, msg); }
-        }
-
-        debug(msg);
-    }
-
-    protected void debug(String msg) { if (verbose && StringUtils.isNotBlank(msg)) { ConsoleUtils.log(msg); } }
-
-    protected Response gatherResponseData(HttpUriRequest http, Request request, HttpResponse httpResponse)
+    protected Response gatherResponseData(Request request, HttpResponse httpResponse, long ttfb)
         throws IOException {
-        StatusLine statusLine = httpResponse.getStatusLine();
-        log("Executed request " + hideAuthDetails(http.getRequestLine()) + ": " + statusLine);
-
         Response response = new Response();
+        response.setTtfb(ttfb);
+
+        StatusLine statusLine = httpResponse.getStatusLine();
         response.setReturnCode(statusLine.getStatusCode());
         response.setStatusText(statusLine.getReasonPhrase());
 
@@ -260,7 +281,7 @@ public class WebServiceClient {
                 throw new IOException(statusLine + "");
             }
         } else {
-            log("Saving response payload as raw bytes to Response object");
+            log("Saving response payload as raw bytes");
             byte[] rawBody = harvestResponsePayload(responseEntity);
             if (rawBody == null) {
                 response.setRawBody(null);
@@ -276,6 +297,202 @@ public class WebServiceClient {
 
         return response;
     }
+
+    protected void logRequest(HttpUriRequest http, Request request, long requestTimeMs) {
+        if (context == null) { return; }
+
+        String url = hideAuthDetails(http.getURI().toString());
+        String content = null;
+        int contentLength = 0;
+        boolean requestWithBody = request instanceof PostRequest;
+        if (requestWithBody) {
+            content = ((PostRequest) request).getPayload();
+            byte[] contentBytes = ((PostRequest) request).getPayloadBytes();
+            contentLength = StringUtils.length(content);
+            if (contentLength == 0) { ArrayUtils.getLength(contentBytes); }
+        }
+
+        log("Executing request " + hideAuthDetails(http.getRequestLine()));
+
+        if (context.isVerbose()) {
+            if (contentLength > 0) { log("Request Body Length: " + contentLength); }
+            if (StringUtils.isNotEmpty(content)) {
+                log("Request Body (1st kb) -->" + NL + StringUtils.abbreviate(content, 1024));
+            }
+        }
+
+        TestStep testStep = context.getCurrentTestStep();
+
+        if (shouldLogDetail()) {
+            StringBuilder details = new StringBuilder();
+            appendLog(details, "Test Step       : ", ExecutionLogger.toHeader(testStep));
+            details.append(StringUtils.repeat("-", 80)).append(NL);
+            appendLog(details, "Request Time    : ", DateUtility.formatLog2Date(requestTimeMs));
+            appendLog(details, "Request URL     : ", url);
+            appendLog(details, "Request Method  : ", http.getMethod());
+            appendLog(details, "Request Headers : ", "{" + TextUtils.toString(request.getHeaders(), ", ", ": ") + "}");
+            if (requestWithBody && contentLength > 0) {
+                appendLog(details, "Request Body    : ",
+                          contentLength + " bytes. " +
+                          (StringUtils.isNotEmpty(content) ? NL + content : " (binary content)"));
+            }
+            details.append(StringUtils.repeat("-", 80)).append(NL);
+            writeDetailLog(testStep, details.toString());
+        }
+    }
+
+    protected void logResponse(long requestStartTime, HttpUriRequest http, Request request, Exception e) {
+        if (context == null) { return; }
+        if (e == null) { return; }
+
+        String error = ExceptionUtils.getRootCauseMessage(e);
+        ConsoleUtils.error(error);
+
+        TestStep testStep = context.getCurrentTestStep();
+
+        if (shouldLogDetail()) {
+            StringBuilder details = new StringBuilder();
+            appendLog(details, "ERROR           : ", error);
+            appendLog(details, "Exception       : ", ExceptionUtils.getStackTrace(e));
+            writeDetailLog(testStep, details.toString());
+        }
+
+        if (shouldLogSummary()) {
+            int requestBodyLength = 0;
+            boolean requestWithBody = request instanceof PostRequest;
+            if (requestWithBody) {
+                requestBodyLength = StringUtils.length(((PostRequest) request).getPayload());
+                if (requestBodyLength == 0) { ArrayUtils.getLength(((PostRequest) request).getPayloadBytes()); }
+            }
+
+            writeSummaryLog(DateUtility.formatLog2Date(requestStartTime),
+                            ExecutionLogger.toHeader(context),
+                            context.getCurrentScenario(),
+                            "Row " + (testStep.getRowIndex() + 1),
+                            hideAuthDetails(http.getURI().toString()),
+                            http.getMethod(),
+                            requestBodyLength,
+                            -1,
+                            error,
+                            -1,
+                            -1,
+                            -1);
+        }
+    }
+
+    protected void logResponse(HttpUriRequest http, Request request, StatusLine statusLine, Response response) {
+        if (context == null) { return; }
+
+        if (!(response instanceof AsyncResponse)) {
+            log("Executed request " + hideAuthDetails(http.getRequestLine()) + ": " + statusLine);
+        }
+
+        long payloadLength = response.getContentLength();
+        String saveTo = response.getPayloadLocation();
+        String payload = response.getBody();
+
+        if (context.isVerbose()) {
+            if (payloadLength > 0) { log("Response Body Length: " + payloadLength); }
+            if (StringUtils.isNotBlank(saveTo)) {
+                log("Response Body saved to " + saveTo);
+            } else if (StringUtils.isNotEmpty(payload)) {
+                log("Response Body -->" + NL + payload);
+            }
+        }
+
+        TestStep testStep = context.getCurrentTestStep();
+
+        if (shouldLogDetail()) {
+            StringBuilder details = new StringBuilder();
+            appendLog(details, "Return Code     : ", response.getReturnCode());
+            appendLog(details, "Status Text     : ", response.getStatusText());
+            appendLog(details, "TTFB            : ", response.getTtfb());
+            appendLog(details, "Elapsed Time    : ", response.getElapsedTime());
+            appendLog(details, "Response Headers: ", "{" + TextUtils.toString(response.getHeaders(), ", ", ": ") + "}");
+            if (payloadLength > 0) {
+                appendLog(details, "Request Body    : ",
+                          payloadLength + " bytes. " +
+                          (StringUtils.isNotBlank(saveTo) ? "Saved to " + saveTo : NL + payload));
+            }
+            writeDetailLog(testStep, details.toString());
+        }
+
+        if (shouldLogSummary()) {
+            int requestBodyLength = 0;
+            boolean requestWithBody = request instanceof PostRequest;
+            if (requestWithBody) {
+                requestBodyLength = StringUtils.length(((PostRequest) request).getPayload());
+                if (requestBodyLength == 0) {
+                    ArrayUtils.getLength(((PostRequest) request).getPayloadBytes());
+                }
+            }
+
+            writeSummaryLog(DateUtility.formatLog2Date(response.getRequestTime()),
+                            ExecutionLogger.toHeader(context),
+                            context.getCurrentScenario(),
+                            "Row " + (testStep.getRowIndex() + 1),
+                            hideAuthDetails(http.getURI().toString()),
+                            http.getMethod(),
+                            requestBodyLength,
+                            response.getReturnCode(),
+                            response.getStatusText(),
+                            response.getTtfb(),
+                            response.getElapsedTime(),
+                            payloadLength);
+        }
+    }
+
+    protected void writeSummaryLog(Object... content) {
+        if (context == null) { return; }
+
+        if (ArrayUtils.isEmpty(content)) { return; }
+
+        File log = new File(new Syspath().log("fullpath") + separator + "nexial-ws-" + context.getRunId() + ".log");
+        try {
+            // for first use, let's add log file header
+            String data = (!FileUtil.isFileReadable(log) ?
+                           "request-time,script,scenario,row-id,url,method,request-body-length," +
+                           "return-code,status-code,ttfb,elapsed-time,response-body-length" + NL :
+                           "") +
+                          Arrays.stream(content)
+                                .reduce((previous, next) -> previous + "," +
+                                                            (StringUtils.contains(Objects.toString(next), ",") ?
+                                                             "\"" + next + "\"" : next))
+                                .orElse("") +
+                          "";
+            FileUtils.writeStringToFile(log, data + "\n", DEF_CHARSET, true);
+        } catch (IOException e) {
+            ConsoleUtils.error("Unable to log WS detail to " + log.getAbsolutePath() + ": " + e.getMessage());
+        }
+    }
+
+    protected void writeDetailLog(TestStep testStep, String content) {
+        File log = resolveDetailLogFile(testStep);
+        try {
+            FileUtils.writeStringToFile(log, content, DEF_CHARSET, true);
+        } catch (IOException e) {
+            ConsoleUtils.error("Unable to log WS detail to " + log.getAbsolutePath() + ": " + e.getMessage());
+        }
+    }
+
+    @NotNull
+    protected File resolveDetailLogFile(TestStep testStep) {
+        return new File(new Syspath().out("fullpath") + separator +
+                        OutputFileUtils.generateOutputFilename(testStep, ".ws-detail.log"));
+    }
+
+    protected void appendLog(StringBuilder buffer, String name, Object value) {
+        buffer.append(name).append(value).append(NL);
+    }
+
+    protected void log(String msg) {
+        if (context != null) {
+            TestStep testStep = context.getCurrentTestStep();
+            if (testStep != null) { context.getLogger().log(testStep, msg); }
+        }
+    }
+
+    protected void debug(String msg) { if (verbose && StringUtils.isNotBlank(msg)) { ConsoleUtils.log(msg); } }
 
     @NotNull
     protected DefaultProxyRoutePlanner resolveRoutePlanner(Request request, HttpHost proxy) {
@@ -306,7 +523,6 @@ public class WebServiceClient {
                     InetAddress local = config.getLocalAddress();
 
                     return new HttpRoute(target, local, secure);
-                    //return new HttpRoute(host);
                 }
 
                 return super.determineRoute(host, req, execution);
@@ -324,21 +540,17 @@ public class WebServiceClient {
                                                     .setCircularRedirectsAllowed(request.allowCircularRedirects)
                                                     .setRelativeRedirectsAllowed(request.allowRelativeRedirects)
                                                     .setCookieSpec(CookieSpecs.STANDARD);
-
         if (proxy != null) { requestConfigBuilder = requestConfigBuilder.setProxy(proxy); }
-
         return requestConfigBuilder.build();
     }
 
-    protected CloseableHttpClient prepareHttpClient(final Request request,
-                                                    RequestConfig requestConfig,
-                                                    HttpHost proxy,
-                                                    CredentialsProvider credsProvider)
-        throws IOException {
+    protected CloseableHttpClient prepHttpClient(final Request request,
+                                                 RequestConfig requestConfig,
+                                                 HttpHost proxy,
+                                                 CredentialsProvider credsProvider) throws IOException {
 
         SocketConfig socketConfig = SocketConfig.custom()
-                                                .setSoKeepAlive(true)
-                                                .setSoReuseAddress(true)
+                                                .setSoKeepAlive(request.keepAlive)
                                                 .setSoTimeout(request.socketTimeout)
                                                 .setSoLinger(request.socketTimeout).build();
 
@@ -363,14 +575,12 @@ public class WebServiceClient {
     }
 
     protected boolean isIntranet(String hostname) {
-        return NumberUtils.isDigits(StringUtils.substringBefore(hostname, ".")) ||
-               !StringUtils.contains(hostname, ".");
+        return NumberUtils.isDigits(StringUtils.substringBefore(hostname, ".")) || !StringUtils.contains(hostname, ".");
     }
 
     protected boolean isBasicAuth() {
         if (context == null) { return false; }
-        return StringUtils.isNotBlank(context.getStringData(WS_BASIC_USER)) &&
-               StringUtils.isNotBlank(context.getStringData(WS_BASIC_PWD));
+        return StringUtils.isNotBlank(getBasicUsername()) && StringUtils.isNotBlank(getBasicPassword());
     }
 
     protected HttpClientBuilder addBasicAuth(HttpClientBuilder httpClientBuilder, Request request)
@@ -404,9 +614,9 @@ public class WebServiceClient {
 
     protected boolean isDigestAuth() {
         if (context == null) { return false; }
-        return StringUtils.isNotBlank(context.getStringData(WS_DIGEST_USER)) &&
-               StringUtils.isNotBlank(context.getStringData(WS_DIGEST_PWD)) &&
-               StringUtils.isNotBlank(context.getStringData(WS_DIGEST_REALM));
+        return StringUtils.isNotBlank(getConfiguration(WS_DIGEST_USER)) &&
+               StringUtils.isNotBlank(getConfiguration(WS_DIGEST_PWD)) &&
+               StringUtils.isNotBlank(getConfiguration(WS_DIGEST_REALM));
     }
 
     protected HttpClientBuilder addDigestAuth(HttpClientBuilder httpClientBuilder, Request request)
@@ -425,14 +635,12 @@ public class WebServiceClient {
         return resolveCredentialProvider(request, WS_DIGEST_USER, WS_DIGEST_PWD);
     }
 
-    protected CredentialsProvider resolveCredentialProvider(Request request,
-                                                            String userVariable,
-                                                            String passwordVariable)
+    protected CredentialsProvider resolveCredentialProvider(Request request, String userVar, String passwordVar)
         throws MalformedURLException {
         if (context == null) { return null; }
 
-        String digestUser = context.getStringData(userVariable);
-        String digestPwd = context.getStringData(passwordVariable);
+        String digestUser = getConfiguration(userVar);
+        String digestPwd = getConfiguration(passwordVar);
 
         URL url = new URL(request.getUrl());
 
@@ -446,8 +654,8 @@ public class WebServiceClient {
     protected HttpClientContext newDigestEnabledHttpContext(Request request) throws MalformedURLException {
         if (context == null) { return null; }
 
-        String realm = context.getStringData(WS_DIGEST_REALM);
-        String nounce = context.getStringData(WS_DIGEST_NONCE);
+        String realm = getConfiguration(WS_DIGEST_REALM);
+        String nounce = getConfiguration(WS_DIGEST_NONCE);
 
         // Generate DIGEST scheme object, initialize it and add it to the local auth cache
         DigestScheme digestAuth = new DigestScheme();
@@ -485,6 +693,7 @@ public class WebServiceClient {
 
         FileOutputStream fos = null;
         try {
+            // `FileUtils.openOutputStream` will ensure parent directories are available
             fos = FileUtils.openOutputStream(new File(saveTo));
             return IOUtils.copyLarge(responseBody, fos);
         } finally {
@@ -509,4 +718,36 @@ public class WebServiceClient {
         }
         return headers;
     }
+
+    protected boolean shouldLogDetail() {
+        return MapUtils.getBoolean(priorityConfigs, WS_LOG_DETAIL,
+                                   context.getBooleanData(WS_LOG_DETAIL, getDefaultBool(WS_LOG_DETAIL)));
+    }
+
+    protected boolean shouldLogSummary() {
+        return MapUtils.getBoolean(priorityConfigs, WS_LOG_SUMMARY,
+                                   context.getBooleanData(WS_LOG_SUMMARY, getDefaultBool(WS_LOG_SUMMARY)));
+    }
+
+    protected String getBasicUsername() { return getConfiguration(WS_BASIC_USER); }
+
+    protected String getBasicPassword() { return getConfiguration(WS_BASIC_PWD); }
+
+    protected String getConfiguration(String key) {
+        return MapUtils.getString(priorityConfigs, key, context.getStringData(key));
+    }
+
+    protected boolean isContextAsConfigDisabled() {
+        return MapUtils.getBoolean(priorityConfigs, WS_DISABLE_CONTEXT, false);
+    }
+
+    /**
+     * for internal use, Nexial should not utilize WebClient (and its dependent Request classes) using ExecutionContext,
+     * which contains user-specified settings that might affect Nexial's internal use of web services (such as
+     * downloading webdriver).
+     * @return
+     */
+    @Nullable
+    protected ExecutionContext resolveContextForRequest() { return isContextAsConfigDisabled() ? null : context; }
+
 }

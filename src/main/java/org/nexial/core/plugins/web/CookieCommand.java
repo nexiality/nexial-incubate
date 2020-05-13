@@ -17,9 +17,14 @@
 
 package org.nexial.core.plugins.web;
 
-import java.util.Set;
+import java.util.*;
+import java.util.stream.Collectors;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.jetbrains.annotations.NotNull;
+import org.nexial.commons.utils.RegexUtils;
+import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
 import org.nexial.core.plugins.RequireBrowser;
@@ -27,14 +32,11 @@ import org.nexial.core.plugins.base.BaseCommand;
 import org.openqa.selenium.Cookie;
 import org.openqa.selenium.WebDriver;
 
-import static org.nexial.core.utils.CheckUtils.requires;
+import static org.nexial.core.utils.CheckUtils.*;
 
 public class CookieCommand extends BaseCommand implements RequireBrowser {
     protected Browser browser;
     protected WebDriver driver;
-
-    @Override
-    public String getTarget() { return "webcookie"; }
 
     @Override
     public Browser getBrowser() { return browser; }
@@ -46,7 +48,17 @@ public class CookieCommand extends BaseCommand implements RequireBrowser {
     public void init(ExecutionContext context) {
         super.init(context);
         driver = null;
-        ensureWebDriver();
+        if (!context.isDelayBrowser()) { ensureWebDriver(); }
+    }
+
+    @Override
+    public String getTarget() { return "webcookie"; }
+
+    public StepResult save(String var, String name) {
+        requires(StringUtils.isNotBlank(var), "invalid variable name", var);
+        Cookie cookie = getCookie(name);
+        if (cookie != null) { context.setData(var, cookie); }
+        return StepResult.success("bound cookie named '" + name + "' saved as '" + var + "'");
     }
 
     public StepResult assertValue(String name, String value) {
@@ -71,18 +83,85 @@ public class CookieCommand extends BaseCommand implements RequireBrowser {
                               null);
     }
 
-    public StepResult save(String var, String name) {
-        requires(StringUtils.isNotBlank(var), "invalid variable name", var);
-        Cookie cookie = getCookie(name);
-        if (cookie != null) { context.setData(var, cookie); }
-        return StepResult.success("bound cookie named '" + name + "' saved as '" + var + "'");
-    }
-
     public StepResult saveAll(String var) {
         requires(StringUtils.isNotBlank(var), "invalid variable name", var);
         Set<Cookie> cookies = deriveCookieStore().getCookies();
         context.setData(var, cookies);
         return StepResult.success("all bound cookies saved to " + var);
+    }
+
+    public StepResult saveAllAsText(String var, String exclude) {
+        requires(StringUtils.isNotBlank(var), "invalid variable name", var);
+
+        List<String> excludedNames = context.isNullOrEmptyOrBlankValue(exclude) ?
+                                     TextUtils.toList(exclude, context.getTextDelim(), true) : new ArrayList<>();
+        Set<Cookie> cookies = deriveCookieStore().getCookies()
+                                                 .stream()
+                                                 .filter(cookie -> !excludedNames.contains(cookie.getName()))
+                                                 .collect(Collectors.toSet());
+        if (CollectionUtils.isNotEmpty(cookies)) {
+            Optional<String> cookieText = cookies.stream()
+                                                 .map(Cookie::toString)
+                                                 .reduce((cookie, cookie2) -> cookie + "; " + cookie2);
+            if (cookieText.isPresent()) {
+                context.setData(var, cookieText.get().replace(";;", ";"));
+                return StepResult.success("all bound cookies saved as text to %s, excluding %s", var, excludedNames);
+            }
+        }
+
+        context.removeData(var);
+        return StepResult.success("No cookies available to be saved as %s", var);
+    }
+
+    /**
+     * remove fields from cookie found in `var`
+     */
+    public StepResult clearCookieFields(String var, String remove) {
+        requiresValidVariableName(var);
+        requiresNotBlank(remove, "No fields specified to be removed");
+
+        if (!context.hasData(var)) { return StepResult.fail("No data variable named as '%s' is found", var); }
+
+        List<String> removeFields = TextUtils.toList(remove, context.getTextDelim(), true);
+
+        Object object = context.getObjectData(var);
+        if (object instanceof String) {
+            String cookieText = (String) object;
+            if (removeFields.contains("secure")) {
+                cookieText = StringUtils.remove(cookieText, "secure;");
+                removeFields.remove("secure");
+            }
+
+            for (String field : removeFields) {
+                cookieText = RegexUtils.removeMatches(cookieText, field + "=[^;]+; ");
+                cookieText = RegexUtils.removeMatches(cookieText, field + "=[^;]+;?$");
+            }
+
+            context.setData(var, cookieText);
+            return StepResult.success("cookie(s) updated to data variable '%s'", var);
+        }
+
+        if (object instanceof Set) {
+            Set set = (Set) object;
+            if (CollectionUtils.isEmpty(set)) { return StepResult.success("No cookies found as '%s'", var); }
+
+            Object[] objects = set.toArray();
+            if (!(objects[0] instanceof Cookie)) {
+                return StepResult.fail("Data variable '%s' does not contains cookie(s)", var);
+            }
+
+            Set<Cookie> cookies = new HashSet<>();
+            Arrays.stream(objects).forEach(c -> cookies.add(removeCookieFields((Cookie) c, removeFields)));
+            context.setData(var, cookies);
+            return StepResult.success("cookies updated to data variable '%s'", var);
+        }
+
+        if (object instanceof Cookie) {
+            context.setData(var, removeCookieFields(((Cookie) object), removeFields));
+            return StepResult.success("cookie updated to data variable '%s'", var);
+        }
+
+        return StepResult.fail("Data variable '%s' does not contains cookie(s)", var);
     }
 
     public StepResult delete(String name) {
@@ -101,24 +180,29 @@ public class CookieCommand extends BaseCommand implements RequireBrowser {
         return deriveCookieStore().getCookieNamed(name);
     }
 
-    protected WebDriver.Options deriveCookieStore() {
-        //if (context.getBrowser().isRunIE()) {
-        //	// IE-specific support... since IE driver can't focus on window by name
-        //	TargetLocator targetLocator = driver.switchTo();
-        //	Set<String> winHandles = driver.getWindowHandles();
-        //	for (String handle : winHandles) {
-        //		try {
-        //			return targetLocator.window(handle).manage();
-        //		} catch (Throwable e) {
-        //			// keep trying...
-        //			log("Unable to switch to window '" + handle + "': " + e.getMessage());
-        //			log("keep trying...");
-        //		}
-        //	}
-        //
-        //	throw new RuntimeException("Unable to swtich to an active window to retrieve cookies");
-        //}
+    protected String toCookieText(Set<Cookie> cookies) {
+        return cookies.stream()
+                      .map(Cookie::toString)
+                      .reduce((cookie, cookie2) -> cookie + "; " + cookie2)
+                      .map(s -> s.replace(";;", ";"))
+                      .orElse(null);
+    }
 
+    protected String toCookieText(Cookie cookie) { return cookie == null ? null : cookie.toString().replace(";;", ";");}
+
+    @NotNull
+    protected Cookie removeCookieFields(Cookie cookie, List<String> removeFields) {
+        String name = removeFields.contains("name") ? null : cookie.getName();
+        String value = removeFields.contains("name") ? null : cookie.getValue();
+        String domain = removeFields.contains("domain") ? null : cookie.getDomain();
+        String path = removeFields.contains("path") ? null : cookie.getPath();
+        Date expiry = removeFields.contains("expires") ? null : cookie.getExpiry();
+        boolean secure = !removeFields.contains("secure") && cookie.isSecure();
+
+        return new Cookie(name, value, domain, path, expiry, secure, cookie.isHttpOnly());
+    }
+
+    protected WebDriver.Options deriveCookieStore() {
         ensureWebDriver();
         return driver.manage();
     }

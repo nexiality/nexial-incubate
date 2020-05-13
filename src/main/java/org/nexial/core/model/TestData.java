@@ -28,6 +28,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.nexial.commons.utils.CollectionUtil;
+import org.nexial.core.CommandConst;
+import org.nexial.core.ExecutionInputPrep;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
@@ -35,12 +37,14 @@ import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.InputFileUtils;
 
 import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Exec.POST_EXEC_MAIL_TO;
+import static org.nexial.core.NexialConst.Iteration.*;
 import static org.nexial.core.NexialConst.*;
 
 /**
  * This represents a set of data usable for a specific test execution, which may contain multiple scenarios.
  * <p/>
- *
+ * <p>
  * Within the context of Nexial, there are 3 types of data definitions:
  * <ol>
  * <li>Predefined data that remains constant throughout an entire test execution (which could be multiple scenarios and
@@ -49,7 +53,7 @@ import static org.nexial.core.NexialConst.*;
  * <pre>
  *     nexial.scope.iteration=4                     # define that nexial should loop the specified test 4 times.
  *     nexial.scope.fallbackToPrevious=true         # define that missing data in current iteration should resolve to previous value.
- *     nexial.scope.mailTo=my_email@mycompany.com   # define that the test result should be sent as an email to the specified address.
+ *     nexial.mailTo=my_email@mycompany.com         # define that the test result should be sent as an email to the specified address.
  * </pre></li>
  * <li>Predefined data that could be altered between iterations. Such data names are prefixed with <code>nexial.</code>
  * The value of such data could be altered between iteration, either via data sheet or via variable-related commands, and
@@ -64,13 +68,13 @@ import static org.nexial.core.NexialConst.*;
  * <code>nexial.</code>  Nexial users are free to define any names or values.  Using <code>nexial.scope.iteration</code>
  * and <code>nexial.scope.fallbackToPrevious</code> one can control how Nexial handle data values between iterations.</li>
  * </ol>
- *
+ * <p>
  * It is noteworthy that non-scoped data can be altered as a test execution progresses.  The altered data would impacting
  * the subsequent test scenarios/cases/steps.  The progressive data management is by design. The ability to "remember" data
  * states would allow a more meaningful and dynamic way to execute tests, esp. for tests that spread across multiple
  * scenarios. However data changes and the transitive behavior will not persists between test execution.
  * <p/>
- *
+ * <p>
  * In addition, it is possible to specify multiple data sheets where the latter overrides the former.  All the data sheets
  * are read and parsed in the beginning of a test execution.  Hence it is possible to alter the behavior of a test without
  * modifying existing test scripts or test data.
@@ -86,6 +90,7 @@ public class TestData {
     private Map<String, String> scopeSettings = new HashMap<>();
     private Map<String, List<String>> dataMap = new HashMap<>();
     private Map<String, List<String>> defaultDataMap = new HashMap<>();
+    private Map<String, List<String>> runtimeDataMap = new HashMap<>();
 
     public TestData(Excel excel, List<String> dataSheetNames) {
         assert excel != null && excel.getFile() != null && CollectionUtils.isNotEmpty(dataSheetNames);
@@ -119,16 +124,14 @@ public class TestData {
         System.setProperty(SCRIPT_REF_PREFIX + DATA_FILE, dataFile.getName());
     }
 
-    public String getMailTo() { return getSetting(MAIL_TO); }
+    public String getMailTo() { return getSetting(POST_EXEC_MAIL_TO); }
 
-    public int getIteration() {
-        String iteration = getSetting(ITERATION);
-        return NumberUtils.isDigits(iteration) ?
-               NumberUtils.toInt(iteration) :
-               NumberUtils.toInt(StringUtils.substringBefore(iteration, "-"));
+    public String getIteration() { return getSetting(ITERATION); }
+
+    public IterationManager getIterationManager() {
+        // can't save as instance variable due to the nature of how scopeSetting is collected in constructor...
+        return IterationManager.newInstance(getSetting(ITERATION));
     }
-
-    public IterationManager getIterationManager() { return IterationManager.newInstance(getSetting(ITERATION)); }
 
     public boolean isFallbackToPrevious() { return getSettingAsBoolean(FALLBACK_TO_PREVIOUS); }
 
@@ -142,14 +145,14 @@ public class TestData {
 
     /**
      * favor system property over scope settings.  that way we can create just-in-time override from commandline.
-     *
+     * <p>
      * Order:
      * <ol>
      * <li>System property</li>
      * <li>scope setting (i.e. <code>nexial.scope.*</code>, <code>nexial.project</code>,
      * <code>nexial.projectBase</code>, <code>nexial.outBase</code>, <code>nexial.scriptBase</code>,
      * <code>nexial.dataBase</code>, <code>nexial.planBase</code>)</li>
-     * <li>default scope settings (@link #SCOPE_SETTING_DEFAULTS)</li>
+     * <li>default scope settings ({@link #SCOPE_SETTING_DEFAULTS})</li>
      * </ol>
      */
     public String getSetting(String name) {
@@ -241,6 +244,35 @@ public class TestData {
         scopeSettings.put(OPT_PLAN_DIR, project.getPlanPath());
     }
 
+    Map<String, List<String>> getRuntimeDataMap() { return runtimeDataMap; }
+
+    // add existing runtime data from previous iteration if any
+    void addExistingRuntimeData(Map<String, List<String>> runtimeDataMap) {
+        if (runtimeDataMap.isEmpty()) { return; }
+
+        runtimeDataMap.forEach((key, value) -> {
+            if (!dataMap.containsKey(key)) { dataMap.put(key, value); }
+            this.runtimeDataMap.put(key, value);
+        });
+    }
+
+    // add runtime data to dataMap when variable is assigned from console
+    void addRuntimeData(String name, String value, int currIteration) {
+        if (isFallbackToPrevious() && dataMap.containsKey(name)) { return; }
+
+        // get dataMap if available
+        List<String> data = dataMap.containsKey(name) ? dataMap.get(name) : new ArrayList<>();
+        int highestIteration = getIterationManager().getHighestIteration();
+
+        data = data.size() == 0 && runtimeDataMap.containsKey(name) ? runtimeDataMap.get(name) : data;
+        while (data.size() < highestIteration) { data.add(""); }
+        data.set(currIteration - 1, value);
+
+        dataMap.put(name, data);
+        // add to runtime data as well to keep track in next iterations
+        runtimeDataMap.put(name, data);
+    }
+
     protected void collectData(Worksheet sheet) {
         String sheetName = sheet.getName();
         boolean isDefault = StringUtils.equals(sheetName, SHEET_DEFAULT_DATA);
@@ -263,24 +295,28 @@ public class TestData {
             int endColumnIndex = sheet.findLastDataColumn(new ExcelAddress("A" + i));
             String endColumn = ExcelAddress.toLetterCellRef(endColumnIndex);
             ExcelAddress addrThisRow = new ExcelAddress("A" + i + ":" + endColumn + i);
-            List<List<XSSFCell>> row = sheet.cells(addrThisRow);
+            List<List<XSSFCell>> rows = sheet.cells(addrThisRow);
 
             // capture only nexial scope data
-            if (CollectionUtils.isEmpty(row) || CollectionUtils.isEmpty(row.get(0))) {
+            if (CollectionUtils.isEmpty(rows) || CollectionUtils.isEmpty(rows.get(0))) {
                 throw new IllegalArgumentException(errPrefix + "no data or no wrong format found at " + addrThisRow);
             }
 
-            if (CollectionUtils.size(row.get(0)) < 2) { continue; }
+            List<XSSFCell> row = rows.get(0);
+            if (CollectionUtils.size(row) < 2) { continue; }
 
             // column A must be defined with data name
-            XSSFCell headerCell = row.get(0).get(0);
+            XSSFCell headerCell = row.get(0);
+
+            if (ExecutionInputPrep.isDataStepDisabled(headerCell)) { continue; }
+
             String name = Excel.getCellValue(headerCell);
             if (StringUtils.isBlank(name)) {
                 throw new IllegalArgumentException(errPrefix + "no data name defined at A" + i);
             }
 
-            if (StringUtils.startsWith(name, SCOPE)) {
-                XSSFCell dataCell = row.get(0).get(1);
+            if (CommandConst.isNonIterableVariable(name)) {
+                XSSFCell dataCell = row.get(1);
                 String dataCellValue = Excel.getCellValue(dataCell);
                 if (StringUtils.isBlank(dataCellValue)) { continue; }
                 scopeSettings.put(name, dataCellValue);
@@ -298,8 +334,11 @@ public class TestData {
             // no need for empty/bad row checks since we did it in the first pass
 
             List<XSSFCell> row = sheet.cells(addrThisRow).get(0);
-            String name = Excel.getCellValue(row.get(0));
-            if (!StringUtils.startsWith(name, SCOPE)) {
+            XSSFCell headerCell = row.get(0);
+            if (ExecutionInputPrep.isDataStepDisabled(headerCell)) { continue; }
+
+            String name = Excel.getCellValue(headerCell);
+            if (!CommandConst.isNonIterableVariable(name)) {
                 collectIterationData(row, lastIteration, name, dataMap);
 
                 // keep track of the data specified in #default sheet so that they can be overriden in
@@ -375,15 +414,15 @@ public class TestData {
             // (2018/12/06,automike):             able by all subsequent scripts within same plan.
 
             // if (isDefinedAsDefault(name)) {
-                String stringValue = Objects.toString(value);
+            String stringValue = Objects.toString(value);
 
-                // we should be sync'ing back value to its initial iteration, not the current/latest iteration
-                List<String> data = dataMap.get(name);
-                if (CollectionUtils.size(data) < lastIteration) {
-                    if (CollectionUtils.isEmpty(data)) { data = new ArrayList<>(); }
-                    for (int i = 0; i < lastIteration; i++) { if (data.size() <= i) { data.add(i, null); } }
-                }
-                data.set((lastIteration - 1), stringValue);
+            // we should be sync'ing back value to its initial iteration, not the current/latest iteration
+            List<String> data = dataMap.get(name);
+            if (CollectionUtils.size(data) < lastIteration) {
+                if (CollectionUtils.isEmpty(data)) { data = new ArrayList<>(); }
+                for (int i = 0; i < lastIteration; i++) { if (data.size() <= i) { data.add(i, null); } }
+            }
+            data.set((lastIteration - 1), stringValue);
             // }
         });
     }

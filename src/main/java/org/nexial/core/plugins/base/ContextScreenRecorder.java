@@ -32,6 +32,8 @@ import org.nexial.core.variable.Syspath;
 import static java.io.File.separator;
 import static org.nexial.core.NexialConst.Data.*;
 import static org.nexial.core.NexialConst.Project.appendCapture;
+import static org.nexial.core.SystemVariables.getDefault;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 
 /**
  * main delegate for various screen recording strategies
@@ -52,14 +54,18 @@ public class ContextScreenRecorder {
     public boolean isRecordingEnabled() { return isRecordingEnabled(context); }
 
     public static boolean isRecordingEnabled(ExecutionContext context) {
-        return context.getBooleanData(RECORDING_ENABLED, DEF_RECORDING_ENABLED);
+        return context.getBooleanData(RECORDING_ENABLED, getDefaultBool(RECORDING_ENABLED));
     }
+
+    public String getVideoFile() { return videoFile; }
 
     public void start(TestStep startsFrom) throws IOException {
         sanityCheck();
 
         if (startsFrom == null) {
             screenRecorder.start();
+            videoFile = screenRecorder.getVideoFile();
+            isVideoRunning = true;
             return;
         }
 
@@ -83,16 +89,14 @@ public class ContextScreenRecorder {
         screenRecorder.stop();
         isVideoRunning = false;
 
-        if (videoFile != null && context != null) {
-            String outputUrl = context.isOutputToCloud() ?
-                               context.getOtc().importMedia(new File(videoFile)) :
-                               context.resolveRunModeSpecificUrl(videoFile);
-            TestStep currentTestStep = context.getCurrentTestStep();
-            if (currentTestStep != null) {
-                currentTestStep.addNestedScreenCapture(outputUrl, "recording from " + startingLocation + " stopped");
-            }
-            ConsoleUtils.log("recording saved and is accessible via " + outputUrl);
-        }
+        // if (videoFile != null && context != null) {
+        //     String link = context.isOutputToCloud() ? context.getOtc().importMedia(new File(videoFile)) : videoFile;
+        //     TestStep currentTestStep = context.getCurrentTestStep();
+        //     if (currentTestStep != null) {
+        //         currentTestStep.addNestedScreenCapture(link, "recording from " + startingLocation + " stopped");
+        //     }
+        //     ConsoleUtils.log("recording saved and is accessible via " + link);
+        // }
     }
 
     public static ContextScreenRecorder newInstance(ExecutionContext context) throws AWTException, IOException {
@@ -101,7 +105,7 @@ public class ContextScreenRecorder {
         ContextScreenRecorder self = new ContextScreenRecorder();
         self.context = context;
 
-        String recorderType = context.getStringData(RECORDER_TYPE);
+        String recorderType = context.getStringData(RECORDER_TYPE, getDefault(RECORDER_TYPE));
         if (StringUtils.equals(recorderType, RECORDER_TYPE_MP4)) {
             self.screenRecorder = new Mp4ScreenRecorder();
             self.fileExt = RECORDER_TYPE_MP4;

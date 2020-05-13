@@ -17,10 +17,7 @@
 
 package org.nexial.commons.utils;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -28,11 +25,14 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.io.FileUtils;
@@ -53,9 +53,6 @@ import static org.apache.commons.io.comparator.PathFileComparator.PATH_REVERSE;
 import static org.nexial.core.NexialConst.DEF_CHARSET;
 import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
-/**
- *
- */
 public final class FileUtil {
     /**
      * options to sort files in different ways
@@ -244,6 +241,15 @@ public final class FileUtil {
         FileUtils.writeStringToFile(file, buffer.toString(), DEF_CHARSET, false);
     }
 
+    public static void removeFileEndLineFeed(File file) throws IOException {
+        if (!isFileReadable(file, 1)) { return; }
+
+        String content = FileUtils.readFileToString(file, DEF_FILE_ENCODING);
+        while (StringUtils.endsWith(content, "\n")) { content = StringUtils.removeEnd(content, "\n"); }
+        while (StringUtils.endsWith(content, "\r\n")) { content = StringUtils.removeEnd(content, "\r\n"); }
+        FileUtils.writeStringToFile(file, content, DEF_FILE_ENCODING);
+    }
+
     /** return true if {@code path} is a valid directory and readable by the current run user. */
     public static boolean isDirectoryReadable(String path) {
         return !StringUtils.isBlank(path) && isDirectoryReadable(new File(path));
@@ -277,14 +283,14 @@ public final class FileUtil {
      * is -1, then it's ignored.
      */
     public static boolean isFileReadable(String file, long minFileSize) {
-        return !StringUtils.isBlank(file) && isFileReadable(new File(file), minFileSize);
+        return StringUtils.isNotBlank(file) && isFileReadable(new File(file), minFileSize);
     }
 
     /** return true if {@code file} is readable. */
     public static boolean isFileReadable(String file) { return isFileReadable(file, -1); }
 
     public static boolean isFileExecutable(String file) {
-        return !StringUtils.isBlank(file) && isFileExecutable(new File(file));
+        return StringUtils.isNotBlank(file) && isFileExecutable(new File(file));
     }
 
     public static boolean isFileExecutable(File file) {
@@ -500,16 +506,53 @@ public final class FileUtil {
         }
     }
 
+    public static void addToJar(File source, JarOutputStream target, String parent)
+        throws IOException {
+        String name =
+            StringUtils.substringAfter(
+                StringUtils.appendIfMissing(source.getPath().replace("\\", "/"), "/").trim(),
+                StringUtils.replace(parent, "\\", "/"));
+
+        BufferedInputStream in = null;
+        try {
+            JarEntry entry = new JarEntry(name);
+            entry.setTime(source.lastModified());
+            target.putNextEntry(entry);
+
+            if (source.isDirectory()) {
+                target.closeEntry();
+                File[] files = source.listFiles();
+                if (files != null && files.length > 0) {
+                    for (File nestedFile : files) { addToJar(nestedFile, target, parent); }
+                }
+                return;
+            }
+
+            in = new BufferedInputStream(new FileInputStream(source));
+
+            byte[] buffer = new byte[1024];
+            while (true) {
+                int count = in.read(buffer);
+                if (count == -1) { break; }
+                target.write(buffer, 0, count);
+            }
+
+            target.closeEntry();
+        } finally {
+            if (in != null) { in.close(); }
+        }
+    }
+
     public static boolean isSuitableAsPath(String contentOrFile) {
         return StringUtils.containsNone(contentOrFile, '\n', '\r', '\t', '{', '}', '?', '<', '>', '|');
     }
 
     /**
      * extract just the file name portion of a path.
-     *
+     * <p>
      * The reason for this method is to allow for discovery of the "file name" without going to underlying OS.  The
      * {@code path} in question could represent a remote path, which cannot be validated locally.
-     *
+     * <p>
      * If {@code path} ends with path separator (/ or \), then an empty string is returned.
      */
     public static String extractFilename(String path) {
@@ -519,4 +562,41 @@ public final class FileUtil {
         return !StringUtils.contains(path, "/") ? path : StringUtils.substringAfterLast(path, "/");
     }
 
+    @NotNull
+    public static File makeParentDir(String path) {
+        File target = new File(path);
+        if (!isDirectoryReadable(path)) {
+            try {
+                FileUtils.forceMkdirParent(target);
+            } catch (IOException e) {
+                throw new IllegalArgumentException("Unable to create directory for '" + path + "'");
+            }
+        }
+        return target;
+    }
+
+    @NotNull
+    public static File writeBinaryFile(String path, boolean append, byte[] bytes) {
+        File target = makeParentDir(path);
+
+        DataOutputStream dos = null;
+        try {
+            dos = new DataOutputStream(new FileOutputStream(target, append));
+            dos.write(bytes);
+
+            ConsoleUtils.log("content base64 decoded and " + (append ? "appended" : "saved") +
+                             " to '" + path + "'");
+            return target;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Unable to write to " + path + ": " + e.getMessage(), e);
+        } finally {
+            if (dos != null) {
+                try {
+                    dos.close();
+                } catch (IOException e) {
+                    ConsoleUtils.error("Error occurred while saving '" + path + "': " + e.getMessage());
+                }
+            }
+        }
+    }
 }

@@ -19,6 +19,7 @@ package org.nexial.core.plugins.base;
 
 import java.awt.*;
 import java.awt.image.*;
+import java.io.File;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -69,11 +70,14 @@ public class Mp4ScreenRecorder extends MediaToolAdapter implements Runnable, Scr
     }
 
     public Mp4ScreenRecorder() throws AWTException {
-        screenBounds = getRequiredBounds();
+        screenBounds = AwtUtils.getScreenDimension(0);
         robot = new Robot();
         pool = Executors.newScheduledThreadPool(1);
         ShutdownAdvisor.addAdvisor(this);
     }
+
+    @Override
+    public String getVideoFile() { return targetVideoFile; }
 
     @Override
     public void start() {
@@ -85,6 +89,7 @@ public class Mp4ScreenRecorder extends MediaToolAdapter implements Runnable, Scr
             separator +
             RandomStringUtils.randomAlphabetic(10) +
             "." + RECORDER_TYPE_MP4;
+        new File(targetVideoFile).getParentFile().mkdirs();
         startCapture();
     }
 
@@ -124,9 +129,7 @@ public class Mp4ScreenRecorder extends MediaToolAdapter implements Runnable, Scr
     public boolean mustForcefullyTerminate() { return true; }
 
     @Override
-    public void forcefulTerminate() {
-        stop();
-    }
+    public void forcefulTerminate() { stop(); }
 
     public static BufferedImage convertToType(BufferedImage sourceImage, int targetType) {
         BufferedImage image;
@@ -154,17 +157,6 @@ public class Mp4ScreenRecorder extends MediaToolAdapter implements Runnable, Scr
 
         startTime = System.nanoTime();
         pool.scheduleAtFixedRate(this, 0L, (long) (1000.0 / DEF_FRAME_RATE), MILLISECONDS);
-    }
-
-    private static Dimension getRequiredBounds() {
-        GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
-        GraphicsDevice[] screens = ge.getScreenDevices();
-        GraphicsConfiguration[] screenConfig = screens[0].getConfigurations();
-
-        Dimension allBounds = new Dimension();
-        allBounds.width = screenConfig[0].getBounds().width;
-        allBounds.height = screenConfig[0].getBounds().height;
-        return allBounds;
     }
 }
 

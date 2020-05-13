@@ -42,6 +42,9 @@ import com.google.gson.JsonObject;
 
 import static java.io.File.separator;
 import static org.nexial.core.NexialConst.GSON;
+import static org.nexial.core.NexialConst.NL;
+import static org.nexial.core.tools.CliConst.OPT_VERBOSE;
+import static org.nexial.core.tools.CliUtils.newArgOption;
 
 /**
  * utility to update XPaths of one or more Desktop JSON configuration files
@@ -61,9 +64,10 @@ public class DesktopXpathUpdater {
 
     protected void initOptions() {
         cmdOptions = new Options();
-        cmdOptions.addOption("v", "verbose", false, "Turn on verbose logging.");
-        cmdOptions.addOption("t", "target", true, "[REQUIRED] Location of a single JSON test script or a " +
-                                                  "directory to update.");
+        cmdOptions.addOption(OPT_VERBOSE);
+        cmdOptions.addOption(newArgOption("t", "target",
+                                          "[REQUIRED] Location of a single JSON test script or a directory to update.",
+                                          true));
     }
 
     protected void parseCLIOptions(CommandLine cmd) {
@@ -179,7 +183,7 @@ public class DesktopXpathUpdater {
             updater.parseCLIOptions(args);
             return updater;
         } catch (Exception e) {
-            System.err.println("\nERROR: " + e.getMessage() + "\n");
+            System.err.println(NL + "ERROR: " + e.getMessage() + NL);
             HelpFormatter formatter = new HelpFormatter();
             formatter.printHelp(DesktopXpathUpdater.class.getName(), updater.cmdOptions, true);
             return null;

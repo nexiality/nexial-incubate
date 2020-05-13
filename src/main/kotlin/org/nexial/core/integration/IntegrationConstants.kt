@@ -27,7 +27,7 @@ const val JIRA_ISSUE_LINK_URL = "issueLinkUrl"
 // slack actions
 // comment
 const val SLACK_CHAT_URL = "chatUrl"
-const val SLACK_COMMENT_BODY = "slackCommentBody"
+const val SLACK_COMMENT_BODY ="slackCommentBody"
 
 // templates
 const val COMMENT_ENDPOINT = "addComment"

@@ -57,11 +57,7 @@ public class RecordBean extends ListOrderedMap<String, FieldBean> {
         return skippedMsg;
     }
 
-    public void setSkippedMsg(String skippedMsg) {
-        this.skippedMsg = skippedMsg;
-    }
-
-    public void collectErrors() {
+    public void collectErrors(){
         List<Error> allErrors = new ArrayList<>();
 
         int totalWarnings = recordData.getTotalRecordsWarning();
@@ -87,6 +83,10 @@ public class RecordBean extends ListOrderedMap<String, FieldBean> {
         setErrors(allErrors);
     }
 
+    public void setSkippedMsg(String skippedMsg) {
+        this.skippedMsg = skippedMsg;
+    }
+
     public List<Error> getErrors() {
         return errors;
     }
@@ -108,6 +108,7 @@ public class RecordBean extends ListOrderedMap<String, FieldBean> {
     public void setRecordData(RecordData recordData) { this.recordData = recordData; }
 
     public List<FieldBean> getFields() { return fields; }
+
 
     public void setFields(List<FieldBean> fields) {
         this.fields = fields;

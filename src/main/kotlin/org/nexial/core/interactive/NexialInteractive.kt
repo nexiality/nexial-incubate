@@ -24,18 +24,24 @@ import org.nexial.commons.logging.LogbackUtils
 import org.nexial.commons.proc.RuntimeUtils
 import org.nexial.commons.utils.RegexUtils
 import org.nexial.commons.utils.TextUtils
+import org.nexial.core.CommandConst.CMD_REPEAT_UNTIL
+import org.nexial.core.CommandConst.CMD_SECTION
 import org.nexial.core.ExecutionInputPrep
 import org.nexial.core.ExecutionThread
+import org.nexial.core.NexialConst.*
 import org.nexial.core.NexialConst.Data.*
-import org.nexial.core.NexialConst.OPT_LAST_OUTCOME
+import org.nexial.core.NexialConst.Iteration.CURR_ITERATION
 import org.nexial.core.NexialConst.Project.appendLog
 import org.nexial.core.excel.Excel
+import org.nexial.core.excel.ExcelConfig.MSG_SKIPPED
+import org.nexial.core.excel.ExcelStyleHelper
 import org.nexial.core.interactive.InteractiveConsole.Commands.ALL_STEP
 import org.nexial.core.interactive.InteractiveConsole.Commands.EXIT
 import org.nexial.core.interactive.InteractiveConsole.Commands.HELP
 import org.nexial.core.interactive.InteractiveConsole.Commands.INSPECT
 import org.nexial.core.interactive.InteractiveConsole.Commands.OPEN_DATA
 import org.nexial.core.interactive.InteractiveConsole.Commands.OPEN_SCRIPT
+import org.nexial.core.interactive.InteractiveConsole.Commands.RELOAD_ALL
 import org.nexial.core.interactive.InteractiveConsole.Commands.RELOAD_DATA
 import org.nexial.core.interactive.InteractiveConsole.Commands.RELOAD_MENU
 import org.nexial.core.interactive.InteractiveConsole.Commands.RELOAD_PROJPROP
@@ -47,6 +53,7 @@ import org.nexial.core.interactive.InteractiveConsole.Commands.SET_ITER
 import org.nexial.core.interactive.InteractiveConsole.Commands.SET_SCENARIO
 import org.nexial.core.interactive.InteractiveConsole.Commands.SET_SCRIPT
 import org.nexial.core.interactive.InteractiveConsole.Commands.SET_STEPS
+import org.nexial.core.interactive.InteractiveConsole.Commands.TOGGLE_RECORDING
 import org.nexial.core.model.ExecutionContext
 import org.nexial.core.model.ExecutionDefinition
 import org.nexial.core.model.ExecutionSummary
@@ -58,14 +65,12 @@ import org.nexial.core.utils.ConsoleUtils
 import org.nexial.core.utils.ExecUtils
 import java.io.File
 import java.util.*
-import javax.validation.constraints.NotNull
 
 class NexialInteractive {
-    // todo: disable during jenkins or junit run
-    // todo: enable video recording
-    // todo: save session
-
     lateinit var executionDefinition: ExecutionDefinition
+    private val tmpComma = "~~!@!~~"
+    private val rangeSeparator = "-"
+    private val listSeparator = ","
 
     fun startSession() {
         // start of test suite (one per test plan in execution)
@@ -85,8 +90,6 @@ class NexialInteractive {
         processMenu(session)
     }
 
-    private val tmpComma = "~~!@!~~"
-
     private fun processMenu(session: InteractiveSession) {
         var proceed = true
         while (proceed) {
@@ -96,7 +99,7 @@ class NexialInteractive {
             val argument = StringUtils.trim(StringUtils.substringAfter(input, " "))
 
             when (command) {
-                SET_SCRIPT      -> {
+                SET_SCRIPT       -> {
                     if (StringUtils.isBlank(argument)) {
                         ConsoleUtils.error("No test script assigned")
                     } else {
@@ -104,7 +107,7 @@ class NexialInteractive {
                     }
                 }
 
-                SET_DATA        -> {
+                SET_DATA         -> {
                     if (StringUtils.isBlank(argument)) {
                         ConsoleUtils.error("No data file assigned")
                     } else {
@@ -112,15 +115,16 @@ class NexialInteractive {
                     }
                 }
 
-                SET_SCENARIO    -> {
+                SET_SCENARIO     -> {
                     if (StringUtils.isBlank(argument)) {
                         ConsoleUtils.error("No scenario assigned")
                     } else {
                         session.scenario = argument
+                        session.reloadTestScript()
                     }
                 }
 
-                SET_ITER        -> {
+                SET_ITER         -> {
                     if (StringUtils.isBlank(argument)) {
                         ConsoleUtils.error("No iteration assigned")
                     } else {
@@ -128,16 +132,15 @@ class NexialInteractive {
                     }
                 }
 
-                SET_ACTIVITY    -> {
+                SET_ACTIVITY     -> {
                     if (StringUtils.isBlank(argument)) {
                         ConsoleUtils.error("No activity assigned")
                     } else {
-                        session.assignActivities(TextUtils.replaceItems(TextUtils.toList(
-                            StringUtils.replace(argument, "\\,", tmpComma), LIST_SEP, true), tmpComma, ","))
+                        session.assignActivities(TextUtils.replaceItems(toSteps(argument), tmpComma, ","))
                     }
                 }
 
-                SET_STEPS       -> {
+                SET_STEPS        -> {
                     // steps can be range (dash) or comma-separated
                     if (StringUtils.isBlank(argument)) {
                         ConsoleUtils.error("No test step assigned")
@@ -147,41 +150,48 @@ class NexialInteractive {
                     }
                 }
 
-                RELOAD_SCRIPT   -> {
+                RELOAD_SCRIPT    -> {
                     session.reloadTestScript()
                     InteractiveConsole.showMenu(session)
                 }
 
-                RELOAD_DATA     -> {
+                RELOAD_DATA      -> {
                     session.reloadDataFile()
                     InteractiveConsole.showMenu(session)
                 }
 
-                RELOAD_PROJPROP -> {
+                RELOAD_PROJPROP  -> {
                     session.reloadProjectProperties()
                     InteractiveConsole.showMenu(session)
                 }
 
-                RELOAD_MENU     -> {
+                RELOAD_ALL       -> {
+                    session.reloadDataFile()
+                    session.reloadProjectProperties()
+                    session.reloadTestScript()
                     InteractiveConsole.showMenu(session)
                 }
 
-                RUN             -> {
+                RELOAD_MENU      -> {
+                    InteractiveConsole.showMenu(session)
+                }
+
+                RUN              -> {
                     execute(session)
                     InteractiveConsole.showMenu(session)
                 }
 
-                INSPECT         -> {
+                INSPECT          -> {
                     inspect(session)
                     InteractiveConsole.showMenu(session)
                 }
 
-                ALL_STEP        -> {
+                ALL_STEP         -> {
                     session.useAllActivities()
                     InteractiveConsole.showMenu(session)
                 }
 
-                OPEN_SCRIPT     -> {
+                OPEN_SCRIPT      -> {
                     if (StringUtils.isBlank(session.script)) {
                         ConsoleUtils.error("No valid test script assigned")
                     } else {
@@ -189,7 +199,7 @@ class NexialInteractive {
                     }
                 }
 
-                OPEN_DATA       -> {
+                OPEN_DATA        -> {
                     if (StringUtils.isBlank(session.dataFile)) {
                         ConsoleUtils.error("No valid data file assigned")
                     } else {
@@ -197,24 +207,28 @@ class NexialInteractive {
                     }
                 }
 
-                HELP            -> {
+                TOGGLE_RECORDING -> {
+                    toggleRecording(session)
+                    InteractiveConsole.showMenu(session)
+                }
+
+                HELP             -> {
                     InteractiveConsole.showHelp(session)
                     InteractiveConsole.showMenu(session)
                 }
 
-                EXIT            -> {
+                EXIT             -> {
                     proceed = false
                     ConsoleUtils.log("Ending Nexial Interactive session...")
                 }
 
-                else            -> {
+                else             -> {
                     ConsoleUtils.error("Unknown command $input. Try again...")
                 }
             }
         }
     }
 
-    @NotNull
     private fun toSteps(argument: String): MutableList<String> {
         if (argument == "*") return mutableListOf("*")
 
@@ -223,36 +237,20 @@ class NexialInteractive {
             val range = RegexUtils.firstMatches(steps, "(\\d+\\-\\d+)")
             if (StringUtils.isBlank(range)) break
 
-            val startNum = NumberUtils.toInt(StringUtils.substringBefore(range, RANGE_SEP))
-            val endNum = NumberUtils.toInt(StringUtils.substringAfter(range, RANGE_SEP))
+            val startNum = NumberUtils.toInt(StringUtils.substringBefore(range, rangeSeparator))
+            val endNum = NumberUtils.toInt(StringUtils.substringAfter(range, rangeSeparator))
             val numberRange = StringBuilder()
-            for (i in startNum..endNum) numberRange.append(i).append(LIST_SEP)
-            steps = StringUtils.replace(steps, range, StringUtils.removeEnd(numberRange.toString() + "", LIST_SEP))
+            for (i in startNum..endNum) numberRange.append(i).append(listSeparator)
+            steps = StringUtils.replace(steps, range, StringUtils.removeEnd(numberRange.toString() + "", listSeparator))
         }
 
         steps = RegExUtils.removeAll(steps, "\\ \\t\\n\\r")
-        return TextUtils.toList(steps, LIST_SEP, true)
+        return TextUtils.toList(steps, listSeparator, true)
     }
 
-    private fun inspect(session: InteractiveSession) {
-        ExecutionThread.set(session.context)
+    private fun inspect(session: InteractiveSession) = session.executionInspector.inspect()
 
-        print("> inspect: ")
-        val `in` = Scanner(System.`in`)
-        var input = `in`.nextLine()
-
-        while (StringUtils.isNotBlank(input)) {
-            try {
-                println(session.context.replaceTokens(input))
-            } catch (e: Throwable) {
-                ConsoleUtils.error("ERROR on '" + input + "' - " + e.message)
-            }
-
-            println()
-            print("> inspect: ")
-            input = `in`.nextLine()
-        }
-    }
+    private fun toggleRecording(session: InteractiveSession) = session.executionRecorder.toggleRecording()
 
     private fun execute(session: InteractiveSession) {
         // sanity check
@@ -274,24 +272,22 @@ class NexialInteractive {
         val context = session.context
 
         val runId = context.runId
-        val currIteration = session.iteration
+        val iterationRef = session.iteration
 
         context.setCurrentActivity(null)
         context.isFailImmediate = false
+        context.isEndImmediate = false
+        context.isBreakCurrentIteration = false
         context.setData(OPT_LAST_OUTCOME, true)
-        context.removeData(BREAK_CURRENT_ITERATION)
-        context.setData(CURR_ITERATION, currIteration)
+        context.setData(CURR_ITERATION, iterationRef)
 
         val scriptLocation = executionDefinition.testScript
         val testData = executionDefinition.testData
         val iterationManager = testData.iterationManager
-        val iteration = iterationManager.getIterationRef(currIteration - 1)
-
         ConsoleUtils.log(runId, "executing $scriptLocation. $iterationManager")
 
         ExecutionThread.set(context)
 
-        var allPass = true
         var targetScenario: TestScenario?
         var scenarioSummary: ExecutionSummary? = null
 
@@ -300,7 +296,8 @@ class NexialInteractive {
 
             var testScript = session.inflightScript
             if (testScript == null) {
-                testScript = ExecutionInputPrep.prep(runId, executionDefinition, iteration, currIteration)
+                // always running only 1 iteration.
+                testScript = ExecutionInputPrep.prep(runId, executionDefinition, 1)
                 context.useTestScript(testScript)
                 session.inflightScript = testScript
             }
@@ -332,12 +329,12 @@ class NexialInteractive {
 
             // re-init scenario ref data
             context.clearScenarioRefData()
-            ref.forEach { name, value -> context.setData(SCENARIO_REF_PREFIX + name, context.replaceTokens(value)) }
+            ref.forEach { (name, value) -> context.setData(SCENARIO_REF_PREFIX + name, context.replaceTokens(value)) }
 
             // reset for this run
             scenarioSummary = resetScenarioExecutionSummary(session, targetScenario)
 
-            allPass = if (session.activities.isNotEmpty())
+            if (session.activities.isNotEmpty())
                 executeActivities(session, scenarioSummary)
             else
                 executeSteps(session, scenarioSummary)
@@ -349,11 +346,9 @@ class NexialInteractive {
             context.removeData(BREAK_CURRENT_ITERATION)
 
             context.markExecutionEnd()
-            if (scenarioSummary != null) {
-                scenarioSummary.endTime = context.endTimestamp
-            }
+            if (scenarioSummary != null) scenarioSummary.endTime = context.endTimestamp
 
-            postExecution(allPass, session)
+            postExecution(session)
 
             // context.endIteration();
             ExecutionThread.unset()
@@ -390,9 +385,20 @@ class NexialInteractive {
         val steps = session.steps
         parentSummary!!.totalSteps = steps.size
 
+        val sectionStepsToSkip = mutableListOf<Int>()
+
         var allPass = true
         for (testStepId in steps) {
-            val testStep = scenario.getTestStepByRowIndex(NumberUtils.toInt(testStepId))
+            val rowIndex = NumberUtils.toInt(testStepId)
+
+            // perhaps the current step is marked as SKIP due to its enclosing "section" being skipped
+            if (sectionStepsToSkip.contains(rowIndex)) {
+                val skipStep = scenario.getTestStepByRowIndex(rowIndex)
+                if (skipStep != null) context.logger.log(skipStep, "$MSG_SKIPPED $NESTED_SECTION_STEP_SKIPPED")
+                continue
+            }
+
+            val testStep = scenario.getTestStepByRowIndex(rowIndex) ?: break
 
             val stepSummary = ExecutionSummary()
             stepSummary.name = "[ROW " + StringUtils.leftPad(testStepId + "", 3) + "]"
@@ -406,26 +412,38 @@ class NexialInteractive {
             parentSummary.addNestSummary(stepSummary)
 
             if (context.isEndImmediate) {
-                // parentSummary.adjustTotalSteps(-1);
                 stepSummary.adjustTotalSteps(-1)
                 break
             }
 
+            val commandFQN = testStep.commandFQN
             if (result.isSkipped) {
-                // parentSummary.adjustTotalSteps(-1);
                 stepSummary.adjustTotalSteps(-1)
+
+                // special treatment for `base.section()`
+                if (StringUtils.equals(commandFQN, CMD_SECTION)) {
+                    ExcelStyleHelper.formatSectionDescription(testStep, false)
+
+                    // now, jolt down all the steps we need to skip since this section is now SKIPPED
+                    // `testStep.getParams().get(0)` represents the number of steps of this `section`
+                    val stepsToSkip = testStep.params[0].toInt()
+                    for (j in (rowIndex + 1)..(rowIndex + stepsToSkip)) sectionStepsToSkip.add(j)
+                }
+
                 if (context.isBreakCurrentIteration) {
-                    break
+                    if (StringUtils.equals(commandFQN, CMD_REPEAT_UNTIL)) {
+                        context.isBreakCurrentIteration = false
+                    } else {
+                        break
+                    }
                 } else {
                     continue
                 }
             }
 
-            // parentSummary.incrementExecuted();
             stepSummary.incrementExecuted()
 
             if (result.isSuccess) {
-                // parentSummary.incrementPass();
                 stepSummary.incrementPass()
                 continue
             }
@@ -439,28 +457,28 @@ class NexialInteractive {
             // this line is added here instead of outside the loop so that we can consider any changes to nexial.failFast
             // whilst executing the activity
             if (context.isFailFast) {
-                logger.log(testStep, "test stopping due to execution failure and fail-fast in effect")
+                logger.log(testStep, "${MSG_ABORT}due to execution failure and fail-fast in effect")
                 break
             }
 
             if (context.isFailFastCommand(testStep)) {
-                logger.log(testStep, "test stopping due to failure on fail-fast command: ${testStep.commandFQN}")
+                logger.log(testStep, "${MSG_ABORT}failure on fail-fast command: $commandFQN")
                 context.isFailImmediate = true
                 break
             }
 
             if (context.isFailImmediate) {
-                logger.log(testStep, "test stopping due fail-immediate in effect")
+                logger.log(testStep, "${MSG_ABORT}fail-immediate in effect")
                 break
             }
 
             if (context.isEndImmediate) {
-                logger.log(testStep, "test scenario execution ended due to EndIf() flow control")
+                logger.log(testStep, "${MSG_ABORT}test scenario execution ended due to EndIf() flow control")
                 break
             }
 
             if (context.isBreakCurrentIteration) {
-                logger.log(testStep, "test scenario execution ended due to EndLoopIf() flow control")
+                logger.log(testStep, "${MSG_ABORT}test scenario execution ended due to EndLoopIf() flow control")
                 break
             }
         }
@@ -487,32 +505,23 @@ class NexialInteractive {
         es.error = null
     }
 
-    private fun postExecution(allPass: Boolean, session: InteractiveSession?) {
-        if (session == null) return
-
-        val context = session.context
+    private fun postExecution(session: InteractiveSession?) {
+        val context = session?.context ?: return
         val testScenarios = context.testScenarios
         if (CollectionUtils.isEmpty(testScenarios)) return
 
         InteractiveConsole.showRun(session)
     }
 
-    @NotNull
     private fun resetScenarioExecutionSummary(session: InteractiveSession, scenario: TestScenario): ExecutionSummary {
         val scenarioSummary = scenario.executionSummary
         resetExecutionSummary(session, scenarioSummary, scenario.name, SCENARIO)
         return scenarioSummary
     }
 
-    @NotNull
     private fun resetActivityExecutionSummary(session: InteractiveSession, activity: TestCase): ExecutionSummary {
         val activitySummary = activity.executionSummary
         resetExecutionSummary(session, activitySummary, activity.name, ACTIVITY)
         return activitySummary
-    }
-
-    companion object {
-        private const val RANGE_SEP = "-"
-        private const val LIST_SEP = ","
     }
 }

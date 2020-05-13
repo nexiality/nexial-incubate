@@ -20,12 +20,14 @@ package org.nexial.core.variable;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -34,6 +36,7 @@ import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.plugins.json.JsonCommand;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.JSONPath;
 import org.nexial.core.utils.JsonEditor;
@@ -48,7 +51,11 @@ import com.google.gson.stream.MalformedJsonException;
 
 import static org.json.JSONObject.NULL;
 import static org.nexial.core.NexialConst.*;
-import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Data.TEXT_DELIM;
+import static org.nexial.core.NexialConst.Data.TREAT_JSON_AS_IS;
+import static org.nexial.core.SystemVariables.getDefault;
+import static org.nexial.core.SystemVariables.getDefaultBool;
+import static org.nexial.core.utils.CheckUtils.requiresNotNull;
 
 public class JsonTransformer<T extends JsonDataType> extends Transformer {
     private static final Map<String, Integer> FUNCTION_TO_PARAM_LIST = discoverFunctions(JsonTransformer.class);
@@ -64,7 +71,9 @@ public class JsonTransformer<T extends JsonDataType> extends Transformer {
         try {
             if (data.getValue() instanceof JsonArray) {
                 JsonArray array = (JsonArray) data.getValue();
-                return new ListDataType(StringUtils.substringBetween(array.toString(), "[", "]"));
+                List<String> list = new ArrayList<>();
+                array.forEach(json -> list.add(json.toString()));
+                return new ListDataType(list.toArray(new String[0]));
             }
 
             if (data.getValue() instanceof JsonPrimitive) {
@@ -198,7 +207,7 @@ public class JsonTransformer<T extends JsonDataType> extends Transformer {
 
         String jsonString = GSON.toJson(data.getValue());
         data.setValue(GSON.fromJson(jsonString, JsonElement.class));
-        data.setTextValue(data.getValue().toString());
+        data.setTextValue(GSON.toJson(data.getValue()));
         return data;
     }
 
@@ -247,6 +256,20 @@ public class JsonTransformer<T extends JsonDataType> extends Transformer {
         return data;
     }
 
+    public T compact(T data, String removeEmpty) {
+        if (data == null || data.getValue() == null) { return null; }
+
+        JsonElement jsonElement = GSON_COMPRESSED.fromJson(data.getValue(), JsonElement.class);
+        requiresNotNull(jsonElement, "invalid json", data.getValue());
+
+        jsonElement = JsonCommand.removeEmpty(jsonElement, !BooleanUtils.toBoolean(removeEmpty));
+
+        String compressed = GSON_COMPRESSED.toJson(jsonElement);
+        data.setValue(GSON_COMPRESSED.fromJson(compressed, JsonElement.class));
+        data.setTextValue(compressed);
+        return data;
+    }
+
     public CsvDataType select(T data, String... jsonpaths) throws ExpressionException {
         if (data == null || data.getValue() == null) { return null; }
         if (ArrayUtils.isEmpty(jsonpaths)) { return null; }
@@ -265,7 +288,7 @@ public class JsonTransformer<T extends JsonDataType> extends Transformer {
         if (StringUtils.isBlank(compoundJsonPaths)) { return null; }
 
         ExecutionContext context = ExecutionThread.get();
-        String textDelim = context == null ? DEF_TEXT_DELIM : context.getTextDelim();
+        String textDelim = context == null ? getDefault(TEXT_DELIM) : context.getTextDelim();
 
         compoundJsonPaths = StringUtils.replace(compoundJsonPaths, "\\" + textDelim, TEMP_TEXT_DELIM);
         compoundJsonPaths = StringUtils.replace(compoundJsonPaths, textDelim, "\n");
@@ -291,8 +314,8 @@ public class JsonTransformer<T extends JsonDataType> extends Transformer {
             save(${external_csv_file})
         ]
         */
-        boolean jsonAsIs = context == null ?
-                           DEF_TREAT_JSON_AS_IS : context.getBooleanData(TREAT_JSON_AS_IS, DEF_TREAT_JSON_AS_IS);
+        boolean defaultAsIs = getDefaultBool(TREAT_JSON_AS_IS);
+        boolean jsonAsIs = context == null ? defaultAsIs : context.getBooleanData(TREAT_JSON_AS_IS, defaultAsIs);
         JsonElement value = data.getValue();
         jsonpathList.forEach(jsonpath -> {
             jsonpath = StringUtils.trim(StringUtils.replace(jsonpath, TEMP_TEXT_DELIM, textDelim));
@@ -307,6 +330,23 @@ public class JsonTransformer<T extends JsonDataType> extends Transformer {
         returnObj.setDelim(textDelim);
         returnObj.parse();
         return returnObj;
+    }
+
+    public ListDataType keys(T data, String jsonpath) throws ExpressionException {
+        ListDataType empty = new ListDataType();
+
+        if (data == null) { return empty; }
+
+        try {
+            if (data.getValue() != null && data.getValue() instanceof JsonObject && StringUtils.isNotBlank(jsonpath)) {
+                return new ListDataType(JSONPath.keys(data.toJSONObject(), jsonpath).toArray(new String[0]));
+            }
+
+            return empty;
+        } catch (JSONException e) {
+            throw new TypeConversionException(data.getName(), data.getTextValue(),
+                                              "Error converting to JSON: " + e.getMessage(), e);
+        }
     }
 
     @Override

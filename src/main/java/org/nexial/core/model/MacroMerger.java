@@ -24,10 +24,12 @@ import java.util.Map;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.apache.poi.xssf.usermodel.XSSFCellStyle;
 import org.apache.poi.xssf.usermodel.XSSFRow;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
+import org.jetbrains.annotations.NotNull;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.core.ExecutionInputPrep;
 import org.nexial.core.ExecutionThread;
@@ -35,14 +37,19 @@ import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.excel.ExcelArea;
-import org.nexial.core.excel.ExcelConfig;
+import org.nexial.core.excel.ExcelStyleHelper;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.InputFileUtils;
 
 import static java.io.File.separator;
 import static org.apache.poi.ss.usermodel.CellType.STRING;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
-import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.CommandConst.*;
+import static org.nexial.core.NexialConst.Data.DEF_OPEN_EXCEL_AS_DUP;
+import static org.nexial.core.NexialConst.Data.SECTION_DESCRIPTION_PREFIX;
+import static org.nexial.core.NexialConst.Project.SCRIPT_FILE_EXT;
+import static org.nexial.core.NexialConst.Project.SCRIPT_FILE_SUFFIX;
+import static org.nexial.core.excel.Excel.MIN_EXCEL_FILE_SIZE;
 import static org.nexial.core.excel.ExcelConfig.*;
 
 public class MacroMerger {
@@ -75,6 +82,7 @@ public class MacroMerger {
         assert CollectionUtils.isNotEmpty(testSheets) :
             "Specified scenario(s) of " + execDef.getTestScript() + " not found: " + expectedScenarios;
 
+        // ensure that all the sheets found in script file are the same as initially scanned and determined as scenario
         testSheets.forEach(worksheet -> expectedScenarios.remove(worksheet.getName()));
         assert CollectionUtils.isEmpty(expectedScenarios) :
             "Invalid scenario(s) found in " + execDef.getTestScript() + ": " + expectedScenarios;
@@ -100,14 +108,79 @@ public class MacroMerger {
         }
     }
 
+    /**
+     * A macro library file can be specified as full path or relative path. Relative path may be pivoted at project
+     * home or artifact/script dir
+     */
+    @NotNull
+    public static File resolveMacroFile(TestProject project, String macroFile) throws IOException {
+        // first, try it as is
+        if (FileUtil.isFileReadable(macroFile, MIN_EXCEL_FILE_SIZE)) { return new File(macroFile); }
+
+        // next, try pivoting from artifact/script
+        macroFile = StringUtils.appendIfMissing(macroFile, "." + SCRIPT_FILE_SUFFIX);
+        String macroFilePath = StringUtils.appendIfMissing(project.getScriptPath(), separator) + macroFile;
+        if (!FileUtil.isFileReadable(macroFilePath, MIN_EXCEL_FILE_SIZE)) {
+            // last, try again pivoting now from project home
+            macroFilePath = StringUtils.appendIfMissing(project.getProjectHome(), separator) + macroFile;
+            if (!FileUtil.isFileReadable(macroFilePath, MIN_EXCEL_FILE_SIZE)) {
+                throw new IOException("Unable to read macro file '" + macroFile + "'");
+            }
+        }
+
+        return new File(macroFilePath);
+    }
+
     protected boolean expandTestSteps(List<List<String>> allTestSteps) throws IOException {
         boolean macroExpanded = false;
 
+        // int sectionSteps = 0;
+        int repeatUntilStepIndex = -1;
+        int repeatUntilSteps = -1;
+        int repeatUntilLastStepIndex = -1;
+
         for (int i = 0; i < allTestSteps.size(); i++) {
+            if (i > repeatUntilLastStepIndex) {
+                // we are out of the repeat-until loop
+                repeatUntilStepIndex = -1;
+                repeatUntilSteps = -1;
+                repeatUntilLastStepIndex = -1;
+            }
+
             List<String> row = allTestSteps.get(i);
             String cellTarget = row.get(COL_IDX_TARGET);
             String cellCommand = row.get(COL_IDX_COMMAND);
             String testCommand = cellTarget + "." + cellCommand;
+
+            // look for base.repeatUntil(step,maxWaitMs) so that we can adjust step count to compensate for embedded macro
+            if (StringUtils.equals(testCommand, CMD_REPEAT_UNTIL)) {
+                // scan for presence of macro command within its boundary
+                repeatUntilStepIndex = i;
+                repeatUntilSteps = NumberUtils.toInt(row.get(COL_IDX_PARAMS_START));
+                repeatUntilLastStepIndex = repeatUntilStepIndex + repeatUntilSteps;
+
+                boolean repeatUntilContainsMacro = false;
+                for (int j = i + 1; j < repeatUntilLastStepIndex; j++) {
+                    if (allTestSteps.size() <= j) { break; }
+
+                    List<String> loopStep = allTestSteps.get(j);
+                    String loopCommand = loopStep.get(COL_IDX_TARGET) + "." + loopStep.get(COL_IDX_COMMAND);
+                    if (StringUtils.equals(loopCommand, CMD_MACRO)) {
+                        // found macro in repeat until. Now we mark `repeatUntilSteps` and `repeatUntilStepIndex`
+                        // so that we can further process them when handling macro expansion (below)
+                        repeatUntilContainsMacro = true;
+                        break;
+                    }
+                }
+
+                if (!repeatUntilContainsMacro) {
+                    repeatUntilStepIndex = -1;
+                    repeatUntilSteps = -1;
+                    repeatUntilLastStepIndex = -1;
+                }
+
+                continue;
+            }
 
             // look for base.macro(file,sheet,name) - open macro library as excel
             if (StringUtils.equals(testCommand, CMD_MACRO)) {
@@ -149,6 +222,13 @@ public class MacroMerger {
 
                     i += macroSteps.size();
                     macroExpanded = true;
+                    if (repeatUntilStepIndex > 0) { // && repeatUntilSteps > 0) {
+                        // change repeat-until step count since we have a macro inside a repeat-until block
+                        int newLoopSize = repeatUntilSteps + macroSteps.size();
+                        allTestSteps.get(repeatUntilStepIndex).set(COL_IDX_PARAMS_START, newLoopSize + "");
+                        repeatUntilSteps = newLoopSize;
+                        repeatUntilLastStepIndex = repeatUntilStepIndex + repeatUntilSteps;
+                    }
                 }
             }
         }
@@ -183,8 +263,6 @@ public class MacroMerger {
             int targetRowIdx = ADDR_COMMAND_START.getRowStartIndex() + i;
 
             XSSFRow excelRow = excelSheet.createRow(targetRowIdx);
-            short actualHeight = excelRow.getHeight();
-            if (actualHeight < CELL_HEIGHT_DEFAULT) { excelRow.setHeight(CELL_HEIGHT_DEFAULT); }
 
             for (int j = 0; j < row.size(); j++) {
                 String cellValue = row.get(j);
@@ -202,21 +280,26 @@ public class MacroMerger {
 
                 switch (j) {
                     case COL_IDX_TESTCASE:
-                        if (hasCellValue) { ExcelConfig.formatActivityCell(sheet, cell); }
+                        if (hasCellValue) { ExcelStyleHelper.formatActivityCell(sheet, cell); }
+                        break;
                     case COL_IDX_DESCRIPTION:
                         if (hasCellValue) {
                             if (StringUtils.startsWith(cellValue, SECTION_DESCRIPTION_PREFIX)) {
-                                ExcelConfig.formatSectionDescription(sheet, cell);
+                                ExcelStyleHelper.formatSectionDescription(sheet, cell);
                             } else {
-                                ExcelConfig.formatDescription(sheet, cell);
+                                ExcelStyleHelper.formatDescription(sheet, cell);
                             }
                         }
+                        break;
                     case COL_IDX_TARGET:
                         cell.setCellStyle(styleTarget);
+                        break;
                     case COL_IDX_COMMAND:
                         cell.setCellStyle(styleCommand);
+                        break;
                     case COL_IDX_FLOW_CONTROLS:
-                        if (hasCellValue) { ExcelConfig.formatFlowControlCell(sheet, cell); }
+                        if (hasCellValue) { ExcelStyleHelper.formatFlowControlCell(sheet, cell); }
+                        break;
                 }
             }
         }
@@ -229,13 +312,19 @@ public class MacroMerger {
         List<List<String>> testStepData = new ArrayList<>();
         if (CollectionUtils.isEmpty(testStepArea)) { return testStepData; }
 
+        ExecutionContext context = ExecutionThread.get();
+
         testStepArea.forEach(row -> {
             List<String> testStepRow = new ArrayList<>();
 
             // check for strikethrough (which means skip)
             if (ExecutionInputPrep.isTestStepDisabled(row)) { addSkipFlowControl(row); }
 
-            row.forEach(cell -> testStepRow.add(Excel.getCellValue(cell)));
+            row.forEach(cell -> {
+                String cellValue = Excel.getCellValue(cell);
+                testStepRow.add(context != null && context.containsCrypt(cellValue) ?
+                                Excel.getCellRawValue(cell) : cellValue);
+            });
             testStepData.add(testStepRow);
         });
 
@@ -254,18 +343,7 @@ public class MacroMerger {
             paramMacro = context.replaceTokens(paramMacro);
         }
 
-        // macro library can be specified as full path or relative path
-        File macroFile;
-        if (FileUtil.isFileReadable(paramFile, 5000)) {
-            macroFile = new File(paramFile);
-        } else {
-            String macroFilePath = StringUtils.appendIfMissing(
-                StringUtils.appendIfMissing(project.getScriptPath(), separator) + paramFile, ".xlsx");
-            if (!FileUtil.isFileReadable(macroFilePath, 5000)) {
-                throw new IOException("Unable to read macro file '" + macroFilePath + "'");
-            }
-            macroFile = new File(macroFilePath);
-        }
+        File macroFile = resolveMacroFile(project, StringUtils.appendIfMissing(paramFile, SCRIPT_FILE_EXT));
 
         // (2018/12/9,automike): remove to support dynamic macro changes during execution and interactive mode
         // String macroKey = macroFile + ":" + paramSheet + ":" + paramMacro;

@@ -18,7 +18,6 @@
 package org.nexial.core.variable;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.stream.Stream;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -28,18 +27,17 @@ import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
 
-import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
+import static org.nexial.core.NexialConst.Data.TEXT_DELIM;
+import static org.nexial.core.SystemVariables.getDefault;
 
 public class Array {
 
     public String item(String array, String index) {
-        if (StringUtils.isEmpty(array)) { return ""; }
-        return item(toArray(array), index);
+        return StringUtils.isEmpty(array) ? "" : item(toArray(array), index);
     }
 
     public String length(String array) {
-        if (StringUtils.isEmpty(array)) { return "0"; }
-        return toArray(array).length + "";
+        return StringUtils.isEmpty(array) ? "0" : toArray(array).length + "";
     }
 
     public String reverse(String array) {
@@ -51,23 +49,23 @@ public class Array {
     }
 
     public String subarray(String array, String start, String end) {
-        if (StringUtils.isEmpty(array)) { return ""; }
-        return toString(subarray(toArray(array), start, end));
+        return StringUtils.isEmpty(array) ? "" : toString(subarray(toArray(array), start, end));
     }
 
     public String distinct(String array) {
-        if (StringUtils.isEmpty(array)) { return ""; }
-        return toString(Arrays.stream(toArray(array)).distinct());
+        return StringUtils.isEmpty(array) ? "" : toString(Arrays.stream(toArray(array)).distinct());
     }
 
     public String ascending(String array) {
-        if (StringUtils.isEmpty(array)) { return ""; }
-        return toString(Arrays.stream(toArray(array)).sorted());
+        return StringUtils.isEmpty(array) ? "" : toString(sort(toArray(array), true));
     }
 
     public String descending(String array) {
-        if (StringUtils.isEmpty(array)) { return ""; }
-        return toString(Arrays.stream(toArray(array)).sorted(Collections.reverseOrder()));
+        return StringUtils.isEmpty(array) ? "" : toString(sort(toArray(array), false));
+    }
+
+    public static Stream<String> sort(String[] array, boolean ascending) {
+        return Arrays.stream(array).sorted((o1, o2) -> ascending ? compare(o1, o2) : compare(o2, o1));
     }
 
     public String remove(String array, String index) {
@@ -163,10 +161,16 @@ public class Array {
         return strings == null ? null : toString(Arrays.stream(strings));
     }
 
+    protected static int compare(String value1, String value2) {
+        if (NumberUtils.isParsable(value1) && NumberUtils.isParsable(value2)) {
+            return NumberUtils.createBigDecimal(value1).compareTo(NumberUtils.createBigDecimal(value2));
+        } else {
+            return value1.compareTo(value2);
+        }
+    }
+
     protected static String item(String[] arr, String index) {
-        if (!NumberUtils.isDigits(index)) { return ""; }
-        int idx = NumberUtils.toInt(index);
-        return item(arr, idx);
+        return !NumberUtils.isDigits(index) ? "" : item(arr, NumberUtils.toInt(index));
     }
 
     protected static String item(String[] arr, int idx) {
@@ -177,20 +181,28 @@ public class Array {
         return arr[idx];
     }
 
-    /**
-     * subarray between start and end, both ends inclusively
-     */
+    /** subarray between start and end, both ends inclusively */
     protected static String[] subarray(String[] arr, String start, String end) {
         if (ArrayUtils.isEmpty(arr)) { return null; }
-        if (!NumberUtils.isDigits(start)) { return null; }
-        if (!NumberUtils.isDigits(end)) { return null; }
 
+        if (!NumberUtils.isDigits(start)) { return null; }
         int idxStart = NumberUtils.toInt(start);
         if (idxStart < 0) { return null; }
 
-        int idxEnd = NumberUtils.toInt(end);
-        if (idxEnd <= idxStart) { return null; }
+        int idxEnd;
+        if (StringUtils.isEmpty(end) || end.equals("-1")) {
+            idxEnd = arr.length - 1;
+        } else if (!NumberUtils.isCreatable(end)) {
+            return null;
+        } else {
+            idxEnd = NumberUtils.toInt(end);
+        }
         if (idxEnd >= arr.length) { return arr; }
+        if (idxEnd == -1) {
+            idxEnd = arr.length - 1;
+        } else if (idxEnd <= idxStart) {
+            return null;
+        }
 
         return ArrayUtils.subarray(arr, idxStart, idxEnd + 1);
     }
@@ -242,10 +254,12 @@ public class Array {
     protected static String[] toArray(String array) { return toArray(array, getDelim()); }
 
     protected static String[] toArray(String array, String delim) {
+        if (!StringUtils.contains(array, delim)) { return new String[]{array}; }
+
         // need special parsing to compensate the case of web elements which looks like [[...]],[[...]],..
         if (TextUtils.isBetween(array, "[", "]")) {
             if (StringUtils.startsWith(array, "[[") && StringUtils.contains(array, "],[[")) {
-                // likely webelement lists.. need special care
+                // likely web element lists.. need special care
                 String[] split = StringUtils.splitByWholeSeparator(array, "],[");
                 return Arrays.stream(split)
                              .map(str -> (StringUtils.startsWith(str, "[[") ? "" : "[") +
@@ -265,8 +279,7 @@ public class Array {
 
     protected static String getDelim() {
         ExecutionContext context = ExecutionThread.get();
-        return context == null ? DEF_TEXT_DELIM : context.getTextDelim();
-        // return StringUtils.equals(delim, TOKEN_PARAM_SEP) ? "\\" + delim : delim;
+        return context == null ? getDefault(TEXT_DELIM) : context.getTextDelim();
     }
 
     protected void init() { }

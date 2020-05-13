@@ -189,9 +189,7 @@ class BaiTransaction : BaiModel {
 
     constructor()
 
-    constructor(nextRecord: String) {
-        this.nextRecord = nextRecord
-    }
+    constructor(nextRecord: String) { this.nextRecord = nextRecord }
 
     override fun parse(): BaiModel {
 
@@ -234,11 +232,7 @@ class BaiTransaction : BaiModel {
     }
 
     override fun field(recordType: String, name: String): TextDataType {
-        return TextDataType(if (recordType == transactionMeta.type) {
-            transactionRecordMap.getValue(name)
-        } else {
-            ""
-        })
+        return TextDataType(if (recordType == transactionMeta.type) { transactionRecordMap.getValue(name) } else { "" })
     }
 
     override fun filter(recordType: String, condition: String): BaiModel? {

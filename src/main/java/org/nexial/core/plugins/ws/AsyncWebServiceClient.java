@@ -30,26 +30,26 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.StopWatch;
-import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.concurrent.FutureCallback;
-import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.LaxRedirectStrategy;
 import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
 import org.apache.http.impl.nio.client.HttpAsyncClients;
 import org.nexial.core.ShutdownAdvisor;
-import org.nexial.core.WebProxy;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.plugins.ForcefulTerminate;
 import org.nexial.core.utils.ConsoleUtils;
 
 import com.google.gson.JsonObject;
 
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
+import static org.nexial.core.NexialConst.GSON;
+import static org.nexial.core.NexialConst.Ws.WS_ASYNC_SHUTDOWN_TIMEOUT;
+import static org.nexial.core.SystemVariables.getDefaultInt;
 import static org.nexial.core.plugins.ws.NaiveConnectionSocketFactory.I_TRUST_EVERYONE;
 import static org.nexial.core.plugins.ws.NaiveConnectionSocketFactory.NOOP_HOST_VERIFIER;
 
@@ -66,35 +66,61 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
         super(context);
         // delay shutdown event
         if (context != null) {
-            shutdownTimeout = context.getIntData(WS_ASYNC_SHUTDOWN_TIMEOUT, (int) DEF_ASYNC_SHUTDOWN_TIMEOUT);
+            shutdownTimeout = context.getIntData(WS_ASYNC_SHUTDOWN_TIMEOUT, getDefaultInt(WS_ASYNC_SHUTDOWN_TIMEOUT));
         }
         ShutdownAdvisor.addAdvisor(this);
     }
 
     public void get(String url, String queryString, File output) throws IOException {
-        invokeRequest(toGetRequest(url, queryString), output);
+        invokeRequest(new GetRequest(context, url, queryString), output);
     }
 
-    public void head(String url, File output) throws IOException { invokeRequest(toHeadRequest(url), output); }
+    public void head(String url, File output) throws IOException {
+        invokeRequest(new HeadRequest(context, url, null), output);
+    }
 
     public void post(String url, String payload, File output) throws IOException {
-        invokeRequest(toPostRequest(url, payload), output);
+        invokeRequest(new PostRequest(context, url, payload, null), output);
+    }
+
+    public void post(String url, byte[] payload, File output) throws IOException {
+        invokeRequest(new PostRequest(context, url, null, payload), output);
     }
 
     public void delete(String url, String queryString, File output) throws IOException {
-        invokeRequest(toDeleteRequest(url, queryString), output);
+        invokeRequest(new DeleteRequest(context, url, queryString), output);
     }
 
     public void deleteWithPayload(String url, String payload, File output) throws IOException {
-        invokeRequest(toDeleteRequestWithPayload(url, payload), output);
+        invokeRequest(new DeleteWithPayloadRequest(context, url, payload, null), output);
+    }
+
+    public void deleteWithPayload(String url, byte[] payload, File output) throws IOException {
+        invokeRequest(new DeleteWithPayloadRequest(context, url, null, payload), output);
     }
 
     public void patch(String url, String payload, File output) throws IOException {
-        invokeRequest(toPatchRequest(url, payload), output);
+        invokeRequest(new PatchRequest(context, url, payload, null), output);
+    }
+
+    public void patch(String url, byte[] payload, File output) throws IOException {
+        invokeRequest(new PatchRequest(context, url, null, payload), output);
     }
 
     public void put(String url, String payload, File output) throws IOException {
-        invokeRequest(toPutRequest(url, payload), output);
+        invokeRequest(new PutRequest(context, url, payload, null), output);
+    }
+
+    public void put(String url, byte[] payload, File output) throws IOException {
+        invokeRequest(new PutRequest(context, url, null, payload), output);
+    }
+
+    @Override
+    public Response download(String url, String queryString, String saveTo) throws IOException {
+        GetRequest request = new GetRequest(context, url, queryString);
+        request.setPayloadLocation(saveTo);
+        invokeRequest(request, new File(saveTo + ".json"));
+        return null;
     }
 
     @Override
@@ -118,14 +144,6 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
         }
 
         ASYNC_EXEC_SERVICE.shutdown();
-    }
-
-    @Override
-    public Response download(String url, String queryString, String saveTo) throws IOException {
-        GetRequest request = toGetRequest(url, queryString);
-        request.setPayloadLocation(saveTo);
-        invokeRequest(request, new File(saveTo + ".json"));
-        return null;
     }
 
     public void invokeRequest(@NotNull Request request, @NotNull File output) throws IOException {
@@ -154,9 +172,7 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
         });
     }
 
-    /**
-     * invoke HTTP request asynchronously, with option to capture response (via {@link ResponseSink}).
-     */
+    /** invoke HTTP request asynchronously, with option to capture response (via {@link ResponseSink}). */
     public void invokeRequestAsync(@NotNull Request request, ResponseSink<Response> sink) throws IOException {
         if (ASYNC_EXEC_SERVICE.isTerminated() || ASYNC_EXEC_SERVICE.isShutdown()) {
             throw new IOException("Unable to invoke request asynchronously because ws client has been terminated");
@@ -165,22 +181,23 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
         StopWatch tickTock = new StopWatch();
         tickTock.start();
 
-        boolean requireProxy = context != null && context.getBooleanData(WS_PROXY_REQUIRED, false);
-        HttpHost proxy = requireProxy ? WebProxy.getApacheProxy(context) : null;
-        BasicCredentialsProvider credsProvider = requireProxy ? WebProxy.getApacheCredentialProvider(context) : null;
-
-        RequestConfig requestConfig = prepRequestConfig(request, proxy, credsProvider);
+        // proxy code not ready for prime time...
+        // boolean requireProxy = context != null && context.getBooleanData(WS_PROXY_REQUIRED, false);
+        // HttpHost proxy = requireProxy ? WebProxy.getApacheProxy(context) : null;
+        // BasicCredentialsProvider credsProvider = requireProxy ? WebProxy.getApacheCredentialProvider(context) : null;
+        // RequestConfig requestConfig = prepRequestConfig(request, proxy, credsProvider);
+        RequestConfig requestConfig = prepRequestConfig(request, null, null);
 
         HttpAsyncClientBuilder httpClientBuilder = HttpAsyncClients.custom()
                                                                    .setSSLHostnameVerifier(NOOP_HOST_VERIFIER)
                                                                    .setSSLContext(I_TRUST_EVERYONE)
                                                                    .setDefaultRequestConfig(requestConfig)
                                                                    .setRedirectStrategy(LaxRedirectStrategy.INSTANCE);
-        if (proxy != null && credsProvider != null) {
-            httpClientBuilder.setDefaultCredentialsProvider(credsProvider)
-                             .setProxy(proxy)
-                             .setRoutePlanner(resolveRoutePlanner(request, proxy));
-        }
+        // if (proxy != null && credsProvider != null) {
+        //     httpClientBuilder.setDefaultCredentialsProvider(credsProvider)
+        //                      .setProxy(proxy)
+        //                      .setRoutePlanner(resolveRoutePlanner(request, proxy));
+        // }
 
         // add basic auth, if specified
         httpClientBuilder = addBasicAuth(httpClientBuilder, request);
@@ -197,29 +214,33 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
 
         // either collect all data (if sink is available) or collect nothing
         FutureCallback<HttpResponse> collectAllResponseData = new FutureCallback<HttpResponse>() {
+            private final String safeUrl = hideAuthDetails(request.getUrl());
             private int id = callbackId;
 
             @Override
             public void completed(HttpResponse httpResponse) {
-                tickTock.stop();
-
-                debug(request.getUrl() + ": Response received in " + tickTock.getTime() + "ms");
+                long ttfb = tickTock.getTime();
+                debug(safeUrl + ": Response received in " + ttfb + "ms");
                 if (sink != null) {
                     try {
-                        Response response = gatherResponseData(http, request, httpResponse);
+                        Response response = gatherResponseData(request, httpResponse, ttfb);
+                        tickTock.stop();
+                        response.setRequestTime(tickTock.getStartTime());
                         response.setElapsedTime(tickTock.getTime());
-
                         AsyncResponse asyncResponse = AsyncResponse.toAsyncResponse(response);
                         response = null;
 
-                        ConsoleUtils.log("[ASYNC WS COMPLETED][" + id + "] " + request.getUrl() + ": " +
+                        ConsoleUtils.log("[ASYNC WS COMPLETED][" + id + "] " + safeUrl + ": " +
                                          asyncResponse.getContentLength() + " bytes, " +
                                          asyncResponse.getElapsedTime() + "ms");
+                        logResponse(http, request, httpResponse.getStatusLine(), asyncResponse);
                         sink.receive(asyncResponse, null);
                     } catch (IOException e) {
                         ConsoleUtils.error("Error occurred while handling async HTTP response: " + e.getMessage());
                         sink.receive(null, e.getMessage());
                     }
+                } else {
+                    tickTock.stop();
                 }
 
                 latch.countDown();
@@ -229,7 +250,7 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
             @Override
             public void failed(Exception e) {
                 tickTock.stop();
-                ConsoleUtils.error("[ASYNC WS ERROR] " + request.getUrl() + ": " + e.getMessage());
+                ConsoleUtils.error("[ASYNC WS ERROR][" + id + "] " + safeUrl + ": " + e.getMessage());
                 if (sink != null) { sink.receive(null, e.getMessage()); }
                 latch.countDown();
                 INFLIGHTS.remove(id);
@@ -238,14 +259,14 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
             @Override
             public void cancelled() {
                 tickTock.stop();
-                ConsoleUtils.error("[ASYNC WS CANCELLED] " + request.getUrl());
+                ConsoleUtils.error("[ASYNC WS CANCELLED][" + id + "] " + safeUrl);
                 if (sink != null) { sink.receive(null, "CANCELLED"); }
                 latch.countDown();
                 INFLIGHTS.remove(id);
             }
         };
 
-        log("Executing request " + hideAuthDetails(http.getRequestLine()));
+        logRequest(http, request, tickTock.getStartTime());
 
         boolean digestAuth = isDigestAuth();
         boolean basicAuth = isBasicAuth();
@@ -253,10 +274,7 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
         ASYNC_EXEC_SERVICE.submit(() -> {
             client.start();
 
-            if (context != null) {
-                INFLIGHTS.put(callbackId, collectAllResponseData);
-                //                debug("adding " + callbackId + " to inflight list (" + INFLIGHTS.keySet() + ")");
-            }
+            if (context != null) { INFLIGHTS.put(callbackId, collectAllResponseData); }
 
             try {
                 if (digestAuth || basicAuth) {
@@ -286,5 +304,4 @@ public class AsyncWebServiceClient extends WebServiceClient implements ForcefulT
         invokeRequestAsync(request, null);
         return null;
     }
-
 }

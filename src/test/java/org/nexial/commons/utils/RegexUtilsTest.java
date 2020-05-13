@@ -23,9 +23,6 @@ import java.util.Map;
 import org.junit.Assert;
 import org.junit.Test;
 
-/**
- *
- */
 public class RegexUtilsTest {
 
     @Test
@@ -41,6 +38,20 @@ public class RegexUtilsTest {
         String fixture2 = "Invalid input for Federal EIN '0000051801'. [2005";
         String actual2 = RegexUtils.replace(fixture2, "(.+)\\[([\\d]{1,4})\\]", "$1|$2");
         Assert.assertEquals("Invalid input for Federal EIN '0000051801'. [2005", actual2);
+    }
+
+    @Test
+    public void testReplace_partial() {
+        String regex = "(.*)\\%([0-9]{2})(.*)";
+        String replacement = "$1!!-$2-!!$3";
+
+        String fixture = "/A%20B/C%25C/D";
+        while (RegexUtils.match(fixture, regex)) { fixture = RegexUtils.replace(fixture, regex, replacement); }
+        Assert.assertEquals("/A!!-20-!!B/C!!-25-!!C/D", fixture);
+
+        fixture = "/%%20%B/20%2544/%";
+        while (RegexUtils.match(fixture, regex)) { fixture = RegexUtils.replace(fixture, regex, replacement); }
+        Assert.assertEquals("/%!!-20-!!%B/20!!-25-!!44/%", fixture);
     }
 
     @Test
@@ -156,5 +167,13 @@ public class RegexUtilsTest {
         Assert.assertEquals("12345", RegexUtils.retainMatches("a1s2g3b4w5pps", "[0-9]"));
         Assert.assertEquals("12345432100991",
                             RegexUtils.retainMatches("  askdjgh1asdjlkjslksj2345gggn ;;s;4321s.df--00991", "[0-9]"));
+    }
+
+    @Test
+    public void firstMatch() {
+        String match = RegexUtils.firstMatches("Can{TAB}ada{ESCAPE}", "(\\{.+?\\})");
+        System.out.println("groups = " + match);
+        Assert.assertNotNull(match);
+        // Assert.assertEquals(groups.size(), 4);
     }
 }

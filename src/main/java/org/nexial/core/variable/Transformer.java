@@ -41,7 +41,6 @@ import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.variable.Expression.ExpressionFunction;
 
-import static java.lang.System.lineSeparator;
 import static org.nexial.core.NexialConst.DEF_FILE_ENCODING;
 
 public abstract class Transformer<T extends ExpressionDataType> {
@@ -55,11 +54,11 @@ public abstract class Transformer<T extends ExpressionDataType> {
 
         if (!validFunctions.containsKey(function.getFunctionName())) { return false; }
 
-        // varargs means paramCount = -1
+        // varargs means paramCount < 0
         int paramCount = validFunctions.get(function.getFunctionName());
         int functionParamCount = CollectionUtils.size(function.getParams());
 
-        if (paramCount == -1) { return functionParamCount >= 0; }
+        if (paramCount < 0) { return functionParamCount >= 0; }
 
         // if user specified too many params, then it's error -> so return false
         if (paramCount < functionParamCount) { return false; }
@@ -76,12 +75,11 @@ public abstract class Transformer<T extends ExpressionDataType> {
     }
 
     ExpressionDataType transform(T data, ExpressionFunction function) throws ExpressionException {
-        if (data == null) { return data; }
-        if (function == null) { return data; }
+        if (data == null || function == null) { return data; }
 
         String typeName = data.getName();
         String functionName = function.getFunctionName();
-        String msgPrefix = StringUtils.rightPad(data.getName() + " => " + functionName + " ", 20);
+        String msgPrefix = StringUtils.rightPad(data.getName(), 7) + " => " + StringUtils.rightPad(functionName, 22);
 
         if (!isValidFunction(function)) {
             throw new ExpressionFunctionException(typeName, functionName, "Not valid function");
@@ -92,13 +90,23 @@ public abstract class Transformer<T extends ExpressionDataType> {
 
         int paramCount = listSupportedFunctions().get(functionName);
         Object[] args;
-        if (paramCount == -1) {
-            // varargs means paramCount = -1
-            args = new Object[]{data, function.getParams().toArray(new String[function.getParams().size()])};
+        List<String> params = function.getParams();
+        if (paramCount < 0) {
+            // varargs means paramCount < 0
+            int varargsParamCount = 1 + (paramCount * -1);
+            args = new Object[varargsParamCount];
+            for (int i = 0; i < varargsParamCount; i++) {
+                if (i == 0) {
+                    args[i] = data;
+                } else if (i < varargsParamCount - 1) {
+                    args[i] = params.get(i - 1);
+                } else {
+                    args[i] = params.subList(i - 1, params.size()).toArray(new String[0]);
+                }
+            }
         } else {
             args = new Object[paramCount + 1];
             args[0] = data;
-            List<String> params = function.getParams();
             if (CollectionUtils.isNotEmpty(params)) {
                 for (int i = 0; i < params.size(); i++) { args[i + 1] = params.get(i); }
             }
@@ -113,7 +121,7 @@ public abstract class Transformer<T extends ExpressionDataType> {
 
             ExecutionContext context = ExecutionThread.get();
             if (context == null || StringUtils.isBlank(context.getRunId()) || context.isVerbose()) {
-                ConsoleUtils.log(msgPrefix + outcome + lineSeparator());
+                ConsoleUtils.log(msgPrefix + outcome);
             }
 
             return (ExpressionDataType) outcome;
@@ -136,14 +144,7 @@ public abstract class Transformer<T extends ExpressionDataType> {
         if (data == null || data.getValue() == null) { return data; }
         if (StringUtils.isBlank(path)) { throw new IllegalArgumentException("path is empty/blank"); }
 
-        File target = new File(path);
-        if (!FileUtil.isDirectoryReadable(path)) {
-            try {
-                FileUtils.forceMkdirParent(target);
-            } catch (IOException e) {
-                throw new IllegalArgumentException("Unable to create directory for '" + path + "'");
-            }
-        }
+        File target = FileUtil.makeParentDir(path);
 
         try {
             boolean shouldAppend = BooleanUtils.toBoolean(append);
@@ -208,9 +209,21 @@ public abstract class Transformer<T extends ExpressionDataType> {
 
         functionToParamList.forEach((functionName, paramCount) -> {
             Class[] paramClasses;
-            if (paramCount == -1) {
-                // string varargs
-                paramClasses = new Class[]{dataClass, String[].class};
+            if (paramCount < 0) {
+                // negative numbers means varargs
+                // the position of varargs => (paramCount*-1)
+                // e.g. paramCount=-2 => myMethod(dataClass,String,String...)
+                int varargsParamCount = 1 + (paramCount * -1);
+                paramClasses = new Class[varargsParamCount];
+                for (int i = 0; i < varargsParamCount; i++) {
+                    if (i == 0) {
+                        paramClasses[i] = dataClass;
+                    } else if (i != (varargsParamCount - 1)) {
+                        paramClasses[i] = String.class;
+                    } else {
+                        paramClasses[i] = String[].class;
+                    }
+                }
             } else {
                 paramClasses = new Class[paramCount + 1];
                 paramClasses[0] = dataClass;
@@ -254,9 +267,11 @@ public abstract class Transformer<T extends ExpressionDataType> {
                 String methodName = method.getName();
                 String expandedMethodName = expandMethodName(methodName);
 
+                int paramCount = method.getParameterCount() - 1;
                 if (isStringVarArgMethod(method)) {
-                    functions.put(methodName, -1);
-                    functions.put(expandedMethodName, -1);
+                    int varargsParamCount = (paramCount) * -1;
+                    functions.put(methodName, varargsParamCount);
+                    functions.put(expandedMethodName, varargsParamCount);
                 } else {
                     boolean paramTypesAreString = true;
                     for (int i = 1; i < method.getParameterCount(); i++) {
@@ -267,8 +282,8 @@ public abstract class Transformer<T extends ExpressionDataType> {
                     }
 
                     if (paramTypesAreString) {
-                        functions.put(methodName, method.getParameterCount() - 1);
-                        functions.put(expandedMethodName, method.getParameterCount() - 1);
+                        functions.put(methodName, paramCount);
+                        functions.put(expandedMethodName, paramCount);
                     }
                 }
             }
@@ -292,15 +307,15 @@ public abstract class Transformer<T extends ExpressionDataType> {
         Class<?>[] parameterTypes = method.getParameterTypes();
         if (parameterCount <= 0 || !genericType.isAssignableFrom(parameterTypes[0])) { return false; }
 
-        if (isStringVarArgMethod(method)) {
-            if (parameterCount != 2) { return false; }
-            return parameterTypes[1] == String[].class;
-        }
+        if (isStringVarArgMethod(method)) { return parameterTypes[parameterCount - 1] == String[].class; }
 
         return true;
     }
 
     protected static boolean isStringVarArgMethod(Method method) {
-        return method.getParameterCount() == 2 && method.isVarArgs() && method.getParameterTypes()[1] == String[].class;
+        int parameterCount = method.getParameterCount();
+        return parameterCount >= 2 &&
+               method.isVarArgs() &&
+               method.getParameterTypes()[parameterCount - 1] == String[].class;
     }
 }

@@ -17,9 +17,7 @@
 package org.nexial.core.model
 
 import org.apache.commons.lang3.RandomStringUtils
-import org.nexial.core.NexialConst.NAMESPACE
-
-private const val NOTIFY_ON = NAMESPACE + "notifyOn"
+import org.nexial.core.NexialConst.Notification.*
 
 /**
  * the definition and a list of known execution-level events
@@ -33,41 +31,34 @@ enum class ExecutionEvent(val eventName: String,
                           val conditionalVar: String = variable + "If",
                           val description: String) {
 
-    ExecutionStart("onExecutionStart", "${NOTIFY_ON}ExecutionStart", description = "Execution started"),
-    ExecutionComplete("onExecutionComplete", "${NOTIFY_ON}ExecutionComplete", description = "Execution completed"),
+    ExecutionStart("onExecutionStart", ON_EXEC_START, description = "Execution started"),
+    ExecutionComplete("onExecutionComplete", ON_EXEC_COMPLETE, description = "Execution completed"),
 
-    ScriptStart("onScriptStart", "${NOTIFY_ON}ScriptStart", description = "Script execution started"),
-    ScriptComplete("onScriptComplete", "${NOTIFY_ON}ScriptComplete", description = "Script execution completed"),
+    ScriptStart("onScriptStart", ON_SCRIPT_START, description = "Script execution started"),
+    ScriptComplete("onScriptComplete", ON_SCRIPT_COMPLETE, description = "Script execution completed"),
 
-    IterationStart("onIterationStart", "${NOTIFY_ON}IterationStart", description = "Iteration execution started"),
-    IterationComplete("onIterationComplete", "${NOTIFY_ON}IterationComplete",
-                      description = "Iteration execution completed"),
+    IterationStart("onIterationStart", ON_ITER_START, description = "Iteration execution started"),
+    IterationComplete("onIterationComplete", ON_ITER_COMPLETE, description = "Iteration execution completed"),
 
-    ScenarioStart("onScenarioStart", "${NOTIFY_ON}ScenarioStart", description = "Scenario execution started"),
-    ScenarioComplete("onScenarioComplete", "${NOTIFY_ON}ScenarioComplete",
-                     description = "Scenario execution completed"),
+    ScenarioStart("onScenarioStart", ON_SCN_START, description = "Scenario execution started"),
+    ScenarioComplete("onScenarioComplete", ON_SCN_COMPLETE, description = "Scenario execution completed"),
 
-    ActivityStart("onActivityStart", "${NOTIFY_ON}ActivityStart", description = "Activity execution started"),
-    ActivityComplete("onActivityComplete", "${NOTIFY_ON}ActivityComplete",
-                     description = "Activity execution completed"),
+    ErrorOccurred("onError", ON_ERROR, description = "Error occurred"),
+    ExecutionPause("onPause", ON_PAUSE, description = "Execution paused"),
 
-    ErrorOccurred("onError", "${NOTIFY_ON}Error", description = "Error occurred"),
-    ExecutionPause("onPause", "${NOTIFY_ON}Pause", description = "Execution paused"),
+    DesktopUseApp("onDesktopUseApp", ON_USE_APP, description = "Desktop app in use"),
+    DesktopUseForm("onDesktopUseForm", ON_USE_FORM, description = "Desktop form in use"),
+    DesktopUseTable("onDesktopUseTable", ON_USE_TABLE, description = "Desktop table in use"),
+    DesktopUseList("onDesktopUseList", ON_USE_LIST, description = "Desktop list in use"),
 
-    DesktopUseApp("onDesktopUseApp", "${NOTIFY_ON}DesktopUseApp", description = "Desktop app in use"),
-    DesktopUseForm("onDesktopUseForm", "${NOTIFY_ON}DesktopUseForm", description = "Desktop form in use"),
-    DesktopUseTable("onDesktopUseTable", "${NOTIFY_ON}DesktopUseTable", description = "Desktop table in use"),
-    DesktopUseList("onDesktopUseList", "${NOTIFY_ON}DesktopUseList", description = "Desktop list in use"),
+    WsStart("onWsStart", ON_WS_START, description = "Web service invoked"),
+    WsComplete("onWsComplete", ON_WS_COMPLETE, description = "Web service completed"),
 
-    WsStart("onWsStart", "${NOTIFY_ON}WsStart", description = "Web service invoked"),
-    WsComplete("onWsComplete", "${NOTIFY_ON}WsComplete", description = "Web service completed"),
+    RdbmsStart("onRdbmsStart", ON_RDBMS_START, description = "SQL query started"),
+    RdbmsComplete("onRdbmsComplete", ON_RDBMS_COMPLETE, description = "SQL query completed"),
 
-    RdbmsStart("onRdbmsStart", "${NOTIFY_ON}RdbmsStart", description = "SQL query started"),
-    RdbmsComplete("onRdbmsComplete", "${NOTIFY_ON}RdbmsComplete", description = "SQL query completed"),
-
-    WebOpen("onWebOpen", "${NOTIFY_ON}WebOpen", description = "URL invoked"),
-    BrowserComplete("onBrowserComplete", "${NOTIFY_ON}BrowserComplete",
-                    description = "current Browser instance terminated");
+    WebOpen("onWebOpen", ON_WEB_OPEN, description = "URL invoked"),
+    BrowserComplete("onBrowserComplete", ON_BROWSER_COMPLETE, description = "current Browser instance terminated");
 
     override fun toString(): String = eventName
 

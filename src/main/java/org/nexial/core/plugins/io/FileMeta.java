@@ -24,10 +24,16 @@ import java.io.Serializable;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.nexial.core.utils.ConsoleUtils;
+
+import static org.nexial.core.NexialConst.NL;
 
 public class FileMeta implements Serializable {
+    protected static final String REGEX_FILE_META = "(name|size|lastMod)\\s+";
     private File fileObject;
     private byte[] rawContent;
+
+    private enum filter {size, lastMod, name}
 
     protected FileMeta() { }
 
@@ -71,11 +77,29 @@ public class FileMeta implements Serializable {
 
     @Override
     public String toString() {
-        return "fullpath='" + getFullpath() + "', \n" +
-               "isDir=" + isDir() + ", \n" +
-               "size=" + getSize() + ", \n" +
-               "lastmod=" + getLastmod() + ", \n" +
-               "perm(rwe)=" + getPerm() + "\n" +
-               "text=" + (StringUtils.isEmpty(getText()) ? "<EMPTY>" : StringUtils.left(getText(), 500) + "...\n");
+        return "fullpath='" + getFullpath() + "'," + NL +
+               "isDir=" + isDir() + "," + NL +
+               "size=" + getSize() + "," + NL +
+               "lastmod=" + getLastmod() + "," + NL +
+               "perm(rwe)=" + getPerm() + NL +
+               "text=" + (StringUtils.isEmpty(getText()) ? "<EMPTY>" : StringUtils.left(getText(), 500) + "..." + NL);
+    }
+
+    protected static String findFileMetaData(String subject, File file) {
+        try {
+            switch (filter.valueOf(subject)) {
+                case size:
+                    return Long.toString(file.length());
+                case lastMod:
+                    return Long.toString(file.lastModified());
+                case name:
+                    return file.getName();
+                default:
+                    return null;
+            }
+        } catch (IllegalArgumentException e) {
+            ConsoleUtils.error("Unsupported file meta: " + subject);
+            return null;
+        }
     }
 }

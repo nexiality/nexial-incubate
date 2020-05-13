@@ -16,20 +16,24 @@
 
 package org.nexial.core.plugins.external
 
-import org.apache.commons.io.FileUtils
 import org.apache.commons.io.IOUtils
+import org.apache.commons.io.input.Tailer
+import org.apache.commons.io.input.TailerListenerAdapter
 import org.apache.commons.lang3.StringUtils
 import org.junit.runner.JUnitCore
-import org.nexial.commons.proc.ProcessInvoker
-import org.nexial.commons.proc.ProcessInvoker.PROC_REDIRECT_OUT
+import org.nexial.commons.proc.ProcessInvoker.*
 import org.nexial.commons.proc.RuntimeUtils
+import org.nexial.commons.utils.FileUtil
 import org.nexial.commons.utils.TextUtils
-import org.nexial.core.NexialConst.DEF_CHARSET
-import org.nexial.core.NexialConst.OPT_RUN_PROGRAM_OUTPUT
+import org.nexial.core.NexialConst.*
+import org.nexial.core.ShutdownAdvisor
+import org.nexial.core.SystemVariables.getDefaultBool
 import org.nexial.core.model.StepResult
+import org.nexial.core.plugins.ForcefulTerminate
 import org.nexial.core.plugins.base.BaseCommand
 import org.nexial.core.utils.CheckUtils.requires
 import org.nexial.core.utils.CheckUtils.requiresNotBlank
+import org.nexial.core.utils.ConsoleUtils
 import org.nexial.core.variable.Syspath
 import java.io.File
 import java.io.File.separator
@@ -46,7 +50,6 @@ class ExternalCommand : BaseCommand() {
 
         try {
             val testClass = Class.forName(className)
-//            val testObject = testClass.newInstance()
             log("running external class '$className'")
 
             // save the current tests ran count, tests pass count, tests failed count... so that we can tally the
@@ -93,14 +96,23 @@ class ExternalCommand : BaseCommand() {
         requires(StringUtils.isNotBlank(programPathAndParams), "empty/null programPathAndParams")
 
         try {
-            val output = exec(programPathAndParams)
+            val programAndParams = RuntimeUtils.formatCommandLine(programPathAndParams)
+            if (programAndParams.isEmpty()) {
+                throw IllegalArgumentException("Unable to parse programPathAndParams: $programAndParams")
+            }
 
             //attach link to results
-            val outputFileName = "runProgram_${context.currentTestStep.row[0].reference}.log"
+            val currentRow = context.currentTestStep.row[0].reference
+            val outputFileName = "runProgram_$currentRow.log"
             context.setData(OPT_RUN_PROGRAM_OUTPUT, outputFileName)
             val fileName = Syspath().out("fullpath") + separator + outputFileName
-            FileUtils.write(File(fileName), output, DEF_CHARSET, false)
-            addLinkRef("Follow the link to view the output", "output", fileName)
+
+            val env = prepEnv(fileName, currentRow)
+
+            invoke(programAndParams[0], programAndParams.filterIndexed { index, _ -> index > 0 }, env)
+
+            //attach link to results
+            addLinkRef(null, "output", fileName)
 
             return StepResult.success()
         } catch (e: Exception) {
@@ -117,14 +129,14 @@ class ExternalCommand : BaseCommand() {
                 throw IllegalArgumentException("Unable to parse programPathAndParams: $programAndParams")
             }
 
-            val outputFileName = "runProgramNoWait_${context.currentTestStep.row[0].reference}.log"
+            val currentRow = context.currentTestStep.row[0].reference
+            val outputFileName = "runProgramNoWait_$currentRow.log"
             context.setData(OPT_RUN_PROGRAM_OUTPUT, outputFileName)
             val fileName = Syspath().out("fullpath") + separator + outputFileName
 
-            val env = mutableMapOf<String, String>()
-            env[PROC_REDIRECT_OUT] = fileName
+            val env = prepEnv(fileName, currentRow)
 
-            ProcessInvoker.invokeNoWait(programAndParams[0], programAndParams.asList().drop(0), env)
+            invokeNoWait(programAndParams[0], programAndParams.filterIndexed { index, _ -> index > 0 }, env)
 
             //attach link to results
             addLinkRef("Follow the link to view the output", "output", fileName)
@@ -135,6 +147,53 @@ class ExternalCommand : BaseCommand() {
         }
     }
 
+    fun terminate(programName: String): StepResult {
+        requires(StringUtils.isNotBlank(programName), "empty/null programName")
+        return if (RuntimeUtils.terminateInstance(programName))
+            StepResult.success("Program $programName successfully terminated")
+        else
+            StepResult.fail("Program $programName NOT terminated successfully, check log for detail")
+    }
+
+    /**
+     * tail a reachable (local or network via shared folder or SMB) file. File does not have to exists when this command
+     * is executed. However, background thread will be issued to watch/display the content of such file.
+     * @param file String
+     * @return StepResult
+     */
+    fun tail(id: String, file: String): StepResult {
+        requiresNotBlank(id, "invalid id", id)
+        requiresNotBlank(file, "invalid file", file)
+
+        if (FileUtil.isFileReadable(file, 1)) {
+            ConsoleUtils.log("File $file not readable at this time. Nexial will display its content when available")
+        }
+
+        val listener = ExternalTailer(id)
+        val tailer = Tailer.create(File(file), listener, 250, true, true)
+
+        val tailThread = Thread(tailer)
+        tailThread.isDaemon = true
+        tailThread.start()
+
+        ShutdownAdvisor.addAdvisor(ExternalTailShutdownHelper(tailThread, tailer))
+        return StepResult.success("tail watch on $file began...")
+    }
+
+    private fun prepEnv(outputFile: String, currentRow: String): MutableMap<String, String> {
+        val env = mutableMapOf<String, String>()
+
+        env[PROC_REDIRECT_OUT] = outputFile
+
+        val consoleOut = context.getBooleanData(OPT_RUN_PROGRAM_CONSOLE, getDefaultBool(OPT_RUN_PROGRAM_CONSOLE))
+        if (consoleOut) {
+            env[PROC_CONSOLE_OUT] = "true"
+            env[PROC_CONSOLE_ID] = "${context.runId}][$currentRow"
+        }
+
+        return env
+    }
+
     companion object {
         @Throws(IOException::class)
         fun exec(programPathAndParams: String): String {
@@ -142,6 +201,34 @@ class ExternalCommand : BaseCommand() {
             // could be "weird batch file with spaces.bat" "blah blah blah" 1 2 3
             val proc = Runtime.getRuntime().exec(RuntimeUtils.formatCommandLine(programPathAndParams))
             return TextUtils.toString(IOUtils.readLines(proc.inputStream, DEF_CHARSET), lineSeparator())
+        }
+    }
+}
+
+class ExternalTailer(val id: String) : TailerListenerAdapter() {
+    override fun handle(line: String?) = ConsoleUtils.log(id, line)
+
+    override fun handle(ex: java.lang.Exception?) {
+        if (ex !is InterruptedException) ConsoleUtils.log(id, "ERROR FOUND:\n$ex")
+    }
+
+    override fun fileNotFound() {
+        super.fileNotFound()
+    }
+}
+
+class ExternalTailShutdownHelper(private var tailThread: Thread?, var tailer: Tailer?) : ForcefulTerminate {
+    override fun mustForcefullyTerminate() = (tailThread != null && tailThread!!.isAlive) || (tailer != null)
+
+    override fun forcefulTerminate() {
+        if (tailer != null) {
+            tailer!!.stop()
+            tailer = null
+        }
+
+        if (tailThread != null) {
+            tailThread!!.interrupt()
+            tailThread = null
         }
     }
 }

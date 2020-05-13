@@ -30,17 +30,16 @@ import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.xssf.usermodel.XSSFCell;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.nexial.core.ExecutionEventListener;
+import org.nexial.commons.InvalidInputRuntimeException;
 import org.nexial.core.excel.Excel;
 import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.excel.ExcelArea;
-import org.nexial.core.service.EventTracker;
-import org.nexial.core.service.SQLiteManager;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.ExecutionLogger;
 
-import static org.nexial.core.NexialConst.Data.CMD_REPEAT_UNTIL;
+import static org.nexial.core.CommandConst.CMD_REPEAT_UNTIL;
+import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.excel.ExcelConfig.*;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.SCENARIO;
 
@@ -50,9 +49,14 @@ public class TestScenario {
     private Worksheet worksheet;
     private TestScenarioMeta meta;
     private ExecutionSummary executionSummary = new ExecutionSummary();
-    private String scenarioId;
-    private int scenarioSeqId = 0;
-    private String iterationId;
+
+    /** the section with the corresponding worksheet that has test steps */
+    private ExcelArea area;
+
+    private List<TestCase> testCases;
+    private Map<String, TestCase> testCaseMap;
+    private List<TestStep> allSteps;
+    private Map<Integer, TestStep> testStepsByRow;
 
     public TestScenario(ExecutionContext context, Worksheet worksheet) {
         assert context != null && StringUtils.isNotBlank(context.getId());
@@ -61,24 +65,9 @@ public class TestScenario {
         this.context = context;
         this.worksheet = worksheet;
         this.name = worksheet.getName();
-        this.scenarioId = SQLiteManager.get();
 
         parse();
     }
-
-    public void setIterationId(String iterationId) { this.iterationId = iterationId; }
-
-    /**
-     * the section with the corresponding worksheet that has test steps
-     */
-    private ExcelArea area;
-
-    private List<TestCase> testCases;
-    private Map<String, TestCase> testCaseMap;
-    private List<TestStep> allSteps;
-    private Map<Integer, TestStep> testStepsByRow;
-
-    public void setScenarioSeqId(int scenarioSeqId) { this.scenarioSeqId = scenarioSeqId; }
 
     public String getName() { return name; }
 
@@ -115,51 +104,43 @@ public class TestScenario {
         executionSummary.setStartTime(System.currentTimeMillis());
         executionSummary.setTotalSteps(CollectionUtils.size(allSteps));
 
+        context.setCurrentScenario(this);
         ExecutionEventListener executionEventListener = context.getExecutionEventListener();
         executionEventListener.onScenarioStart();
-        executionSummary.setId(scenarioId);
-        EventTracker.INSTANCE.track(new NexialScenarioStartEvent(scenarioId, name, iterationId, scenarioSeqId));
-        int activitySeqId = 0;
 
         for (TestCase testCase : testCases) {
-            testCase.setScenarioId(scenarioId);
-            testCase.setActivitySeqId(++activitySeqId);
             context.setCurrentActivity(testCase);
 
             if (skipDueToFailFast) {
-                logger.log(this, "skipping test activity due to previous failure");
+                logger.log(this, MSG_ACTIVITY_FAIL_FAST);
                 continue;
             }
 
             if (skipDueToEndFast) {
-                logger.log(this, "skipping test activity due to previous end");
+                logger.log(this, MSG_ACTIVITY_FAIL_END);
                 continue;
             }
 
             if (skipDueToEndLoop) {
-                logger.log(this, "skipping test activity due to break-loop in effect");
+                logger.log(this, MSG_ACTIVITY_FAIL_END_LOOP);
                 continue;
             }
 
-            boolean pass = testCase.execute();
-            if (!pass) {
+            if (!testCase.execute()) {
                 allPass = false;
                 if (shouldFailFast || context.isFailImmediate()) {
                     skipDueToFailFast = true;
-                    logger.log(this, "test activity execution failed. " +
-                                     "Because of this, all subsequent test case will be skipped");
+                } else if (context.isEndImmediate()) {
+                    skipDueToEndFast = true;
+                } else if (context.isBreakCurrentIteration()) {
+                    skipDueToEndLoop = true;
                 }
-            }
-
-            if (context.isEndImmediate()) {
+            } else if (context.isEndImmediate()) {
                 skipDueToEndFast = true;
-                logger.log(this, "test activity execution ending due to EndIf() flow control activated.");
-            }
-
-            if (context.isBreakCurrentIteration()) {
+                logger.log(testCase, MSG_ACTIVITY_ENDING_IF);
+            } else if (context.isBreakCurrentIteration()) {
                 skipDueToEndLoop = true;
-                logger.log(this, "test activity execution ending due to EndLoopIf() flow control activated " +
-                                 "or unrecoverable execution failure.");
+                logger.log(testCase, MSG_ACTIVITY_ENDING_LOOP_IF);
             }
 
             executionSummary.addNestSummary(testCase.getExecutionSummary());
@@ -188,7 +169,7 @@ public class TestScenario {
         List<TestStep> testSteps = new ArrayList<>();
         for (int i = startRow; i <= endRow; i++) {
             TestStep testStep = getTestStepByRowIndex(i);
-            if (testStep != null) {testSteps.add(testStep); }
+            if (testStep != null) { testSteps.add(testStep); }
         }
         return testSteps;
     }
@@ -243,31 +224,45 @@ public class TestScenario {
         allSteps = new ArrayList<>();
         testStepsByRow = new HashMap<>();
 
+        String scenarioRef = "Error found in [" + worksheet.getFile().getName() + "][" + name + "]";
+
         // 3. parse for test steps->test case grouping
-        TestCase currentTestCase = null;
+        TestCase currentActivity = null;
         for (int i = 0; i < area.getWholeArea().size(); i++) {
             List<XSSFCell> row = area.getWholeArea().get(i);
 
-            XSSFCell cellTestCase = row.get(COL_IDX_TESTCASE);
-            String testCase = Excel.getCellValue(cellTestCase);
-            boolean hasTestCase = StringUtils.isNotBlank(testCase);
-            if (currentTestCase == null && !hasTestCase) {
+            XSSFCell cellActivity = row.get(COL_IDX_TESTCASE);
+            String errorPrefix = scenarioRef + "[" + cellActivity.getReference() + "]: ";
+            String activity = Excel.getCellValue(cellActivity);
+            if (StringUtils.isNotEmpty(activity) && StringUtils.isAllBlank(activity)) {
+                throw new RuntimeException(errorPrefix + "Found invalid, space-only activity name");
+            }
+
+            boolean hasActivity = StringUtils.isNotBlank(activity);
+            if (currentActivity == null && !hasActivity) {
                 // first row must define test case (hence at least 1 test case is required)
-                throw new RuntimeException("Invalid format found in " + worksheet.getFile() + " (" + name +
-                                           "): Test case not found.");
+                throw new RuntimeException(errorPrefix + "Invalid format; First row must contain valid activity name");
             }
 
-            if (hasTestCase) {
-                currentTestCase = new TestCase();
-                currentTestCase.setName(testCase);
-                currentTestCase.setTestScenario(this);
-                testCases.add(currentTestCase);
-                testCaseMap.put(currentTestCase.getName(), currentTestCase);
+            if (hasActivity) {
+                if (testCaseMap.containsKey(activity)) {
+                    // found duplicate activity name!
+                    throw new InvalidInputRuntimeException(
+                        errorPrefix + "Found duplicate activity name '" + activity + "'",
+                        System.getProperty(OPT_INPUT_EXCEL_FILE)
+                    );
+                }
+
+                currentActivity = new TestCase();
+                currentActivity.setName(activity);
+                currentActivity.setTestScenario(this);
+                testCases.add(currentActivity);
+                testCaseMap.put(currentActivity.getName(), currentActivity);
             }
 
-            TestStep testStep = new TestStep(currentTestCase, row);
+            TestStep testStep = new TestStep(currentActivity, row);
             if (testStep.isCommandRepeater()) { i += collectRepeatingCommandSet(testStep, area.getWholeArea(), i + 1); }
-            currentTestCase.addTestStep(testStep);
+            currentActivity.addTestStep(testStep);
             allSteps.add(testStep);
             testStepsByRow.put(row.get(0).getRowIndex() + 1, testStep);
         }
@@ -319,7 +314,7 @@ public class TestScenario {
             if (i == startFrom && !StringUtils.startsWith(nextStep.getCommand(), "assert")) {
                 String errMsg1 = "[ROW " + (startFrom + area.getTopLeft().getRowIndex()) + "] " +
                                  "wrong command for the first step.  First command MUST be an assertion " +
-                                 "(assert* command), not " + nextStep.getCommandFQN();
+                                 "(i.e., an assert*() command), not " + nextStep.getCommandFQN();
                 ConsoleUtils.error(errMsg1);
                 throw new RuntimeException(errMsg1);
             }

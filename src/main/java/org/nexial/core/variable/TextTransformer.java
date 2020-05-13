@@ -17,6 +17,7 @@
 
 package org.nexial.core.variable;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -24,21 +25,37 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.set.ListOrderedSet;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.text.WordUtils;
+import org.jdom2.JDOMException;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Document.OutputSettings.Syntax;
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.RegexUtils;
+import org.nexial.commons.utils.ResourceUtils;
 import org.nexial.commons.utils.TextUtils;
+import org.nexial.commons.utils.XmlUtils;
 import org.nexial.core.ExecutionThread;
 import org.nexial.core.model.ExecutionContext;
+import org.nexial.core.plugins.ws.WsCommand;
 
-import static org.nexial.core.NexialConst.Data.DEF_TEXT_DELIM;
+import com.google.gson.JsonElement;
+
+import static org.nexial.core.NexialConst.Data.EXPRESSION_RESOLVE_URL;
+import static org.nexial.core.NexialConst.Data.TEXT_DELIM;
+import static org.nexial.core.NexialConst.GSON;
+import static org.nexial.core.SystemVariables.getDefault;
+import static org.nexial.core.SystemVariables.getDefaultBool;
 import static org.nexial.core.utils.CheckUtils.requiresPositiveNumber;
 import static org.nexial.core.variable.ExpressionUtils.fixControlChars;
 
-public class TextTransformer<T extends TextDataType> extends Transformer {
+public class TextTransformer<T extends TextDataType> extends Transformer<T> {
     private static final Map<String, Integer> FUNCTION_TO_PARAM_LIST = discoverFunctions(TextTransformer.class);
     private static final Map<String, Method> FUNCTIONS =
         toFunctionMap(FUNCTION_TO_PARAM_LIST, TextTransformer.class, TextDataType.class);
@@ -93,7 +110,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
     }
 
     public T trim(T data) {
-        if (data == null) { return data; }
+        if (data == null) { return null; }
         data.setValue(StringUtils.trim(data.getValue()));
         return data;
     }
@@ -111,7 +128,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
         Set<Character> distinctChars = new ListOrderedSet<>();
         for (char c : chars) { distinctChars.add(c); }
 
-        Character[] characters = distinctChars.toArray(new Character[distinctChars.size()]);
+        Character[] characters = distinctChars.toArray(new Character[0]);
         chars = new char[characters.length];
         for (int i = 0; i < characters.length; i++) { chars[i] = characters[i]; }
         String newValue = new String(chars);
@@ -206,7 +223,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
         if (data == null || StringUtils.isEmpty(data.getTextValue()) || StringUtils.isEmpty(searchFor)) { return data;}
         data.setValue(StringUtils.replace(data.getTextValue(),
                                           fixControlChars(searchFor),
-                                          fixControlChars(replaceWith)));
+                                          StringUtils.defaultString(fixControlChars(replaceWith))));
         return data;
     }
 
@@ -319,7 +336,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
         }
 
         ExecutionContext context = ExecutionThread.get();
-        String delim = context == null ? DEF_TEXT_DELIM : context.getTextDelim();
+        String delim = context == null ? getDefault(TEXT_DELIM) : context.getTextDelim();
 
         StringBuilder csvContent = new StringBuilder();
 
@@ -328,7 +345,11 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
             StringBuilder record = new StringBuilder();
             int lastPos = 0;
             for (int pos : positionNums) {
-                record.append(StringUtils.substring(line, lastPos, pos - 1)).append(delim);
+                String extracted = StringUtils.substring(line, lastPos, pos - 1);
+                if (StringUtils.contains(extracted, delim)) {
+                    extracted = TextUtils.wrapIfMissing(StringUtils.trim(extracted), "\"", "\"");
+                }
+                record.append(extracted).append(delim);
                 lastPos = pos - 1;
             }
             record.append(StringUtils.substring(line, lastPos));
@@ -339,6 +360,7 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
         csv.setHeader(false);
         csv.setDelim(delim);
         csv.setRecordDelim("\n");
+        csv.setKeepQuote(true);
         csv.setReadyToParse(true);
         csv.parse();
         return csv;
@@ -346,14 +368,125 @@ public class TextTransformer<T extends TextDataType> extends Transformer {
 
     public T base64encode(T data) {
         if (data == null || StringUtils.isEmpty(data.getValue())) { return data; }
-        data.setValue(TextUtils.base64encoding(data.getValue()));
+        data.setValue(TextUtils.base64encode(data.getValue()));
         return data;
     }
 
     public T base64decode(T data) {
         if (data == null || StringUtils.isEmpty(data.getValue())) { return data; }
-        data.setValue(TextUtils.base64decoding(data.getValue()));
+        data.setValue(TextUtils.base64decode(data.getValue()));
         return data;
+    }
+
+    public T base64decodeThenSave(T data, String path, String append) {
+        if (data == null || data.getValue() == null) { return data; }
+        if (StringUtils.isBlank(path)) { throw new IllegalArgumentException("path is empty/blank"); }
+
+        byte[] decoded = TextUtils.base64decodeAsBytes(data.getValue());
+        FileUtil.writeBinaryFile(path, BooleanUtils.toBoolean(append), decoded);
+        data.setValue(new String(decoded));
+        return data;
+    }
+
+    public XmlDataType xml(T data) throws TypeConversionException {
+        String text = data.value;
+
+        ExecutionContext context = ExecutionThread.get();
+        boolean resolveUrl = context.getBooleanData(EXPRESSION_RESOLVE_URL, getDefaultBool(EXPRESSION_RESOLVE_URL));
+
+        // could be a proper XML already
+        org.jdom2.Document xmlDoc;
+        try {
+            xmlDoc = XmlUtils.parse(text);
+            if (xmlDoc != null) { return new XmlDataType(text); }
+        } catch (JDOMException | IOException e) {
+            // nope.. maybe it's a malformed HTML or a URL reference
+            try {
+                Document document = resolveUrl && ResourceUtils.isWebResource(text) ?
+                                    Jsoup.connect(text).get() : Jsoup.parse(text);
+                if (document == null) {
+                    throw new TypeConversionException("XML", text, "No valid XML content found via '" + text + "'");
+                }
+
+                document.outputSettings().prettyPrint(true).syntax(Syntax.xml);
+                String html = StringUtils.trim(document.html());
+                // remove doc declaration since XML parser might not like that
+                // i.e. <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+                if (StringUtils.startsWith(html, "<!")) {
+                    html = StringUtils.trim(StringUtils.substringAfter(html, ">"));
+                }
+
+                xmlDoc = XmlUtils.parse(html);
+                if (xmlDoc != null) { return new XmlDataType(html); }
+            } catch (IOException ex) {
+                // can't get content via URL
+                throw new TypeConversionException("XML", text, "Error downloading '" + text + "': " + e.getMessage());
+            } catch (JDOMException ex) {
+                throw new TypeConversionException("XML", text, "Error parsing '" + text + "': " + e.getMessage());
+            }
+        }
+
+        throw new TypeConversionException("XML", text, "Unable to convert TEXT to XML via '" + text + "'");
+    }
+
+    public JsonDataType json(T data) throws TypeConversionException {
+        String text = data.value;
+
+        ExecutionContext context = ExecutionThread.get();
+        boolean resolveUrl = context.getBooleanData(EXPRESSION_RESOLVE_URL, getDefaultBool(EXPRESSION_RESOLVE_URL));
+
+        // could be a proper JSON already
+        JsonElement json;
+        try {
+            if (resolveUrl && ResourceUtils.isWebResource(text)) { text = WsCommand.resolveWebContent(text); }
+
+            text = JsonDataType.escapeUnicode(text);
+            json = GSON.fromJson(text, JsonElement.class);
+            if (json != null) { return new JsonDataType(text); }
+        } catch (IOException e) {
+            // nope.. maybe it's a malformed HTML or a URL reference
+            throw new TypeConversionException("JSON",
+                                              data.value,
+                                              "Error downloading '" + data.value + "': " + e.getMessage());
+        }
+
+        throw new TypeConversionException("JSON", text, "Cannot convert TEXT to JSON: " + data.value);
+    }
+
+    /**
+     * parse current `TEXT` content as a `CSV` expression
+     */
+    public CsvDataType parseAsCsv(T data, String... configs) throws TypeConversionException {
+        if (data == null || StringUtils.isEmpty(data.getValue())) {
+            throw new TypeConversionException("TEXT", "Invalid TEXT expression: null");
+        }
+
+        CsvDataType csv = new CsvDataType(data.value);
+        csv.configAndParse(configs);
+        return csv;
+    }
+
+    public ListDataType extract(T data, String beginRegex, String endRegex, String inclusive) {
+        ListDataType list = new ListDataType();
+        if (data == null || data.getValue() == null) { return list; }
+
+        if (StringUtils.isBlank(beginRegex)) { throw new IllegalArgumentException("beginRegex is empty/blank"); }
+        if (StringUtils.isBlank(endRegex)) { throw new IllegalArgumentException("endRegex is empty/blank"); }
+
+        boolean includeBeginEnd = BooleanUtils.toBoolean(inclusive);
+        List<String> matches = RegexUtils.extract(data.getValue(), beginRegex + ".*?" + endRegex);
+        if (CollectionUtils.isEmpty(matches)) { return list; }
+
+        String[] extracted = matches.stream()
+                                    .map(match ->
+                                             includeBeginEnd ?
+                                             match :
+                                             RegexUtils.removeMatches(RegexUtils.removeMatches(match, "^" + beginRegex),
+                                                                      endRegex + "$"))
+                                    .toArray(String[]::new);
+        list.setValue(extracted);
+        list.setTextValue(TextUtils.toString(extracted, list.getDelim(), "", ""));
+        return list;
     }
 
     @Override

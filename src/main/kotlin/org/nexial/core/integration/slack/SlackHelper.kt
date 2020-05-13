@@ -2,11 +2,7 @@ package org.nexial.core.integration.slack
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.commons.validator.routines.UrlValidator
-import org.nexial.core.integration.ExecutionOutput
-import org.nexial.core.integration.INTEGRATION
-import org.nexial.core.integration.IntegrationHelper
-import org.nexial.core.integration.SLACK_CHAT_URL
-import org.nexial.core.integration.TemplateEngine
+import org.nexial.core.integration.*
 import org.nexial.core.model.ExecutionContext
 import org.nexial.core.plugins.ws.AsyncWebServiceClient
 import org.nexial.core.utils.ConsoleUtils

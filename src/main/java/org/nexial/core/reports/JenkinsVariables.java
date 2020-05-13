@@ -23,13 +23,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.nexial.core.model.ExecutionContext;
 
 import static org.nexial.core.NexialConst.Jenkins.*;
-import static org.nexial.core.NexialConst.OPT_EXCEL_FILE;
-import static org.nexial.core.NexialConst.OPT_INPUT_EXCEL_FILE;
+import static org.nexial.core.NexialConst.*;
 
-/**
- *
-
- */
 public final class JenkinsVariables {
     private static JenkinsVariables self;
 

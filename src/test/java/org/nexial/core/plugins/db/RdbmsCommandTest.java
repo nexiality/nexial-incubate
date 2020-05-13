@@ -26,34 +26,34 @@ import org.junit.Assert;
 import org.junit.Test;
 
 public class RdbmsCommandTest {
-    @Test
-    public void rowToString() throws Exception {
-        RdbmsCommand subject = new RdbmsCommand();
+	@Test
+	public void rowToString() throws Exception {
+		RdbmsCommand subject = new RdbmsCommand();
 
-        List<String> columnNames = Arrays.asList("code", "description", "address");
-        String delim = ",";
+		List<String> columnNames = Arrays.asList("code", "description", "address");
+		String delim = ",";
 
-        Map<String, String> fixture = new HashMap<>();
-        fixture.put("code", "BRK");
-        fixture.put("description", "Burbank");
-        fixture.put("address", " ,     ");
-        String csv = subject.rowToString(fixture, columnNames, delim);
-        Assert.assertEquals("BRK,Burbank,\" ,     \"", csv);
+		Map<String, String> fixture = new HashMap<>();
+		fixture.put("code", "BRK");
+		fixture.put("description", "Burbank");
+		fixture.put("address", " ,     ");
+		String csv = subject.rowToString(fixture, columnNames, delim);
+		Assert.assertEquals("BRK,Burbank,\" ,     \"", csv);
 
-        fixture = new HashMap<>();
-        fixture.put("code", "PHX");
-        fixture.put("description", "Haxonwak, AZ office");
-        fixture.put("address", "1921 Alphine st #525, Haxonwak AZ 25382 USA");
-        csv = subject.rowToString(fixture, columnNames, delim);
-        Assert.assertEquals("PHX,\"Haxonwak, AZ office\",\"1921 Alphine st #525, Haxonwak AZ 25382 USA\"", csv);
+		fixture = new HashMap<>();
+		fixture.put("code", "PHX");
+		fixture.put("description", "Haxonwak, AZ office");
+		fixture.put("address", "1921 Alphine st #525, Haxonwak AZ 25382 USA");
+		csv = subject.rowToString(fixture, columnNames, delim);
+		Assert.assertEquals("PHX,\"Haxonwak, AZ office\",\"1921 Alphine st #525, Haxonwak AZ 25382 USA\"", csv);
 
-        fixture = new HashMap<>();
-        fixture.put("code", "007 Location");
-        fixture.put("description", "De\"s,\"c");
-        fixture.put("address", "Phoenix , Tempe AZ 20001 US");
-        csv = subject.rowToString(fixture, columnNames, delim);
-        Assert.assertEquals("007 Location,\"De\"\"s,\"\"c\",\"Phoenix , Tempe AZ 20001 US\"", csv);
+		fixture = new HashMap<>();
+		fixture.put("code", "007 Location");
+		fixture.put("description", "De\"s,\"c");
+		fixture.put("address", "Phoenix , Tempe AZ 20001 US");
+		csv = subject.rowToString(fixture, columnNames, delim);
+		Assert.assertEquals("007 Location,\"De\"\"s,\"\"c\",\"Phoenix , Tempe AZ 20001 US\"", csv);
 
-    }
+	}
 
 }

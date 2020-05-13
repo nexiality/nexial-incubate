@@ -26,8 +26,8 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.nexial.core.model.ExecutionContext.Function;
-import org.nexial.core.variable.*;
 import org.nexial.core.variable.Date;
+import org.nexial.core.variable.*;
 
 import static java.io.File.separator;
 import static org.apache.commons.lang3.SystemUtils.JAVA_IO_TMPDIR;
@@ -118,6 +118,40 @@ public class ExecutionContextTest {
     }
 
     @Test
+    public void replaceTokens_array_as_string() {
+        MockExecutionContext subject = initMockContext();
+        subject.setData("a", "Hello,World,Johnny boy");
+
+        Assert.assertEquals("Hello", subject.replaceTokens("${a}[0]"));
+        Assert.assertEquals("World", subject.replaceTokens("${a}[1]"));
+        Assert.assertEquals("Johnny boy", subject.replaceTokens("${a}[2]"));
+        Assert.assertEquals("Hello,World,Johnny boy", subject.replaceTokens("${a}"));
+
+        Assert.assertEquals("[1]", subject.replaceTokens("${b}[1]"));
+
+        subject.setData("just a number", 571);
+
+        Assert.assertEquals("571", subject.replaceTokens("${just a number}"));
+        Assert.assertEquals("571", subject.replaceTokens("${just a number}[0]"));
+
+        Assert.assertEquals("Hello World!", subject.replaceTokens("${a}[0] ${a}[1]!"));
+        Assert.assertEquals("Who's Johnny boy? Where in the World is he?",
+                            subject.replaceTokens("Who's ${a}[2]? Where in the ${a}[1] is he?"));
+
+        // invalid ref test
+        Assert.assertEquals("", subject.replaceTokens("${a}[22]"));
+        Assert.assertEquals("571[2]", subject.replaceTokens("${just a number}[2]"));
+        Assert.assertEquals("Who's Johnny boy? Where in the World is he? How about ",
+                            subject.replaceTokens("Who's ${a}[2]? Where in the ${a}[1] is he? How about ${a}[4]"));
+
+        subject.setData(OPT_VAR_DEFAULT_AS_IS, "true");
+        Assert.assertEquals("Who's Johnny boy? Where in the World is he? How about Hello,World,Johnny boy[4]",
+                            subject.replaceTokens("Who's ${a}[2]? Where in the ${a}[1] is he? How about ${a}[4]"));
+
+        subject.cleanProject();
+    }
+
+    @Test
     public void replaceTokens_array() {
         MockExecutionContext subject = initMockContext();
         subject.setData("a", "Hello,World,Johnny boy");
@@ -151,6 +185,20 @@ public class ExecutionContextTest {
     }
 
     @Test
+    public void replaceTokens_array_index() {
+        MockExecutionContext subject = initMockContext();
+        subject.setData("a", "Hello,World,Johnny boy");
+        subject.setData("b", "Hello World Johnny boy");
+
+        subject.setData("index", 0);
+        Assert.assertEquals("Hello", subject.replaceTokens("${a}[${index}]"));
+        Assert.assertEquals("Hello World Johnny boy[0]", subject.replaceTokens("${b}[${index}]"));
+
+        subject.setData("index", 1);
+        Assert.assertEquals("World", subject.replaceTokens("${a}[${index}]"));
+    }
+
+    @Test
     public void replaceTokens_ignored() {
         MockExecutionContext subject = initMockContext();
         subject.setData(OPT_VAR_EXCLUDE_LIST, "username,applications");
@@ -176,7 +224,7 @@ public class ExecutionContextTest {
     }
 
     @Test
-    public void handleFunction() {
+    public void handleDateFunctions() {
         MockExecutionContext subject = initMockContext();
         subject.setData("firstDOW", "04/30/2017");
 
@@ -187,6 +235,24 @@ public class ExecutionContextTest {
 
         System.out.println(subject.handleFunction(
             "$(date|format|$(date|addDay|$(sysdate|firstDOW|MM/dd/yyyy)|1)|MM/dd/yyyy|MM/dd/yy)"));
+
+        // diff
+        subject.setData("date1", "04/30/2017 00:00:15");
+        subject.setData("date2", "05/17/2017 21:49:22");
+        Assert.assertEquals("17.91",
+                            subject.handleFunction("$(format|number|$(date|diff|${date1}|${date2}|DAY)|###.00)"));
+        Assert.assertEquals("17.91",
+                            subject.handleFunction("$(format|number|$(date|diff|${date1}|${date2}|DAY)|###.##)"));
+        Assert.assertEquals("2.6", subject.handleFunction("$(format|number|$(date|diff|${date2}|${date1}|WEEK)|0.#)"));
+        Assert.assertEquals("1", subject.handleFunction("$(format|number|$(date|diff|${date2}|${date1}|MONTH)|#)"));
+        Assert.assertEquals("0", subject.handleFunction("$(format|number|$(date|diff|${date2}|${date1}|YEAR)|0)"));
+        Assert.assertEquals("0430",
+                            subject.handleFunction("$(format|number|$(date|diff|${date1}|${date2}|HOUR)|0000)"));
+        Assert.assertEquals("25789.1167",
+                            subject.handleFunction("$(format|number|$(date|diff|${date1}|${date2}|MINUTE)|#.####)"));
+        Assert.assertEquals("1547347", subject.handleFunction("$(date|diff|${date1}|${date2}|SECOND)"));
+        Assert.assertEquals("1547347000",
+                            subject.handleFunction("$(format|number|$(date|diff|${date1}|${date2}|MILLISECOND)|0000)"));
 
         subject.cleanProject();
     }
@@ -362,6 +428,7 @@ public class ExecutionContextTest {
         Assert.assertEquals("a,is,long,text,this", subject.replaceTokens("$(array|ascending|this,is,a,long,text)"));
         Assert.assertEquals("this,is,text", subject.replaceTokens("$(array|pack|this,is,,,text,,,)"));
         Assert.assertEquals("had,a,little", subject.replaceTokens("$(array|subarray|mary,had,a,little,lamb|1|3)"));
+        Assert.assertEquals("little,lamb", subject.replaceTokens("$(array|subarray|mary,had,a,little,lamb|3|-1)"));
 
         // nested functions
         Assert.assertEquals("HAD,A,LITTLE",
@@ -474,18 +541,28 @@ public class ExecutionContextTest {
 
         String dataPath = System.getProperty(OPT_PROJECT_BASE) + separator + "artifact" + separator + "data";
         expected = "<logger name=\"ch.qos.logback\" additivity=\"false\" level=\"WARN\">" +
-                   "<appender-ref ref=\"" + dataPath + "/junk1.txt\"/>" +
+                   "<appender-ref ref=\"" + dataPath + separator + "junk1.txt\"/>" +
                    "</logger>" +
                    "<logger name=\"ch.qos.logback.classic.LoggerContext\" additivity=\"false\" level=\"WARN\">" +
-                   "<appender-ref ref=\"console\">" + dataPath + "/junk2.txt</appender>" +
+                   "<appender-ref ref=\"console\">" + dataPath + separator + "junk2.txt</appender>" +
                    "</logger>" +
                    "<logger name=\"ch.qos.logback.core\" additivity=\"false\" level=\"WARN\">" +
-                   dataPath + "/junk3.txt" +
+                   dataPath + separator + "junk3.txt" +
                    "</logger>";
 
         actual = subject.replaceTokens(fixture);
         Assert.assertEquals(expected, actual);
 
+    }
+
+    @Test
+    public void handleExpression() throws Exception {
+        MockExecutionContext subject = initMockContext();
+        subject.setData("suggestions", "[\"croissant\",\"croissant\",\"croissant\"]");
+
+        String result =
+            subject.replaceTokens("[TEXT(${suggestions}) =>  removeStart([) removeEnd(]) remove(\") replace(\\,,~)]");
+        Assert.assertEquals(result, "croissant~croissant~croissant");
     }
 
     @NotNull

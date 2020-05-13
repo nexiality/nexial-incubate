@@ -26,7 +26,7 @@ import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.lang.reflect.Parameter;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -39,10 +39,15 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.JRegexUtils;
 import org.nexial.commons.utils.RegexUtils;
+import org.nexial.commons.utils.ResourceUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.ExecutionThread;
+import org.nexial.core.TokenReplacementException;
 import org.nexial.core.excel.ext.CellTextReader;
 import org.nexial.core.model.CommandRepeater;
 import org.nexial.core.model.ExecutionContext;
@@ -50,40 +55,41 @@ import org.nexial.core.model.StepResult;
 import org.nexial.core.model.TestStep;
 import org.nexial.core.plugins.CanLogExternally;
 import org.nexial.core.plugins.NexialCommand;
+import org.nexial.core.plugins.image.ImageCaptionHelper;
+import org.nexial.core.plugins.image.ImageCaptionHelper.CaptionModel;
+import org.nexial.core.plugins.ws.WsCommand;
 import org.nexial.core.tools.CommandDiscovery;
 import org.nexial.core.utils.CheckUtils;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.ExecUtils;
+import org.nexial.core.utils.OutputFileUtils;
 import org.nexial.core.variable.Syspath;
 
+import static java.io.File.separator;
 import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
 import static java.lang.System.lineSeparator;
 import static java.util.regex.Pattern.CASE_INSENSITIVE;
+import static org.apache.commons.lang3.SystemUtils.JAVA_IO_TMPDIR;
+import static org.nexial.core.CommandConst.*;
 import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.CMD_PROFILE_DEFAULT;
 import static org.nexial.core.NexialConst.Data.NULL;
-import static org.nexial.core.NexialConst.Data.toCloudIntegrationNotReadyMessage;
+import static org.nexial.core.NexialConst.ImageCaption.*;
 import static org.nexial.core.excel.ExcelConfig.MSG_PASS;
-import static org.nexial.core.excel.ext.CipherHelper.CRYPT_IND;
 import static org.nexial.core.plugins.base.IncrementStrategy.ALPHANUM;
 import static org.nexial.core.utils.CheckUtils.*;
 import static org.nexial.core.utils.OutputFileUtils.CASE_INSENSIVE_SORT;
 
 public class BaseCommand implements NexialCommand {
-    public static final List<String> PARAM_AUTO_FILL_COMMANDS = Arrays.asList("desktop.typeTextBox",
-                                                                              "desktop.typeAppendTextBox",
-                                                                              "desktop.typeAppendTextArea",
-                                                                              "desktop.typeTextArea",
-                                                                              "desktop.sendKeysToTextBox");
-    // "self-derived" means that the command will figure out the appropriate param values for display
-    public static final List<String> PARAM_DERIVED_COMMANDS = Collections.singletonList("step.observe");
-
     protected static final IncrementStrategy STRATEGY_DEFAULT = ALPHANUM;
-
+    private static final String TMP_DELIM = "<--~.$.~-->";
     protected transient Map<String, Method> commandMethods = new HashMap<>();
     protected transient ExecutionContext context;
     protected long pauseMs;
     protected transient ContextScreenRecorder screenRecorder;
     protected Syspath syspath = new Syspath();
+    protected String profile = CMD_PROFILE_DEFAULT;
 
     public BaseCommand() {
         collectCommandMethods();
@@ -105,6 +111,12 @@ public class BaseCommand implements NexialCommand {
     public String getTarget() { return "base"; }
 
     @Override
+    public String getProfile() { return profile; }
+
+    @Override
+    public void setProfile(String profile) { this.profile = profile; }
+
+    @Override
     public boolean isValidCommand(String command, String... params) {
         return getCommandMethod(command, params) != null;
     }
@@ -123,12 +135,21 @@ public class BaseCommand implements NexialCommand {
         Object[] values = resolveParamValues(m, params);
 
         if (context.isVerbose() && (this instanceof CanLogExternally)) {
-            String displayValues = "";
+            StringBuilder displayValues = new StringBuilder(command + " (");
             for (Object value : values) {
-                displayValues += (value == null ? NULL : CellTextReader.readValue(value.toString())) + ",";
+                if (value == null) {
+                    displayValues.append(NULL).append(",");
+                } else {
+                    String val = value.toString();
+                    if (context.containsCrypt(val)) {
+                        displayValues.append(context.replaceTokens(val, true)).append(",");
+                    } else {
+                        displayValues.append(CellTextReader.readValue(val)).append(",");
+                    }
+                }
             }
-            displayValues = StringUtils.removeEnd(displayValues, ",");
-            ((CanLogExternally) this).logExternally(context.getCurrentTestStep(), command + " (" + displayValues + ")");
+            ((CanLogExternally) this).logExternally(context.getCurrentTestStep(),
+                                                    StringUtils.removeEnd(displayValues.toString(), ",") + ")");
         }
 
         StepResult result = (StepResult) m.invoke(this, values);
@@ -139,51 +160,75 @@ public class BaseCommand implements NexialCommand {
 
     public StepResult startRecording() {
         if (!ContextScreenRecorder.isRecordingEnabled(context)) {
-            return StepResult.success("Screen recording is currently disabled.");
+            return StepResult.success("desktop recording is currently disabled.");
         }
 
         if (screenRecorder != null && screenRecorder.isVideoRunning()) {
             // can't support multiple simultaneous video recording
             StepResult result = stopRecording();
-            if (result.failed()) { error("Unable to stop previous recording in progress: " + result.getMessage()); }
+            if (result.failed()) {
+                return StepResult.fail("Unable to stop previous desktop recording in progress: " + result.getMessage());
+            }
         }
 
         try {
             // Create a instance of ScreenRecorder with the required configurations
             if (screenRecorder == null) { screenRecorder = ContextScreenRecorder.newInstance(context); }
             screenRecorder.start(context.getCurrentTestStep());
-            return StepResult.success("video recording started");
+            return StepResult.success("desktop recording started; saved " + screenRecorder.getVideoFile());
         } catch (Exception e) {
-            e.printStackTrace();
-            return StepResult.fail("Unable to start recording: " + e.getMessage());
+            if (context.isVerbose()) { e.printStackTrace(); }
+            return StepResult.fail("Unable to start desktop recording: " + e.getMessage());
         }
     }
 
     public StepResult stopRecording() {
         if (screenRecorder == null || !screenRecorder.isVideoRunning()) {
-            return StepResult.success("video recording already stopped (or never ran)");
+            return StepResult.success("desktop recording already stopped (or never ran)");
         }
 
-        ConsoleUtils.log("stopping currently in-progress video recording...");
+        ConsoleUtils.log("stopping currently in-progress desktop recording...");
+
         try {
             screenRecorder.setContext(context);
             screenRecorder.stop();
-            screenRecorder = null;
-            return StepResult.success("previous recording stopped");
-        } catch (IOException e) {
-            String error = "Unable to stop and/or save screen recording" +
-                           (context.isOutputToCloud() ? ", possible due to cloud integration" : "") +
-                           ": " + e.getMessage();
-            log(error);
-            return StepResult.fail(error);
+
+            if (screenRecorder.videoFile != null) {
+                String link = screenRecorder.videoFile;
+                if (context.isOutputToCloud() && context.getOtc() != null) {
+                    try {
+                        link = context.getOtc().importMedia(new File(link), true);
+                    } catch (IOException e) {
+                        log(toCloudIntegrationNotReadyMessage(link) + ": " + e.getMessage());
+                    }
+                }
+
+                context.setData(OPT_LAST_OUTPUT_LINK, link);
+                context.setData(OPT_LAST_OUTPUT_PATH, StringUtils.contains(link, "\\") ?
+                                                      StringUtils.substringBeforeLast(link, "\\") :
+                                                      StringUtils.substringBeforeLast(link, "/"));
+
+                TestStep testStep = context.getCurrentTestStep();
+                if (testStep != null && testStep.getWorksheet() != null) {
+                    // test step undefined could mean that we are in interactive mode, or we are running unit testing
+                    testStep.addNestedScreenCapture(link, "recording from " + screenRecorder.startingLocation);
+                }
+
+                return StepResult.success("previous desktop recording saved and is accessible via " + link);
+            } else {
+                return StepResult.fail("Unable to determine video file used for current desktop recording!");
+            }
+
         } catch (Throwable e) {
-            return StepResult.fail("Unable to stop previous recording: " + e.getMessage());
+            return StepResult.fail("Unable to stop previous desktop recording: " + e.getMessage());
+        } finally {
+            screenRecorder = null;
         }
     }
 
     // todo: reconsider command name.  this is not intuitive
     public StepResult incrementChar(String var, String amount, String config) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         int amountInt = toInt(amount, "amount");
 
         String current = StringUtils.defaultString(context.getStringData(var));
@@ -199,27 +244,44 @@ public class BaseCommand implements NexialCommand {
         }
 
         String newVal = strategy.increment(current, amountInt);
-        context.setData(var, newVal);
+        updateDataVariable(var, newVal);
 
         return StepResult.success("incremented ${" + var + "} by " + amountInt + " to " + newVal);
     }
 
     public StepResult save(String var, String value) {
-        requiresValidVariableName(var);
-        context.setData(var, value);
+        requiresValidAndNotReadOnlyVariableName(var);
+        updateDataVariable(var, value);
         return StepResult.success("stored '" + CellTextReader.readValue(value) + "' as ${" + var + "}");
     }
 
-    /**
-     * clear data variables by name
-     */
+    /** clear data variables by name */
     public StepResult clear(String vars) {
         requiresNotBlank(vars, "invalid variable(s)", vars);
+        return StepResult.success(clearVariables(TextUtils.toList(vars, context.getTextDelim(), true)));
+    }
 
+    @NotNull
+    public String clearVariables(@NotNull List<String> variables) {
         List<String> ignoredVars = new ArrayList<>();
         List<String> removedVars = new ArrayList<>();
 
-        TextUtils.toList(vars, context.getTextDelim(), true).forEach(var -> {
+        if (variables.size() == 1 && StringUtils.equals(variables.get(0), "*")) {
+            variables.clear();
+            context.getDataNames("")
+                   .stream()
+                   .filter(varName -> !ExecUtils.isSystemVariable(varName) &&
+                                      !StringUtils.startsWithAny(varName,
+                                                                 "nexial.",
+                                                                 "os.",
+                                                                 "user.",
+                                                                 "oracle.",
+                                                                 "testsuite.startTs") &&
+                                      !System.getProperties().containsKey(varName))
+                   .forEach(variables::add);
+        }
+
+        variables.forEach(var -> {
             if (context.isReadOnlyData(var)) {
                 ignoredVars.add(var);
             } else if (StringUtils.isNotEmpty(context.removeData(var))) {
@@ -230,17 +292,19 @@ public class BaseCommand implements NexialCommand {
         StringBuilder message = new StringBuilder();
         if (CollectionUtils.isNotEmpty(ignoredVars)) {
             message.append("The following data variable(s) are READ ONLY and ignored: ")
-                   .append(TextUtils.toString(ignoredVars, ",")).append(" ");
+                   .append(TextUtils.toString(ignoredVars, ","))
+                   .append("\n");
         }
         if (CollectionUtils.isNotEmpty(removedVars)) {
             message.append("The following data variable(s) are removed from execution: ")
-                   .append(TextUtils.toString(removedVars, ",")).append(" ");
+                   .append(TextUtils.toString(removedVars, ","))
+                   .append("\n");
         }
         if (CollectionUtils.isEmpty(ignoredVars) && CollectionUtils.isEmpty(removedVars)) {
             message.append("None of the specified variables are removed since they either are READ-ONLY or not exist");
         }
 
-        return StepResult.success(message.toString());
+        return message.toString();
     }
 
     public StepResult substringAfter(String text, String delim, String saveVar) {
@@ -257,9 +321,9 @@ public class BaseCommand implements NexialCommand {
 
     public StepResult split(String text, String delim, String saveVar) {
         requires(StringUtils.isNotEmpty(text), "invalid source", text);
-        requiresValidVariableName(saveVar);
+        requiresValidAndNotReadOnlyVariableName(saveVar);
 
-        if (StringUtils.isEmpty(delim) || context.isNullValue(delim)) { delim = context.getTextDelim(); }
+        if (context.isNullOrEmptyValue(delim)) { delim = context.getTextDelim(); }
 
         String targetText = context.hasData(text) ? context.getStringData(text) : text;
 
@@ -271,20 +335,20 @@ public class BaseCommand implements NexialCommand {
     }
 
     public StepResult appendText(String var, String appendWith) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         String newValue = StringUtils.defaultString(context.getStringData(var)) + appendWith;
-        context.setData(var, context.isNullValue(newValue) ? null : newValue);
+        updateDataVariable(var, context.isNullValue(newValue) ? null : newValue);
         return StepResult.success("appended '" + appendWith + "' to ${" + var + "}");
     }
 
     public StepResult prependText(String var, String prependWith) {
-        requiresValidVariableName(var);
-        context.setData(var, prependWith + StringUtils.defaultString(context.getStringData(var)));
+        requiresValidAndNotReadOnlyVariableName(var);
+        updateDataVariable(var, prependWith + StringUtils.defaultString(context.getStringData(var)));
         return StepResult.success("prepend '" + prependWith + " to ${" + var + "}");
     }
 
     public StepResult saveCount(String text, String regex, String saveVar) {
-        requiresValidVariableName(saveVar);
+        requiresValidAndNotReadOnlyVariableName(saveVar);
         List<String> groups = findTextMatches(text, regex);
         int count = CollectionUtils.size(groups);
         context.setData(saveVar, count);
@@ -292,7 +356,7 @@ public class BaseCommand implements NexialCommand {
     }
 
     public StepResult saveMatches(String text, String regex, String saveVar) {
-        requiresValidVariableName(saveVar);
+        requiresValidAndNotReadOnlyVariableName(saveVar);
         List<String> groups = findTextMatches(text, regex);
         if (CollectionUtils.isEmpty(groups)) {
             context.removeData(saveVar);
@@ -304,7 +368,7 @@ public class BaseCommand implements NexialCommand {
     }
 
     public StepResult saveReplace(String text, String regex, String replace, String saveVar) {
-        requiresValidVariableName(saveVar);
+        requiresValidAndNotReadOnlyVariableName(saveVar);
         if (replace == null || context.isNullValue(replace)) { replace = ""; }
 
         // run regex routine
@@ -313,7 +377,7 @@ public class BaseCommand implements NexialCommand {
             context.removeData(saveVar);
             return StepResult.success("No matches found on text '" + text + "'");
         } else {
-            context.setData(saveVar, JRegexUtils.replace(text, regex, replace));
+            updateDataVariable(saveVar, JRegexUtils.replace(text, regex, replace));
             return StepResult.success("matches replaced and stored to variable " + saveVar);
         }
     }
@@ -371,20 +435,23 @@ public class BaseCommand implements NexialCommand {
 
     public StepResult assertEmpty(String text) {
         return StringUtils.isEmpty(text) ?
-               StepResult.success() : StepResult.fail("EXPECTS empty but found '" + text + "'");
+               StepResult.success("EXPECTED empty data found") :
+               StepResult.fail("EXPECTS empty but found '" + text + "'");
     }
 
     public StepResult assertNotEmpty(String text) {
         return StringUtils.isNotEmpty(text) ?
-               StepResult.success() : StepResult.fail("EXPECTS non-empty data found empty data instead.");
+               StepResult.success("EXPECTED non-empty data found") :
+               StepResult.fail("EXPECTS non-empty data found empty data instead.");
     }
 
     public StepResult assertEqual(String expected, String actual) {
         assertEquals(context.isNullValue(expected) ? null : expected, context.isNullValue(actual) ? null : actual);
 
         String nullValue = context.getNullValueToken();
-        return StepResult.success("validated EXPECTED = ACTUAL; '" + StringUtils.defaultString(expected, nullValue) +
-                                  "' = '" + StringUtils.defaultString(actual, nullValue) + "'");
+        String expectedForDisplay = context.truncateForDisplay(StringUtils.defaultString(expected, nullValue));
+        String actualForDisplay = context.truncateForDisplay(StringUtils.defaultString(actual, nullValue));
+        return StepResult.success("validated EXPECTED = ACTUAL; '%s' = '%s'", expectedForDisplay, actualForDisplay);
     }
 
     public StepResult assertNotEqual(String expected, String actual) {
@@ -393,48 +460,51 @@ public class BaseCommand implements NexialCommand {
         assertNotEquals(StringUtils.equals(expected, nullValue) ? null : expected,
                         StringUtils.equals(actual, nullValue) ? null : actual);
 
-        return StepResult.success("validated EXPECTED not equal to ACTUAL; '" +
-                                  StringUtils.defaultString(expected, nullValue) + "' not equals to '" +
-                                  StringUtils.defaultString(actual, nullValue) + "'");
+        String expectedForDisplay = context.truncateForDisplay(StringUtils.defaultString(expected, nullValue));
+        String actualForDisplay = context.truncateForDisplay(StringUtils.defaultString(actual, nullValue));
+        return StepResult.success("validated EXPECTED not equal to ACTUAL; '%s' not equal to '%s'",
+                                  expectedForDisplay,
+                                  actualForDisplay);
     }
 
     public StepResult assertContains(String text, String substring) {
-        boolean contains = lenientContains(text, substring, false);
-        if (contains) {
-            return StepResult.success("validated text '" + text + "' contains '" + substring + "'");
+        @NotNull String textForDisplay = context.truncateForDisplay(text);
+        if (lenientContains(text, substring, false)) {
+            return StepResult.success("validated text '%s' contains '%s'", textForDisplay, substring);
         } else {
-            return StepResult.fail("Expects \"" + substring + "\" be contained in \"" + text + "\"");
+            return StepResult.fail("'%s' NOT contained in '%s'", substring, textForDisplay);
         }
     }
 
-    public StepResult assertNotContains(String text, String substring) {
-        if (context.isLenientStringCompare()) {
+    public StepResult assertNotContain(String text, String substring) {
+        if (context.isTextMatchLeniently()) {
             String[] searchFor = {"\r", "\n"};
             String[] replaceWith = {" ", " "};
             text = StringUtils.replaceEach(text, searchFor, replaceWith);
             substring = StringUtils.replaceEach(substring, searchFor, replaceWith);
         }
 
+        @NotNull String textForDisplay = context.truncateForDisplay(text);
         if (!StringUtils.contains(text, substring)) {
-            return StepResult.success("validated text '" + text + "' does NOT contains '" + substring + "'");
+            return StepResult.success("validated text '%s' does NOT contain '%s'", textForDisplay, substring);
         } else {
-            return StepResult.fail("Expects \"" + substring + "\" be NOT to be found in \"" + text + "\"");
+            return StepResult.fail("Expects '%s' NOT to be found in '%s'", substring, textForDisplay);
         }
     }
 
     public StepResult assertStartsWith(String text, String prefix) {
-        boolean valid = lenientContains(text, prefix, true);
-        if (valid) {
-            return StepResult.success("'" + text + "' starts with '" + prefix + "' as EXPECTED");
+        @NotNull String textForDisplay = context.truncateForDisplay(text);
+        if (lenientContains(text, prefix, true)) {
+            return StepResult.success("'%s' starts with '%s'", textForDisplay, prefix);
         } else {
-            return StepResult.fail("EXPECTS '" + text + "' to start with '" + prefix + "'");
+            return StepResult.fail("EXPECTS '%s' to start with '%s' but it is NOT", textForDisplay, prefix);
         }
     }
 
     public StepResult assertEndsWith(String text, String suffix) {
         boolean contains = StringUtils.endsWith(text, suffix);
         // not so fast.. could be one of those quirky IE issues..
-        if (!contains && context.isLenientStringCompare()) {
+        if (!contains && context.isTextMatchLeniently()) {
             String lenientSuffix = StringUtils.replaceEach(StringUtils.trim(suffix),
                                                            new String[]{"\r", "\n"},
                                                            new String[]{" ", " "});
@@ -444,10 +514,11 @@ public class BaseCommand implements NexialCommand {
             contains = StringUtils.endsWith(lenientText, lenientSuffix);
         }
 
+        @NotNull String textForDisplay = context.truncateForDisplay(text);
         if (contains) {
-            return StepResult.success("'" + text + "' ends with '" + suffix + "' as EXPECTED");
+            return StepResult.success("'%s' ends with '%s' as EXPECTED", textForDisplay, suffix);
         } else {
-            return StepResult.fail("EXPECTS '" + text + "' to end with '" + suffix + "'");
+            return StepResult.fail("EXPECTS '%s' to end with '%s' but it is NOT", textForDisplay, suffix);
         }
     }
 
@@ -465,18 +536,18 @@ public class BaseCommand implements NexialCommand {
 
         String delim = context.getTextDelim();
         List<String> expectedList = TextUtils.toList(array1, delim, false);
-        if (CollectionUtils.isEmpty(expectedList)) { CheckUtils.fail("EXPECTED array cannot be parsed: " + array1); }
+        requiresNotEmpty(expectedList, "EXPECTED array is empty", array1);
 
         List<String> actualList = TextUtils.toList(array2, delim, false);
-        if (CollectionUtils.isEmpty(actualList)) { CheckUtils.fail("ACTUAL array cannot be parsed: " + array2); }
+        requiresNotEmpty(actualList, "ACTUAL array is empty", array2);
 
         if (!BooleanUtils.toBoolean(exactOrder)) {
             Collections.sort(expectedList);
             Collections.sort(actualList);
         }
 
-        assertEquals(expectedList.toString(), actualList.toString());
-        return StepResult.success("validated " + array1 + "=" + array2 + " as EXPECTED");
+        assertEquals(expectedList, actualList);
+        return StepResult.success("validated ACTUAL [" + array2 + "] = [" + array1 + "] as EXPECTED");
     }
 
     /** assert that {@code array} contains all items in {@code expected}. */
@@ -503,26 +574,32 @@ public class BaseCommand implements NexialCommand {
 
         if (CollectionUtils.isEmpty(expectedList)) { CheckUtils.fail("'expected' cannot be parsed: " + expected); }
 
+        if (context.isVerbose()) {
+            ConsoleUtils.log("asserting that array (size " + list.size() + ") " + list + " contains " + expectedList);
+        }
+
         // all all items in `expectedList` is removed due to match against `list`, then all items in `expected` matched
-        if (expectedList.removeIf(list::contains) && expectedList.isEmpty()) {
+        boolean containsAll = expectedList.removeIf(list::contains);
+        if (context.isVerbose()) {
+            ConsoleUtils.log("All expected items matched: " + containsAll + ", remaining unmatched: " + expectedList);
+        }
+
+        if (containsAll && expectedList.isEmpty()) {
             return StepResult.success("All items in 'expected' are found in 'array'");
         }
 
-        return StepResult.fail("Not all items in 'expected' are found in 'array': " + expectedList);
+        return StepResult.fail("Not all items in 'expected' are found in 'array': " + expected);
     }
 
     /** assert that {@code array} DOES NOT contains any items in {@code expected}. */
     public StepResult assertArrayNotContain(String array, String unexpected) {
-        requiresNotBlank(array, "array is blank", array);
-        requiresNotBlank(unexpected, "unexpected is blank", unexpected);
-
         // null corner case
         if (areBothEmpty(array, unexpected)) { return StepResult.fail("Both 'array' and 'unexpected' are NULL"); }
 
         String delim = context.getTextDelim();
 
         List<String> list = TextUtils.toList(array, delim, false);
-        if (CollectionUtils.isEmpty(list)) { CheckUtils.fail("'array' cannot be parsed: " + array); }
+        if (CollectionUtils.isEmpty(list)) { return StepResult.success("empty array found"); }
 
         List<String> unexpectedList = TextUtils.toList(unexpected, delim, false)
                                                .stream()
@@ -541,7 +618,7 @@ public class BaseCommand implements NexialCommand {
     public StepResult assertVarPresent(String var) {
         requiresValidVariableName(var);
         boolean found = context.hasData(var);
-        return new StepResult(found, "Variable '" + var + "' " + (found ? "" : "DOES NOT") + " exist", null);
+        return new StepResult(found, "Variable '" + var + "' " + (found ? "" : "DOES NOT ") + "exist", null);
     }
 
     public StepResult assertVarNotPresent(String var) {
@@ -551,13 +628,13 @@ public class BaseCommand implements NexialCommand {
     }
 
     public StepResult saveVariablesByRegex(String var, String regex) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(regex, "invalid regex", regex);
         return saveMatchedVariables(var, regex, context.getDataNamesByRegex(regex));
     }
 
     public StepResult saveVariablesByPrefix(String var, String prefix) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(prefix, "invalid prefix", prefix);
         return saveMatchedVariables(var, prefix, context.getDataNames(prefix));
     }
@@ -569,13 +646,16 @@ public class BaseCommand implements NexialCommand {
 
     public StepResult verbose(String text) {
         if (text == null) { text = context.getNullValueToken(); }
-        if (StringUtils.contains(text, CRYPT_IND)) {
-            // we should allow to print this.. security violation
-            return StepResult.fail("crypto found; CANNOT proceed to complete this command");
+
+        // we should not allow to print this.. security violation
+        if (context.containsCrypt(text)) {
+            // but we should still process any functions or expressions
+            context.replaceTokens(text);
+            log("crypto found; no data variable expansion");
         }
 
-        log(text);
-        // context.getCurrentTestStep().addNestedMessage(text);
+        // with priority so that this log will not be silenced
+        context.getLogger().log(this, text, true);
         return StepResult.success(text);
     }
 
@@ -613,7 +693,7 @@ public class BaseCommand implements NexialCommand {
      * @param file the full path of the macro library.
      * @param name the name of the macro to invoke
      * @return pass/fail based on the validity of the referenced macro/file.  If macro {@code name} or library
-     * ({@code file}) is not found, a failure is returned with fail-immediate in effect.
+     *     ({@code file}) is not found, a failure is returned with fail-immediate in effect.
      */
     public StepResult macro(String file, String sheet, String name) {
         return failImmediate("Runtime error: Macro reference (" + file + "," + sheet + "," + name + ") not expanded");
@@ -632,11 +712,118 @@ public class BaseCommand implements NexialCommand {
         return StepResult.success();
     }
 
+    /**
+     * forcefully move a resource in the output directory to the cloud. <B>ONLY WORKS IF
+     * <code>nexial.outputToCloud</code> IS SET TO <code>true</code></B>
+     **/
+    public StepResult outputToCloud(String resource) {
+        requiresNotBlank(resource, "invalid resource", resource);
+
+        if (!context.isOutputToCloud()) { return StepResult.skipped("Execution not configured for cloud-based output");}
+
+        // resource is a fully-qualified file?
+        if (!FileUtil.isFileReadable(resource, 1)) {
+            // resource is relative path?
+            String fqResource = StringUtils.appendIfMissing(new Syspath().out("fullpath"), separator) + resource;
+            if (FileUtil.isFileReadable(fqResource, 1)) {
+                resource = fqResource;
+            } else {
+                return StepResult.fail("resource not found in OUTPUT directory: " + resource);
+            }
+        }
+
+        addLinkRef(null, "Click here", resource);
+        return StepResult.success("resource move to cloud storage " + resource);
+    }
+
     /** Like JUnit's Assert.assertEquals, but handles "regexp:" strings like HTML Selenese */
     public void assertEquals(String expected, String actual) {
-        String expectedDisplay = expected == null ? null : "\"" + expected + "\"";
-        String actualDisplay = actual == null ? null : "\"" + actual + "\"";
-        assertTrue("Expected=" + expectedDisplay + ", Actual=" + actualDisplay, assertEqualsInternal(expected, actual));
+        assertTrue(NL + displayForCompare("expected", expected, "actual", actual),
+                   assertEqualsInternal(expected, actual));
+    }
+
+    public static String displayForCompare(String label1, Object data1, String label2, Object data2) {
+        // 1. label treatment
+        if (StringUtils.isBlank(label1)) { label1 = "expected"; }
+        if (StringUtils.isBlank(label2)) { label2 = "actual"; }
+        int labelLength = Math.max(label1.length(), label2.length());
+        label1 = StringUtils.rightPad(label1, labelLength, " ");
+        label2 = StringUtils.rightPad(label2, labelLength, " ");
+
+        // 2. check for special types
+        List<String> data1List = null;
+        List<String> data2List = null;
+        Map<String, String> data1Map = null;
+        Map<String, String> data2Map = null;
+
+        // 3. form display for data1 :: first pass
+        String data1Display = label1;
+        if (data1 == null) {
+            data1Display += "=<null/undefined>";
+        } else if (data1.getClass().isArray()) {
+            data1List = Arrays.asList(TextUtils.toStringArray(data1));
+        } else if (data1 instanceof Collection) {
+            data1List = TextUtils.toStringList(data1);
+        } else if (data1 instanceof Map) {
+            data1Map = TextUtils.toStringMap(data1);
+        } else if (data1 instanceof String) {
+            String data1String = (String) data1;
+            if (StringUtils.isEmpty(data1String)) {
+                data1Display += "=<empty>";
+            } else if (StringUtils.isBlank(data1String)) {
+                data1Display += "=<blank>[" + data1 + "]";
+            } else {
+                data1Display += "=" + data1String;
+            }
+        } else {
+            data1Display += "=" + data1;
+        }
+
+        // 3. form display for data2 :: first pass
+        String data2Display = label2;
+        if (data2 == null) {
+            data2Display += "=<null/undefined>";
+        } else if (data2.getClass().isArray()) {
+            data2List = Arrays.asList(TextUtils.toStringArray(data2));
+        } else if (data2 instanceof Collection) {
+            data2List = TextUtils.toStringList(data2);
+        } else if (data2 instanceof Map) {
+            data2Map = TextUtils.toStringMap(data2);
+        } else if (data2 instanceof String) {
+            String data2String = (String) data2;
+            if (StringUtils.isEmpty(data2String)) {
+                data2Display += "=<empty>";
+            } else if (StringUtils.isBlank(data2String)) {
+                data2Display += "=<blank>[" + data2 + "]";
+            } else {
+                data2Display += "=" + data2String;
+            }
+        } else {
+            data2Display += "=" + data2;
+        }
+
+        if (data1List != null) {
+            if (data2List != null) {
+                Pair<String, String> lines = displayAligned(data1List, data2List);
+                data1Display += "=" + lines.getKey();
+                data2Display += "=" + lines.getValue();
+            } else {
+                data1Display += "=" + TextUtils.toString(data1List, ",");
+            }
+        } else {
+            if (data1Map != null) {
+                if (data2Map != null) {
+                    return displayAsMapDiff(label1, data1Map, label2, data2Map);
+                } else {
+                    data1Display += "=" + data1Map;
+                }
+            } else {
+                if (data2Map != null) { data2Display += "=" + data2Map; }
+                if (data2List != null) { data2Display += "=" + TextUtils.toString(data2List, ","); }
+            }
+        }
+
+        return data1Display + NL + data2Display;
     }
 
     public void waitFor(int waitMs) {
@@ -706,22 +893,122 @@ public class BaseCommand implements NexialCommand {
     public void addLinkRef(String message, String label, String link) {
         if (StringUtils.isBlank(link)) { return; }
 
-        if (context.isOutputToCloud()) {
+        if (context.isOutputToCloud() && OutputFileUtils.isContentReferencedAsFile(link, context)) {
             try {
-                link = context.getOtc().importMedia(new File(link));
+                link = context.getOtc().importFile(new File(link), true);
             } catch (IOException e) {
                 log(toCloudIntegrationNotReadyMessage(link) + ": " + e.getMessage());
             }
         }
 
-        if (context != null && context.getLogger() != null) {
+        if (context != null) {
             TestStep testStep = context.getCurrentTestStep();
             if (testStep != null && testStep.getWorksheet() != null) {
                 // test step undefined could mean that we are in interactive mode, or we are running unit testing
                 context.setData(OPT_LAST_OUTPUT_LINK, link);
-                testStep.addNestedScreenCapture(link, message, label);
+                context.setData(OPT_LAST_OUTPUT_PATH, StringUtils.contains(link, "\\") ?
+                                                      StringUtils.substringBeforeLast(link, "\\") :
+                                                      StringUtils.substringBeforeLast(link, "/"));
+
+                // if there's no message, then we'll create link in the screenshot column of the SAME row (as test step)
+                if (StringUtils.isEmpty(message)) {
+                    testStep.addStepOutput(link, label);
+                } else {
+                    testStep.addNestedScreenCapture(link, message, label);
+                }
             }
         }
+    }
+
+    public void logDeprecated(String deprecated, String replacement) {
+        errorToOutput(deprecated + " IS DEPRECATED. PLEASE CONSIDER USING " + replacement + " INSTEAD", null);
+    }
+
+    protected boolean requiresValidAndNotReadOnlyVariableName(String var) {
+        requires(isValidVariable(var), "Invalid variable name", var);
+        requires(!context.isReadOnlyData(var), "Overriding read-only variable is NOT permitted", var);
+        return true;
+    }
+
+    protected String postScreenshot(TestStep testStep, File file) {
+        if (file == null) {
+            error("Unable to save screenshot for " + testStep);
+            return null;
+        }
+
+        String caption = context.getStringData(SCREENSHOT_CAPTION);
+        if (StringUtils.isNotBlank(caption)) {
+            CaptionModel model = new CaptionModel();
+            model.addCaptions(TextUtils.toList(caption, "\n", true));
+
+            String color = context.getStringData(SCREENSHOT_CAPTION_COLOR);
+            if (StringUtils.isNotBlank(color)) { model.setCaptionColor(color); }
+
+            String[] position = StringUtils.split(context.getStringData(SCREENSHOT_CAPTION_POSITION),
+                                                  context.getTextDelim());
+            if (ArrayUtils.getLength(position) == 2) {
+                CaptionPositions captionPosition = CaptionPositions.toCaptionPosition(position[0], position[1]);
+                if (captionPosition != null) { model.setPosition(captionPosition); }
+            }
+
+            if (context.hasData(SCREENSHOT_CAPTION_WRAP)) {
+                model.setWrap(context.getBooleanData(SCREENSHOT_CAPTION_WRAP));
+            }
+
+            if (context.hasData(SCREENSHOT_CAPTION_ALPHA)) {
+                double alpha = context.getDoubleData(SCREENSHOT_CAPTION_ALPHA);
+                if (alpha != UNDEFINED_DOUBLE_DATA) { model.setAlpha((float) alpha); }
+            }
+
+            if (context.hasData(SCREENSHOT_CAPTION_NO_BKGRD)) {
+                model.setWithBackground(!context.getBooleanData(SCREENSHOT_CAPTION_NO_BKGRD));
+            }
+
+            ImageCaptionHelper.addCaptionToImage(file, model);
+        }
+
+        if (context.isOutputToCloud()) {
+            try {
+                String cloudUrl = context.getOtc().importMedia(file, true);
+                context.setData(OPT_LAST_SCREENSHOT_NAME, cloudUrl);
+                return cloudUrl;
+            } catch (IOException e) {
+                log(toCloudIntegrationNotReadyMessage(file.toString()) + ": " + e.getMessage());
+            }
+        } else {
+            context.setData(OPT_LAST_SCREENSHOT_NAME, file.getAbsolutePath());
+        }
+
+        // return local file if `output-to-cloud` is disabled or failed to transfer to cloud
+        return file.getAbsolutePath();
+    }
+
+    /**
+     * this method - TO BE USED INTERNALLY ONLY - is created to compensate the data state discrepancy when such is
+     * initially set via `-override` flag or via `-D...` environment variable. When a data variable is defined prior to
+     * Nexial execution, for example,
+     * <pre>
+     * ./nexial.sh -script ... ... -override myData=myValue
+     * </pre>
+     * <p>
+     * Such data variable is also added to the System properties. As such, Nexial will not attempt to override the
+     * corresponding System property when the same data value is being manipulated during execution
+     * (e.g. {@link #save(String, String)} or {@link #saveMatches(String, String, String)}). However, when retrieving
+     * data variable, Nexial will (and must) consider the System properties and in fact it does so <b>AHEAD</b> of
+     * its internal memory space for data variables. This can cause confusion since the initially-set data variable
+     * does not appear to be overwritten.  This method is created to overcome such issue. Use this only for the
+     * user-defined data variables. System variables and Java/OS specific ones should not be impacted by this phenomena.
+     * since when
+     */
+    protected void updateDataVariable(String var, String value) {
+        if (context.containsCrypt(TOKEN_START + var + TOKEN_END)) {
+            throw new TokenReplacementException("Tampering with encrypted data is NOT permissible");
+        }
+        // add `var` to context.. also update sys prop if `var` already exists in system and is not a read-only variable
+        // - if sys prop exists means the same var was already declared either in cmdline or in setup.properties
+        // - if same var is a read-only variable, then we don't want to override it
+        // context.setData(var, value, StringUtils.isNotBlank(System.getProperty(var)) && !context.isReadOnlyData(var));
+        context.setData(var, value, StringUtils.isNotBlank(System.getProperty(var)));
     }
 
     @NotNull
@@ -731,7 +1018,7 @@ public class BaseCommand implements NexialCommand {
             ConsoleUtils.log("No data variable matching to " + regex);
             context.removeData(var);
         } else {
-            context.setData(var, TextUtils.toString(matched, context.getTextDelim()));
+            updateDataVariable(var, TextUtils.toString(matched, context.getTextDelim()));
         }
 
         return StepResult.success(matchCount + " matched variable(s) saved to data variable '" + var + "'");
@@ -825,7 +1112,7 @@ public class BaseCommand implements NexialCommand {
     protected boolean lenientContains(String text, String prefix, boolean startsWith) {
         boolean valid = startsWith ? StringUtils.startsWith(text, prefix) : StringUtils.contains(text, prefix);
         // not so fast.. could be one of those quarky IE issues..
-        if (!valid && context.isLenientStringCompare()) {
+        if (!valid && context.isTextMatchLeniently()) {
             String[] searchFor = {"\r", "\n"};
             String[] replaceWith = {" ", " "};
             String lenientPrefix = StringUtils.replaceEach(StringUtils.trim(prefix), searchFor, replaceWith);
@@ -841,7 +1128,7 @@ public class BaseCommand implements NexialCommand {
     /** Like JUnit's Assert.assertEquals, but knows how to compare string arrays */
     protected void assertEquals(Object expected, Object actual) {
         if (expected == null) {
-            assertTrue("Expected=null, Actual=\"" + actual + "\"", actual == null);
+            assertTrue(NL + "expected=null" + NL + "actual  =" + actual, actual == null);
         } else if (expected instanceof String && actual instanceof String) {
             assertEquals((String) expected, (String) actual);
         } else if (expected instanceof String && actual instanceof String[]) {
@@ -853,7 +1140,7 @@ public class BaseCommand implements NexialCommand {
         } else if (expected instanceof String[] && actual instanceof String[]) {
             assertEquals((String[]) expected, (String[]) actual);
         } else {
-            assertTrue("Expected=\"" + expected + "\", Actual=\"" + actual + "\"", expected.equals(actual));
+            assertTrue(NL + displayForCompare("expected", expected, "actual", actual), expected.equals(actual));
         }
     }
 
@@ -867,31 +1154,22 @@ public class BaseCommand implements NexialCommand {
     protected void assertEquals(String[] expected, String[] actual) {
         String comparisonDumpIfNotEqual = verifyEqualsAndReturnComparisonDumpIfNot(expected, actual);
         if (comparisonDumpIfNotEqual != null) {
-            error(MSG_FAIL + comparisonDumpIfNotEqual);
+            error(MSG_FAIL + NL + comparisonDumpIfNotEqual);
             throw new AssertionError(comparisonDumpIfNotEqual);
         }
     }
 
-    protected void assertTrue(String message, boolean condition) {
-        if (!condition) {
-            CheckUtils.fail(message);
-            // } else {
-            //     log(MSG_PASS + message);
-        }
-    }
+    protected void assertTrue(String message, boolean condition) { if (!condition) { CheckUtils.fail(message); } }
 
     /** Asserts that two objects are not the same (compares using .equals()) */
     protected void assertNotEquals(Object expected, Object actual) {
-        String expectedDisplay = expected == null ? null : "\"" + expected + "\"";
-        String actualDisplay = actual == null ? null : "\"" + actual + "\"";
-
         if (expected == null) {
             // both should be null
-            assertFalse("Expected=null, Actual=" + actualDisplay, actual == null);
+            assertFalse(NL + "expected=null " + NL + "actual  =" + actual, actual == null);
             return;
         }
 
-        if (expected.equals(actual)) { CheckUtils.fail("Expected=" + expectedDisplay + ", Actual=" + actualDisplay); }
+        if (expected.equals(actual)) { CheckUtils.fail(NL + displayForCompare("expected", expected, "actual", actual));}
     }
 
     protected void assertTrue(boolean condition) { assertTrue(null, condition); }
@@ -956,13 +1234,12 @@ public class BaseCommand implements NexialCommand {
         }
 
         Method m = commandMethods.get(methodName);
-        int actualParamCount = ArrayUtils.getLength(params);
-        int expectedParamCount = m.getParameterCount();
-
-        if (actualParamCount == expectedParamCount) { return m; }
-
         // fill in null for missing params later
         if (PARAM_AUTO_FILL_COMMANDS.contains(getTarget() + "." + methodName)) { return m; }
+
+        int actualParamCount = ArrayUtils.getLength(params);
+        int expectedParamCount = m.getParameterCount();
+        if (actualParamCount == expectedParamCount) { return m; }
 
         CheckUtils.fail("MISMATCHED parameters - " + getTarget() + "." + methodName +
                         " EXPECTS " + expectedParamCount + " but found " + actualParamCount);
@@ -1010,7 +1287,7 @@ public class BaseCommand implements NexialCommand {
 
     protected StepResult saveSubstring(List<String> textArray, String delimStart, String delimEnd, String var) {
         requires(StringUtils.isNotEmpty(delimStart) || StringUtils.isNotEmpty(delimEnd), "invalid delimiter");
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         boolean before = StringUtils.isNotEmpty(delimEnd) && StringUtils.isEmpty(delimStart);
         boolean between = StringUtils.isNotEmpty(delimEnd) && StringUtils.isNotEmpty(delimStart);
@@ -1029,7 +1306,7 @@ public class BaseCommand implements NexialCommand {
     protected StepResult saveSubstring(String text, String delimStart, String delimEnd, String var) {
         requiresNotBlank(text, "invalid text", text);
         requires(StringUtils.isNotEmpty(delimStart) || StringUtils.isNotEmpty(delimEnd), "invalid delimiter");
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         boolean before = StringUtils.isNotEmpty(delimEnd) && StringUtils.isEmpty(delimStart);
         boolean between = StringUtils.isNotEmpty(delimEnd) && StringUtils.isNotEmpty(delimStart);
@@ -1037,7 +1314,7 @@ public class BaseCommand implements NexialCommand {
         String substr = between ? StringUtils.substringBetween(text, delimStart, delimEnd) :
                         before ? StringUtils.substringBefore(text, delimEnd) :
                         StringUtils.substringAfter(text, delimStart);
-        context.setData(var, substr);
+        updateDataVariable(var, substr);
         return StepResult.success("substring '" + substr + "' stored to ${" + var + "}");
     }
 
@@ -1054,16 +1331,14 @@ public class BaseCommand implements NexialCommand {
                 commandMethods.put(m.getName(), m);
 
                 if (CommandDiscovery.isInDiscoveryMode()) {
-                    String command = m.getName() + "(";
-
-                    Parameter[] parameters = m.getParameters();
-                    for (Parameter param : parameters) {
-                        // workaround for kotlin (var is reserved in kotlin)
-                        String paramName = StringUtils.equals(param.getName(), "Var") ? "var" : param.getName();
-                        command += paramName + ",";
-                    }
-
-                    discovery.addCommand(getTarget(), StringUtils.removeEnd(command, ",") + ")");
+                    // workaround for kotlin (var is reserved in kotlin)
+                    discovery.addCommand(getTarget(),
+                                         m.getName() + "(" +
+                                         Arrays.stream(m.getParameters())
+                                               .map(param -> StringUtils.equals(param.getName(), "Var") ?
+                                                             "var" : param.getName())
+                                               .collect(Collectors.joining(",")) +
+                                         ")");
                 }
             }
         });
@@ -1083,20 +1358,57 @@ public class BaseCommand implements NexialCommand {
     protected static boolean assertEqualsInternal(String expected, String actual) {
         if (expected == null && actual == null) { return true; }
 
-        if (NumberUtils.isCreatable(expected) && NumberUtils.isCreatable(actual)) {
-            // both are number, then we should assert by double
-            return seleniumEquals(NumberUtils.toDouble(expected), NumberUtils.toDouble(actual));
+        ExecutionContext context = ExecutionThread.get();
+        if (context.isTextMatchUseTrim()) {
+            expected = StringUtils.trim(expected);
+            actual = StringUtils.trim(actual);
         }
 
-        ExecutionContext context = ExecutionThread.get();
+        if (context.isTextMatchAsNumber()) {
+            boolean isExpectedANumber = false;
+            BigDecimal expectedBD = null;
+            try {
+                expectedBD = NumberUtils.createBigDecimal(StringUtils.trim(expected));
+                isExpectedANumber = true;
+            } catch (NumberFormatException e) {
+                // ConsoleUtils.log("The 'expected' is expected a number BUT its not: " + expected);
+            }
+
+            boolean isActualANumber = false;
+            BigDecimal actualBD = null;
+            try {
+                actualBD = NumberUtils.createBigDecimal(StringUtils.trim(actual));
+                isActualANumber = true;
+            } catch (NumberFormatException e) {
+                // ConsoleUtils.log("The 'actual' is expected a number BUT its not: " + actual);
+            }
+
+            if (isActualANumber && isExpectedANumber) {
+                // number conversion works for both 'expected' and 'actual'
+                if (expectedBD != null && actualBD != null) {
+                    // both are number, then we should assert by double
+                    return expectedBD.doubleValue() == actualBD.doubleValue();
+                } else {
+                    // both null.. so they matched!
+                    return true;
+                }
+            }
+            // ELSE: so one of them is not a number... moving on
+        }
+
+        if (context.isTextMatchCaseInsensitive()) {
+            expected = StringUtils.lowerCase(expected);
+            actual = StringUtils.lowerCase(actual);
+        }
 
         boolean equals = seleniumEquals(expected, actual);
-        if (!equals && ExecutionContext.getSystemThenContextBooleanData(OPT_EASY_STRING_COMPARE, context, false)) {
-            // not so fast.. could be one of those quarky IE issues..
+        if (!equals && context.isTextMatchLeniently()) {
+            // not so fast.. could be one of those quirky IE issues..
             String lenientExpected = TextUtils.toOneLine(expected, true);
             String lenientActual = TextUtils.toOneLine(actual, true);
             equals = StringUtils.equals(lenientExpected, lenientActual);
         }
+
         return equals;
     }
 
@@ -1110,9 +1422,7 @@ public class BaseCommand implements NexialCommand {
             }
         }
 
-        if (misMatch) {
-            return "Expected\"" + stringArrayToString(expected) + "\", Actual=\"" + stringArrayToString(actual) + "\"";
-        }
+        if (misMatch) { return displayForCompare("expected", expected, "actual", actual); }
 
         return null;
     }
@@ -1125,9 +1435,7 @@ public class BaseCommand implements NexialCommand {
     }
 
     protected void log(String message) {
-        if (StringUtils.isNotBlank(message) && context != null && context.getLogger() != null) {
-            context.getLogger().log(this, message);
-        }
+        if (context != null && context.getLogger() != null) { context.getLogger().log(this, message); }
     }
 
     protected void error(String message) { error(message, null); }
@@ -1138,9 +1446,15 @@ public class BaseCommand implements NexialCommand {
         }
     }
 
+    protected void errorToOutput(String message, Throwable e) {
+        if (StringUtils.isNotBlank(message) && context != null && context.getLogger() != null) {
+            context.getLogger().errorToOutput(this, message, e);
+        }
+    }
+
     /**
      * create a file with {@code output} as its text content and its name based on current step and {@code extension}.
-     *
+     * <p>
      * to improve readability and user experience, use {@code caption} to describe such file on the execution output.
      */
     protected void addOutputAsLink(String caption, String output, String extension) {
@@ -1150,13 +1464,13 @@ public class BaseCommand implements NexialCommand {
             FileUtils.writeStringToFile(new File(outFile), output, DEF_FILE_ENCODING);
             addLinkRef(caption, extension + " report", outFile);
         } catch (IOException e) {
-            error("Unable to write log file to '" + outFile + "': " + e.getMessage(), e);
+            error("Unable to write to '" + outFile + "': " + e.getMessage(), e);
         }
     }
 
     /**
      * create a file with {@code output} as its content and its name based on current step and {@code extension}.
-     *
+     * <p>
      * to improve readability and user experience, use {@code caption} to describe such file on the execution output.
      */
     protected void addOutputAsLink(String caption, BufferedImage output, String extension) {
@@ -1170,19 +1484,146 @@ public class BaseCommand implements NexialCommand {
         }
     }
 
+    protected boolean isCryptRestricted(Method method) {
+        return method != null && CRYPT_RESTRICTED_COMMANDS.contains(getTarget() + "." + method.getName());
+    }
+
     protected Object[] resolveParamValues(Method m, String... params) {
         int numOfParamSpecified = ArrayUtils.getLength(params);
         int numOfParamExpected = ArrayUtils.getLength(m.getParameterTypes());
+
+        boolean cryptRestricted = isCryptRestricted(m);
 
         Object[] args = new Object[numOfParamExpected];
         for (int i = 0; i < args.length; i++) {
             if (i >= numOfParamSpecified) {
                 args[i] = "";
             } else {
-                args[i] = context.replaceTokens(params[i]);
+                String param = params[i];
+                if (cryptRestricted && context.containsCrypt(param)) {
+                    args[i] = param;
+                } else {
+                    args[i] = context.replaceTokens(param);
+                }
             }
         }
 
         return args;
+    }
+
+    @NotNull
+    protected File resolveFileResource(String resource) throws IOException {
+        if (!ResourceUtils.isWebResource(resource)) { return new File(resource); }
+
+        String target = StringUtils.appendIfMissing(JAVA_IO_TMPDIR, separator) +
+                        StringUtils.substringAfterLast(resource, "/");
+        return WsCommand.saveWebContent(resource, new File(target));
+    }
+
+    @NotNull
+    protected static File resolveSaveTo(String saveTo, String defaultFileName) {
+        File saveFile = new File(saveTo);
+        if (StringUtils.endsWithAny(saveTo, "/", "\\") || saveFile.isDirectory()) {
+            saveFile.mkdirs();
+            return new File(StringUtils.appendIfMissing(saveTo, separator) + defaultFileName);
+        } else {
+            saveFile.getParentFile().mkdirs();
+            return saveFile;
+        }
+    }
+
+    @NotNull
+    protected List<String> paramToList(String array) {
+        List<String> list = new ArrayList<>();
+        if (StringUtils.isEmpty(array)) { return list; }
+
+        String delim = context.getTextDelim();
+
+        array = StringUtils.remove(array, "\r");
+        array = StringUtils.replace(array, "\\" + delim, TMP_DELIM);
+        if (!StringUtils.equals(delim, "\n")) { array = StringUtils.replace(array, delim, "\n"); }
+        List<String> values = TextUtils.toList(array, "\n", false);
+        values.forEach(v -> list.add(StringUtils.replace(v, TMP_DELIM, delim)));
+
+        return list;
+    }
+
+    private static Pair<String, String> displayAligned(List<String> list1, List<String> list2) {
+        if (CollectionUtils.isEmpty(list1)) { return new ImmutablePair<>("", TextUtils.toString(list2, ",")); }
+        if (CollectionUtils.isEmpty(list2)) { return new ImmutablePair<>(TextUtils.toString(list1, ","), ""); }
+
+        StringBuilder buffer1 = new StringBuilder();
+        StringBuilder buffer2 = new StringBuilder();
+
+        int list1Size = list1.size();
+        int list2Size = list2.size();
+        int commonSize = Math.min(list1Size, list2Size);
+
+        for (int i = 0; i < commonSize; i++) {
+            String item1 = list1.get(i);
+            String item2 = list2.get(i);
+            int maxWidth = Math.max(StringUtils.length(item1), StringUtils.length(item2));
+            buffer1.append(StringUtils.rightPad(item1, maxWidth, " ")).append(",");
+            buffer2.append(StringUtils.rightPad(item2, maxWidth, " ")).append(",");
+        }
+
+        if (list1Size > commonSize) {
+            for (int i = commonSize; i < list1Size; i++) {
+                String item1 = list1.get(i);
+                String item2 = "<missing>";
+                int maxWidth = Math.max(StringUtils.length(item1), StringUtils.length(item2));
+                buffer1.append(StringUtils.rightPad(item1, maxWidth, " ")).append(",");
+                buffer2.append(StringUtils.rightPad(item2, maxWidth, " ")).append(",");
+            }
+        }
+
+        if (list2Size > commonSize) {
+            for (int i = commonSize; i < list2Size; i++) {
+                String item1 = "<missing>";
+                String item2 = list2.get(i);
+                int maxWidth = Math.max(StringUtils.length(item1), StringUtils.length(item2));
+                buffer1.append(StringUtils.rightPad(item1, maxWidth, " ")).append(",");
+                buffer2.append(StringUtils.rightPad(item2, maxWidth, " ")).append(",");
+            }
+        }
+
+        return new ImmutablePair<>(StringUtils.removeEnd(buffer1.toString(), ","),
+                                   StringUtils.removeEnd(buffer2.toString(), ","));
+    }
+
+    private static String displayAsMapDiff(String label1,
+                                           Map<String, String> map1,
+                                           String label2,
+                                           Map<String, String> map2) {
+        List<String> headers = Arrays.asList("key",
+                                             StringUtils.trim(label1) + " value",
+                                             StringUtils.trim(label2) + " value",
+                                             "matched");
+        List<List<String>> records = new ArrayList<>();
+
+        List<String> map1Keys = new ArrayList<>(map1.keySet());
+        List<String> map2Keys = new ArrayList<>(map2.keySet());
+
+        map1Keys.forEach(map1Key -> {
+            List<String> record = new ArrayList<>();
+            record.add(map1Key);
+            record.add(map1.get(map1Key));
+            record.add(StringUtils.defaultString(map2.get(map1Key), "<missing>"));
+            record.add(StringUtils.equals(record.get(1), record.get(2)) ? "yes" : "NO");
+            records.add(record);
+
+            map2Keys.remove(map1Key);
+        });
+
+        map2Keys.forEach(map2Key -> {
+            List<String> record = new ArrayList<>();
+            record.add(map2Key);
+            record.add("<missing>");
+            record.add(map2.get(map2Key));
+            record.add("NO");
+            records.add(record);
+        });
+
+        return TextUtils.createAsciiTable(headers, records, List::get);
     }
 }

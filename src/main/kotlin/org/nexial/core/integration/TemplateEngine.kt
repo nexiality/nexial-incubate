@@ -9,14 +9,14 @@ import java.io.File
 class TemplateEngine {
 
     companion object {
-        val context = ExecutionThread.get()!!
+        private val context = ExecutionThread.get()!!
 
         fun setSlackChatSummary(executionOutput: ExecutionOutput): String {
             var slackSummaryTemplate = StringUtils.replace(getTemplate("slack", COMMENT_ENDPOINT),
-                                                           System.getProperty("line.separator"), "")
+                    System.getProperty("line.separator"), "")
 
             val testEnvironmentDetails = "User: ${executionOutput.runUser} \\n System: " +
-                                         "${executionOutput.runHost} \\n Start Time: ${executionOutput.startTime}"
+                    "${executionOutput.runHost} \\n Start Time: ${executionOutput.startTime}"
             context.setData("testEnvironmentDetails", testEnvironmentDetails)
             val color = if (executionOutput.failCount > 0) "#FF0000" else "#008000"
             context.setData("resultColor", color)
@@ -74,7 +74,7 @@ class TemplateEngine {
                 params = "[${StringUtils.removeEnd(params, ", ")}]"
                 val msg = RegexUtils.replace(value.get(13), "\"", "'")
                 sb.append(
-                    "| $stepIndex | $activity | $description | $command $params | {panel:bgColor=#ff4d4d} $msg {panel} | \\n ")
+                        "| $stepIndex | $activity | $description | $command $params | {panel:bgColor=#ff4d4d} $msg {panel} | \\n ")
 
                 // check for uniqueness of this hash value.. consider scripts with same values?
                 val defecthash = "${scenarioOutput.scenarioName}_${activity}_$stepIndex"
@@ -91,7 +91,7 @@ class TemplateEngine {
 
         fun getTemplate(target: String, template: String): String {
             val resourceBasePath = "/${StringUtils.replace(this::class.java.getPackage().name, ".",
-                                                           "/")}"
+                    "/")}"
             val filePath = "$resourceBasePath/$target/$template.json"
             return FileUtils.readFileToString(File(this::class.java.getResource(filePath).toURI()), "UTF-8")!!
         }

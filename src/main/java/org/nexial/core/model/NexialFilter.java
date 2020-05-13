@@ -30,6 +30,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.commons.utils.TextUtils.ListItemConverter;
@@ -125,7 +126,11 @@ public class NexialFilter implements Serializable {
 
         // for Is operator, we will defer the double-quote-wrap until isAtLeastOneMatched()
         String expected = context.replaceTokens(controls);
-        String msg = msgPrefix + "(" + actual + comparator.getSymbol() + expected + ")\t\t=> ";
+        String msg = msgPrefix + "(";
+        msg += context.containsCrypt(subject) ? subject : actual;
+        msg += comparator.getSymbol();
+        msg += context.containsCrypt(controls) ? controls : expected;
+        msg += ")\t\t=> ";
 
         boolean result;
         switch (comparator) {
@@ -200,6 +205,22 @@ public class NexialFilter implements Serializable {
 
             case IsUndefined:
                 result = !context.hasData(subject);
+                break;
+
+            case ReadableFile:
+                if (!NumberUtils.isCreatable(expected)) {
+                    ConsoleUtils.error(msgPrefix + "NOT A NUMBER: " + expected);
+                    return false;
+                }
+
+                long expectedFileLength = NumberUtils.toLong(expected);
+                result = FileUtil.isFileReadable(actual, expectedFileLength);
+                if (expectedFileLength < 1) { result = !result; }
+
+                break;
+
+            case ReadablePath:
+                result = FileUtil.isDirectoryReadable(actual);
                 break;
 
             default: {
@@ -294,7 +315,7 @@ public class NexialFilter implements Serializable {
             // not applicable in this case
             case IsDefined:
             case IsUndefined:
-                throw new IllegalArgumentException("Not application filter: " + comparator);
+                throw new IllegalArgumentException("Not applicable filter: " + comparator);
 
             case IsEmpty:
                 return StringUtils.isEmpty(data);
@@ -304,6 +325,19 @@ public class NexialFilter implements Serializable {
 
             case HasLengthOf:
                 return StringUtils.length(data) == toDouble(controls);
+
+            case ReadableFile:
+                if (!NumberUtils.isCreatable(controls)) {
+                    throw new IllegalArgumentException("NOT A NUMBER: " + controls);
+                }
+
+                long expectedFileLength = NumberUtils.toLong(controls);
+                boolean result = FileUtil.isFileReadable(data, expectedFileLength);
+                if (expectedFileLength < 1) { result = !result; }
+                return result;
+
+            case ReadablePath:
+                return FileUtil.isDirectoryReadable(data);
 
             default:
                 throw new IllegalArgumentException("Invalid/unknown comparator: " + comparator.getSymbol());
@@ -381,7 +415,10 @@ public class NexialFilter implements Serializable {
     }
 
     protected boolean isMatchingStringCompare(String actual, ExecutionContext context) {
-        String expected = context.replaceTokens(controls);
+        // String expected = context.replaceTokens(controls);
+        String expected =
+            context.replaceTokens(CollectionUtils.isNotEmpty(controlList) ? controlList.get(0) : controls);
+
         switch (comparator) {
             case StartsWith:
                 return StringUtils.startsWith(actual, expected);
@@ -392,18 +429,18 @@ public class NexialFilter implements Serializable {
             case NotEndsWith:
                 return !StringUtils.endsWith(actual, expected);
             case Contain: {
-                for (String contain : controlList) {
-                    if (StringUtils.contains(actual, context.replaceTokens(contain))) { return true; }
-                }
-
-                return false;
+                // for (String contain : controlList) {
+                //     if (StringUtils.contains(actual, context.replaceTokens(contain))) { return true; }
+                // }
+                // return false;
+                return StringUtils.contains(actual, expected);
             }
             case NotContain: {
-                for (String contain : controlList) {
-                    if (StringUtils.contains(actual, context.replaceTokens(contain))) { return false; }
-                }
-
-                return true;
+                // for (String contain : controlList) {
+                //     if (StringUtils.contains(actual, context.replaceTokens(contain))) { return false; }
+                // }
+                // return true;
+                return !StringUtils.contains(actual, expected);
             }
             default: {
                 ConsoleUtils.error("UNSUPPORTED Operator for text-compare: " + comparator.getSymbol());

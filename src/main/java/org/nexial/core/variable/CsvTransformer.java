@@ -23,6 +23,8 @@ import java.lang.reflect.Method;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
@@ -30,7 +32,6 @@ import org.apache.commons.collections4.IterableUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
-import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.jdom2.Element;
@@ -39,75 +40,43 @@ import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.commons.utils.TextUtils.ListItemConverter;
 import org.nexial.core.ExecutionThread;
-import org.nexial.core.excel.Excel;
-import org.nexial.core.excel.Excel.Worksheet;
-import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.NexialFilter;
 import org.nexial.core.model.NexialFilter.ListItemConverterImpl;
+import org.nexial.core.plugins.io.ExcelHelper;
 import org.nexial.core.utils.ConsoleUtils;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.univocity.parsers.common.record.Record;
+import com.univocity.parsers.common.record.RecordMetaData;
 
 import static java.lang.System.lineSeparator;
 import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Rdbms.CSV_FIELD_DEIM;
+import static org.nexial.core.NexialConst.Rdbms.CSV_ROW_SEP;
 import static org.nexial.core.model.NexialFilterComparator.Equal;
-import static org.nexial.core.variable.ExpressionUtils.fixControlChars;
+import static org.nexial.core.utils.ConsoleUtils.LogType.ERROR;
+import static org.nexial.core.utils.ConsoleUtils.LogType.LOG;
 
-public class CsvTransformer<T extends CsvDataType> extends Transformer {
-    public static final int DEF_MAX_COLUMNS = 512;
-
+public class CsvTransformer<T extends CsvDataType> extends Transformer<CsvDataType> {
     private static final Map<String, Integer> FUNCTION_TO_PARAM = discoverFunctions(CsvTransformer.class);
     private static final Map<String, Method> FUNCTIONS =
         toFunctionMap(FUNCTION_TO_PARAM, CsvTransformer.class, CsvDataType.class);
-
-    private static final String PAIR_DELIM = "|";
-    private static final String NAME_VALUE_DELIM = "=";
-    private static final String ATTR_INDEX = "index";
-    private static final String ATTR_NAME = "name";
-    private static final String NODE_ROOT = "rows";
-    private static final String NODE_ROW = "row";
-    private static final String NODE_CELL = "cell";
-
     private static final Pattern COMPILED_FILTER_REGEX_PATTERN = Pattern.compile(FILTER_REGEX_PATTERN);
+
+    static final String PAIR_DELIM = "|";
+    static final String NAME_VALUE_DELIM = "=";
+    static final String ATTR_INDEX = "index";
+    static final String ATTR_NAME = "name";
+    static final String NODE_ROOT = "rows";
+    static final String NODE_ROW = "row";
+    static final String NODE_CELL = "cell";
 
     public TextDataType text(T data) { return super.text(data); }
 
     public T parse(T data, String... configs) {
-        if (ArrayUtils.isNotEmpty(configs)) {
-            String config = TextUtils.toString(configs, PAIR_DELIM, null, null);
-            // escape pipe and comma
-            config = StringUtils.replace(config, "\\" + PAIR_DELIM, FILTER_TEMP_DELIM1);
-            config = StringUtils.replace(config, "\\,", FILTER_TEMP_DELIM2);
-
-            Map<String, String> configMap = TextUtils.toMap(config, PAIR_DELIM, NAME_VALUE_DELIM);
-            // unescape pipes and comma
-            configMap.forEach((key, value) -> {
-                value = StringUtils.replace(value, FILTER_TEMP_DELIM1, PAIR_DELIM);
-                value = StringUtils.replace(value, FILTER_TEMP_DELIM2, ",");
-                configMap.put(key, value);
-            });
-
-            if (configMap.containsKey("delim")) { data.setDelim(configMap.get("delim")); }
-            if (configMap.containsKey("header")) { data.setHeader(BooleanUtils.toBoolean(configMap.get("header"))); }
-            if (configMap.containsKey("quote")) { data.setQuote(configMap.get("quote")); }
-            if (configMap.containsKey("recordDelim")) {
-                data.setRecordDelim(fixControlChars(configMap.get("recordDelim")));
-            }
-            if (configMap.containsKey("indexOn")) {
-                data.addIndices(Array.toArray(fixControlChars(configMap.get("indexOn")), "\\,"));
-            }
-            if (configMap.containsKey("maxColumns")) {
-                // 512 is the default
-                data.setMaxColumns(NumberUtils.toInt(configMap.get("maxColumns"), DEF_MAX_COLUMNS));
-            }
-            if (configMap.containsKey("trim")) { data.setTrimValue(BooleanUtils.toBoolean(configMap.get("trim"))); }
-        }
-
-        data.setReadyToParse(true);
-        data.parse();
+        if (data != null) { data.configAndParse(configs); }
         return data;
     }
 
@@ -124,8 +93,9 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         // if no header specified, then we can only use index (not column name)
         if (!data.isHeader()) {
             if (!NumberUtils.isDigits(column)) {
-                ConsoleUtils.log("Invalid column " + column + ".  Columns of a CSV without header can only be " +
-                                 "referenced via index");
+                ConsoleUtils.log(ERROR, null,
+                                 "Invalid column '%s'. Columns of a CSV without header can be referenced via its index",
+                                 column);
                 return null;
             }
 
@@ -135,7 +105,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         }
 
         if (index < 0 || index >= data.getColumnCount()) {
-            ConsoleUtils.log("Invalid column " + column);
+            ConsoleUtils.log(ERROR, null, "Invalid column '%s'", column);
             return null;
         }
 
@@ -154,8 +124,14 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         return toListDataType(data.getHeaders(), data.getDelim());
     }
 
-    public T filter(T data, String filter) {
+    public T filter(T data, String filter) throws TypeConversionException {
         if (data == null || data.getValue() == null || StringUtils.isBlank(filter)) { return data; }
+
+        if (!data.isHeader()) {
+            throw new TypeConversionException(data.getName(),
+                                              filter,
+                                              "Unable to filter() on CSV data that does not have header");
+        }
 
         filter = getFormattedFilter(filter);
         ListItemConverter<NexialFilter> converter = new ListItemConverterImpl();
@@ -235,14 +211,23 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         return data;
     }
 
-    public T removeRows(T data, String matches) {
-        if (data == null || data.getValue() == null || StringUtils.isBlank(matches)) { return data; }
+    public T removeRows(T data, String... matches) {
+        if (data == null || data.getValue() == null || ArrayUtils.isEmpty(matches)) { return data; }
 
         // todo: support filter by column index (e.g. #2 != 02)
 
-        matches = getFormattedFilter(matches);
+        // could be a list of row indices?
+        if (Arrays.stream(matches).allMatch(NumberUtils::isDigits)) {
+            // all args are integers, so this is a request to remove row by index
+            int[] targetRows = Arrays.stream(matches).mapToInt(NumberUtils::toInt).toArray();
+            data.removeRows(targetRows);
+            return data;
+        }
+
+        // if not row indices, then they must be filters (no varargs here; only first value considered)
+        String filter = getFormattedFilter(matches[0]);
         ListItemConverter<NexialFilter> converter = new ListItemConverterImpl();
-        List<NexialFilter> filters = TextUtils.toList(matches, PAIR_DELIM, converter);
+        List<NexialFilter> filters = TextUtils.toList(filter, PAIR_DELIM, converter);
         if (CollectionUtils.isEmpty(filters)) { return data; }
 
         // short-circuit via flyweight pattern: only if there's only 1 equal-filter
@@ -290,7 +275,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             List<String> modifiedHeaders = new ArrayList<>();
             for (int i = 0; i < data.getHeaders().size(); i++) {
                 if (indicesToRemove.contains(i)) { continue; }
-                modifiedHeaders.add(data.getHeaders().get(i));
+                modifiedHeaders.add(TextUtils.csvSafe(data.getHeaders().get(i), data.getDelim(), true));
             }
 
             csvModified.append(TextUtils.toString(modifiedHeaders, delim)).append(recordDelim);
@@ -302,8 +287,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             String[] values = one.getValues();
             for (int i = 0; i < values.length; i++) {
                 if (indicesToRemove.contains(i)) { continue; }
-                String value = values[i];
-                rowModified.append(value).append(delim);
+                rowModified.append(TextUtils.csvSafe(values[i], data.getDelim(), true)).append(delim);
             }
 
             csvModified.append(StringUtils.removeEnd(rowModified.toString(), delim)).append(recordDelim);
@@ -327,7 +311,9 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         if (data.isHeader()) {
             List<String> modifiedHeaders = new ArrayList<>();
             for (int i = 0; i < data.getHeaders().size(); i++) {
-                if (indicesToRetain.contains(i)) { modifiedHeaders.add(data.getHeaders().get(i)); }
+                if (indicesToRetain.contains(i)) {
+                    modifiedHeaders.add(TextUtils.csvSafe(data.getHeaders().get(i), data.getDelim(), true));
+                }
             }
 
             csvModified.append(TextUtils.toString(modifiedHeaders, delim)).append(recordDelim);
@@ -338,7 +324,9 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             StringBuilder rowModified = new StringBuilder();
             String[] values = one.getValues();
             for (int i = 0; i < values.length; i++) {
-                if (indicesToRetain.contains(i)) { rowModified.append(values[i]).append(delim); }
+                if (indicesToRetain.contains(i)) {
+                    rowModified.append(TextUtils.csvSafe(values[i], data.getDelim(), true)).append(delim);
+                }
             }
 
             csvModified.append(StringUtils.removeEnd(rowModified.toString(), delim)).append(recordDelim);
@@ -367,14 +355,14 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         return data;
     }
 
-    public T replaceColumnRegex(T data, String searchFor, String replaceWith, String columnNameOrIndex) {
+    public T replaceColumnRegex(T data, String searchFor, String replaceWith, String columnNameOrIndices) {
         if (data == null || data.getValue() == null ||
             StringUtils.isBlank(searchFor) || StringUtils.isBlank(replaceWith) ||
-            StringUtils.isBlank(columnNameOrIndex)) {
+            StringUtils.isBlank(columnNameOrIndices)) {
             return data;
         }
 
-        Set<Integer> indicesToSearch = toIndices(data, columnNameOrIndex);
+        Set<Integer> indicesToSearch = toIndices(data, columnNameOrIndices);
         if (CollectionUtils.isEmpty(indicesToSearch)) { return data; }
 
         String recordDelim = data.getRecordDelim();
@@ -384,14 +372,16 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         if (data.isHeader()) { csvModified.append(TextUtils.toString(data.getHeaders(), delim)).append(recordDelim); }
 
         List<Record> csvRecords = data.getValue();
-        csvRecords.forEach(one -> {
+        csvRecords.forEach(row -> {
             StringBuilder rowModified = new StringBuilder();
-            String[] values = one.getValues();
-            for (int i = 0; i < values.length; i++) {
-                String value = values[i];
-                rowModified.append(indicesToSearch.contains(i) ?
-                                   RegexUtils.replaceMultiLines(value, searchFor, replaceWith) : value)
-                           .append(delim);
+            String[] cells = row.getValues();
+            for (int i = 0; i < cells.length; i++) {
+                String cell = cells[i];
+                cell = TextUtils.csvSafe(indicesToSearch.contains(i) ?
+                                         RegexUtils.replace(cell, searchFor, replaceWith) : cell,
+                                         delim,
+                                         true);
+                rowModified.append(cell).append(delim);
             }
 
             csvModified.append(StringUtils.removeEnd(rowModified.toString(), delim)).append(recordDelim);
@@ -422,11 +412,11 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             String[] values = one.getValues();
             String combinedValues = TextUtils.toString(values, "|", "", "");
             if (parsed.contains(combinedValues)) {
-                ConsoleUtils.log("[CSV] skipping duplicate row: " + combinedValues);
+                ConsoleUtils.log(LOG, null, "[CSV] skipping duplicate row: %s", combinedValues);
             } else {
                 parsed.add(combinedValues);
 
-                for (String value : values) { rowModified.append(value).append(delim); }
+                for (String value : values) { rowModified.append(TextUtils.csvSafe(value, delim, true)).append(delim); }
                 csvModified.append(StringUtils.removeEnd(rowModified.toString(), delim)).append(recordDelim);
             }
         });
@@ -554,7 +544,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         StringBuilder buffer = new StringBuilder();
         transposed.forEach(rows -> {
             StringBuilder oneRow = new StringBuilder();
-            rows.forEach(cell -> oneRow.append(cell).append(delim));
+            rows.forEach(cell -> oneRow.append(TextUtils.csvSafe(cell, delim, true)).append(delim));
             buffer.append(StringUtils.removeEnd(oneRow.toString(), delim)).append(recordDelim);
         });
 
@@ -597,15 +587,11 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         if (StringUtils.isEmpty(sheet)) { return null; }
         if (data.getRowCount() < 1 || data.getColumnCount() < 1) { return null; }
 
-        if (StringUtils.isBlank(startCell)) { startCell = "A1"; }
-
         List<List<String>> rowsAndColumns = new ArrayList<>();
         if (data.isHeader()) { rowsAndColumns.add(data.getHeaders()); }
         data.getValue().forEach(record -> rowsAndColumns.add(Arrays.asList(record.getValues())));
 
-        // either write access or write down would work.
-        Worksheet worksheet = new Excel(new File(file)).worksheet(sheet, true);
-        worksheet.writeAcross(new ExcelAddress(startCell), rowsAndColumns);
+        ExcelHelper.csv2xlsx(file, sheet, startCell, rowsAndColumns);
 
         return new ExcelDataType(file);
     }
@@ -669,13 +655,16 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             return config;
         }
 
+        ExecutionContext context = ExecutionThread.get();
+        String delim = context == null ? "," : context.getTextDelim();
+
         Set<String> columnNames = new HashSet<>(data.getHeaders());
 
         StringBuilder props = new StringBuilder();
         columnNames.forEach(columnName -> {
             List<String> columns = new ArrayList<>();
             data.getValue().forEach(row -> columns.add(row.getString(columnName)));
-            props.append(columnName).append("=").append(TextUtils.toString(columns, ",")).append(lineSeparator());
+            props.append(columnName).append("=").append(TextUtils.toString(columns, delim)).append(lineSeparator());
         });
 
         config.setTextValue(props.toString());
@@ -710,12 +699,12 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
     }
 
     /**
-     * merge the CSV data as represented via {@code csvVariable} to current CSV instance.  The {@code refColumn}, if
+     * merge the CSV data as represented via {@code csvVariable} to current CSV instance.  The {@code refColumns}, if
      * specified, will be used as the basis of the merge so that rows with the same value (of the specified reference
      * column) will be merged together.  Consequently this is sort the current CSV instance as a side effect.  If
-     * {@code refColumn} is not specified, then the merge will be done in the line-by-line basis.
+     * {@code refColumns} is not specified, then the merge will be done in the line-by-line basis.
      */
-    public T merge(T data, String csvVariable, String refColumn) throws TypeConversionException {
+    public T merge(T data, String csvVariable, String... refColumns) throws TypeConversionException {
         if (StringUtils.isBlank(csvVariable)) { return data; }
 
         CsvDataType mergeFrom = resolveExpressionTypeInContext(csvVariable);
@@ -732,11 +721,64 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         if (!data.isHeader()) { return mergeWithoutHeaders(data, mergeFrom); }
 
         // both with header
-        // check that we don't have conflicting header (except `refColumn`)
+        // check that we don't have conflicting header (except `refColumns`)
+        List<String> keyColumns = Arrays.asList(refColumns);
         List<String> toHeaders = data.getHeaders();
         List<String> fromHeaders = mergeFrom.getHeaders();
+        int keyColumnCount = CollectionUtils.size(keyColumns);
+
+        if (keyColumnCount == 0 || (keyColumnCount == 1 && ExecutionContext.asNullOrEmpty(refColumns[0]))) {
+            return mergeWithHeader(data, mergeFrom, "");
+        }
+
+        if (keyColumnCount == 1) {
+            String refColumn = keyColumns.get(0);
+            if (!toHeaders.contains(refColumn)) {
+                throw new TypeConversionException("CSV", refColumn,
+                                                  "Unable to merge because the specified reference column does not " +
+                                                  "exists in the 'MERGED TO' CSV");
+            }
+
+            if (!fromHeaders.contains(refColumn)) {
+                throw new TypeConversionException("CSV", refColumn,
+                                                  "Unable to merge because the specified reference column does not " +
+                                                  "exists in the 'MERGED FROM' CSV");
+            }
+
+            // if a column in `toHeader` is not the `refColumn`, then it MUST not also exist in the `fromHeader`
+            // essentially `refColumn` should be the only column that appears on both `to` and `from` CSV
+            // otherwise we won't know which column to use as the resulting merged CSV
+            for (String column : toHeaders) {
+                if (StringUtils.equals(column, refColumn)) { continue; }
+                if (fromHeaders.contains(column)) {
+                    throw new TypeConversionException("CSV", column,
+                                                      "Unable to merge from variable '" + csvVariable +
+                                                      "' because of conflicting column '" + column + "'");
+                }
+            }
+
+            return mergeWithHeader(data, mergeFrom, refColumn);
+        }
+
+        for (String refColumn : refColumns) {
+            if (!toHeaders.contains(refColumn)) {
+                throw new TypeConversionException("CSV", refColumn,
+                                                  "Unable to merge because the specified reference column does not " +
+                                                  "exists in the 'MERGED TO' CSV");
+            }
+
+            if (!fromHeaders.contains(refColumn)) {
+                throw new TypeConversionException("CSV", refColumn,
+                                                  "Unable to merge because the specified reference column does not " +
+                                                  "exists in the 'MERGED FROM' CSV");
+            }
+        }
+
+        // if a column in `toHeader` is not the `refColumn`, then it MUST not also exist in the `fromHeader`
+        // essentially `refColumn` should be the only column that appears on both `to` and `from` CSV
+        // otherwise we won't know which column to use as the resulting merged CSV
         for (String column : toHeaders) {
-            if (StringUtils.equals(column, refColumn)) { continue; }
+            if (keyColumns.contains(column)) { continue; }
             if (fromHeaders.contains(column)) {
                 throw new TypeConversionException("CSV", column,
                                                   "Unable to merge from variable '" + csvVariable +
@@ -744,7 +786,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             }
         }
 
-        return mergeWithHeader(data, mergeFrom, refColumn);
+        return mergeWithHeader(data, mergeFrom, keyColumns);
     }
 
     public T groupCount(T data, String... columns) throws TypeConversionException {
@@ -816,6 +858,60 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         return (T) new CsvDataType(StringUtils.removeEnd(groupCsv.toString(), CSV_ROW_SEP));
     }
 
+    public T saveRowData(T data, String rowIndex) {
+        if (data == null || data.getValue() == null) { return data; }
+        if (!data.isHeader()) {
+            ConsoleUtils.error("Unable to perform this operation since the target CSV data does not have header");
+            return data;
+        }
+
+        ExecutionContext context = ExecutionThread.get();
+        if (context == null) {
+            ConsoleUtils.error("Unable to retrieve context");
+            return null;
+        }
+
+        if (!NumberUtils.isDigits(rowIndex)) {
+            ConsoleUtils.error("Unable to perform this operation since 'rowIndex' is not a valid number");
+            return data;
+        }
+
+        int index = NumberUtils.toInt(rowIndex);
+        if (index < 0) {
+            ConsoleUtils.error("Unable to perform this operation since 'rowIndex' is less than zero");
+            return data;
+        }
+        if (index >= data.getRowCount()) {
+            ConsoleUtils.error("Unable to perform this operation since 'rowIndex' is greater than available rows: " +
+                               data.getRowCount());
+            return data;
+        }
+
+        Record row = data.getValue().get(index);
+        data.getHeaders().forEach(header -> context.setData(header, row.getString(header)));
+        return data;
+    }
+
+    /**
+     * surround the data of specified columns with specified characters (first element of <code>parameters</code>).
+     * Suppose both column index or column name (starting from second parameters of <code>parameters</code>). Use
+     * <code>*</code> for <b>ALL</b> columns.
+     */
+    public TextDataType surround(T data, String... parameters) throws TypeConversionException {
+        TextDataType text = new TextDataType("");
+
+        if (data == null || data.getValue() == null) { return text; }
+
+        if (ArrayUtils.getLength(parameters) < 2) {
+            text.setValue(data.textValue);
+        } else {
+            String surroundWith = parameters[0];
+            String[] onColumns = ArrayUtils.remove(parameters, 0);
+            text.setValue(data.surround(surroundWith, toIndices(data, onColumns)));
+        }
+        return text;
+    }
+
     /**
      * turn a data variable into an instance of CsvDataType, if possible
      */
@@ -844,7 +940,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
 
                 listOfList.forEach(innerList -> text.append(TextUtils.toString(innerList, delim)).append(recordDelim));
             } catch (ClassCastException e) {
-                ConsoleUtils.log(msgPrefix + "is not of type List<List<String>>");
+                ConsoleUtils.error(msgPrefix + "is not of type List<List<String>>");
                 // nope that's not it...
                 return null;
             }
@@ -868,12 +964,12 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
                 csv.parse();
                 return csv;
             } catch (TypeConversionException e) {
-                ConsoleUtils.log(msgPrefix + "contains unparseable data: " + e.getMessage());
+                ConsoleUtils.error(msgPrefix + "contains unparseable data: " + e.getMessage());
                 return null;
             }
         }
 
-        ConsoleUtils.log(msgPrefix + "is of unsupported type: " + mergeFromObj.getClass());
+        ConsoleUtils.error(msgPrefix + "is of unsupported type: " + mergeFromObj.getClass());
         return null;
     }
 
@@ -899,12 +995,17 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         Set<Integer> indices = new TreeSet<>();
 
         // treat varargs and pipe-delimited list evenly.
-        String[] toRemove = StringUtils.split(TextUtils.toString(columnNamesOrIndices, PAIR_DELIM, "", ""), PAIR_DELIM);
-        if (ArrayUtils.isEmpty(toRemove)) { return indices; }
+        String[] selected = StringUtils.split(TextUtils.toString(columnNamesOrIndices, PAIR_DELIM, "", ""), PAIR_DELIM);
+        if (ArrayUtils.isEmpty(selected)) { return indices; }
 
         int maxColumnIndex = data.getColumnCount() - 1;
 
-        Arrays.stream(toRemove).forEach(column -> {
+        // special case: * means _ALL_ columns
+        if (selected.length == 1 && StringUtils.equals(selected[0], "*")) {
+            return IntStream.range(0, maxColumnIndex + 1).boxed().collect(Collectors.toCollection(TreeSet::new));
+        }
+
+        Arrays.stream(selected).forEach(column -> {
             if (NumberUtils.isDigits(column)) {
                 // expects numeric indices (zero-based)
                 if (!NumberUtils.isDigits(column)) {
@@ -983,18 +1084,7 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
 
     protected T mergeWithHeader(T to, CsvDataType from, String refColumn) throws TypeConversionException {
         List<String> toHeaders = to.getHeaders();
-        if (StringUtils.isNotEmpty(refColumn) && !toHeaders.contains(refColumn)) {
-            throw new TypeConversionException("CSV", refColumn,
-                                              "Unable to merge because the specified reference column does not " +
-                                              "exists in the 'MERGED TO' CSV");
-        }
-
         List<String> fromHeaders = from.getHeaders();
-        if (StringUtils.isNotEmpty(refColumn) && !fromHeaders.contains(refColumn)) {
-            throw new TypeConversionException("CSV", refColumn,
-                                              "Unable to merge because the specified reference column does not " +
-                                              "exists in the 'MERGED FROM' CSV");
-        }
 
         // sort both `to` and `from` so we can merge them correctly
         int toRefColumnPos = -1;
@@ -1032,7 +1122,9 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             Record fromRecord = fromRecords.get(i);
             String fromRef = fromRefColumnPos == -1 ? null : fromRecord.getString(refColumn);
             String[] fromValues = fromRecord.getValues();
-            if (ArrayUtils.isEmpty(fromValues)) { continue; }
+            if (ArrayUtils.isEmpty(fromValues) || StringUtils.isEmpty(TextUtils.toString(fromValues, "", "", ""))) {
+                continue;
+            }
 
             if (toRecords.size() <= j) {
                 // no more records in `to` but still some more in `from`
@@ -1043,7 +1135,9 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
             }
 
             Record toRecord = toRecords.get(j);
-            if (toRecord == null || ArrayUtils.isEmpty(toRecord.getValues())) {
+            if (toRecord == null ||
+                ArrayUtils.isEmpty(toRecord.getValues()) ||
+                StringUtils.isEmpty(TextUtils.toString(toRecord.getValues(), "", "", ""))) {
                 // skip this line since there's no data here.
                 j++;
                 i--;
@@ -1052,11 +1146,12 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
 
             String toRef = toRefColumnPos == -1 ? null : toRecord.getString(refColumn);
             if (StringUtils.equals(toRef, fromRef)) {
-                // we can proceed to next record of `to`
+                // found matching reference data -- we match both rows from `to` and `from`
                 recordBuffer.append(TextUtils.toString(toRecord.getValues(), toDelim, "", ""))
                             .append(toDelim)
                             .append(prepareMergingValues(fromValues, fromRefColumnPos, toDelim));
                 toBuffer.append(recordBuffer.toString()).append(toRecordDelim);
+                // we can proceed to next record of `to`
                 j++;
                 continue;
             }
@@ -1101,12 +1196,161 @@ public class CsvTransformer<T extends CsvDataType> extends Transformer {
         return to;
     }
 
+    protected T mergeWithHeader(T to, CsvDataType from, List<String> refColumns) {
+        String toDelim = to.getDelim();
+        String toRecordDelim = to.getRecordDelim();
+
+        // 0. prep the buffer for the "new" merged CSV
+        // create a copy so that we aren't tainted by the adding of `refColumns` into header later on
+        List<String> mergedHeaders = mergeHeaders(to, from, refColumns);
+
+        // header should always be the first line
+        StringBuilder toBuffer = new StringBuilder(TextUtils.toString(mergedHeaders, toDelim, "", "") + toRecordDelim);
+
+        // 1. create new composite column made up of the reference columns
+        to = (T) appendCompositeColumn(to, refColumns);
+        from = appendCompositeColumn(from, refColumns);
+
+        // 2. track the position of the new composite column
+        // 3. sort based on the new composite column
+        String compositeColumn = to.getHeaders().get(to.getHeaders().size() - 1);
+        to = sortAscending(to, compositeColumn);
+        from = sortAscending((T) from, compositeColumn);
+
+        List<Record> toRecords = to.getValue();
+        List<Record> fromRecords = from.getValue();
+
+        // slap the data from `mergedFrom` - except that of the `refColumn` - to data
+        // merge all `mergeFrom` records into `data`
+        int j = 0;
+        for (int i = 0; i < fromRecords.size(); i++) {
+            Record fromRecord = fromRecords.get(i);
+
+            // `to` record missing; `to` file too short
+            if (toRecords.size() <= j) {
+                toBuffer.append(mergeRecordsWithBlank(mergedHeaders, fromRecord, toDelim)).append(toRecordDelim);
+                continue;
+            }
+
+            Record toRecord = toRecords.get(j);
+            if (toRecord == null ||
+                ArrayUtils.isEmpty(toRecord.getValues()) ||
+                StringUtils.isEmpty(TextUtils.toString(toRecord.getValues(), "", "", ""))) {
+                // skip this line since there's no data here.
+                j++;
+                i--;
+                continue;
+            }
+
+            String fromRef = fromRecord.getString(compositeColumn);
+            String toRef = toRecord.getString(compositeColumn);
+
+            if (StringUtils.equals(toRef, fromRef)) {
+                // found matching reference data -- we match both rows from `to` and `from`
+                toBuffer.append(mergeToRecords(mergedHeaders, toRecord, fromRecord, toDelim)).append(toRecordDelim);
+                j++;
+                continue;
+            }
+
+            if (StringUtils.isEmpty(toRef) || StringUtils.compare(toRef, fromRef) > 0) {
+                toBuffer.append(mergeRecordsWithBlank(mergedHeaders, fromRecord, toDelim)).append(toRecordDelim);
+                continue;
+            }
+
+            // if (StringUtils.compare(toRef, fromRef) < 0) {
+            toBuffer.append(mergeRecordsWithBlank(mergedHeaders, toRecord, toDelim)).append(toRecordDelim);
+            j++;
+            i--;
+        }
+
+        // need to catch all the additional rows in `from` records
+        if (toRecords.size() > fromRecords.size()) {
+            for (int i = fromRecords.size() + 1; i < toRecords.size(); i++) {
+                Record record = toRecords.get(i);
+                toBuffer.append(mergeRecordsWithBlank(mergedHeaders, record, toDelim))
+                        .append(toRecordDelim);
+            }
+        }
+
+        to.setTextValue(StringUtils.removeEnd(toBuffer.toString(), toRecordDelim));
+        to.parse();
+        return to;
+    }
+
+    @NotNull
+    protected List<String> mergeHeaders(T to, CsvDataType from, List<String> refColumns) {
+        List<String> mergedHeaders = new ArrayList<>(to.getHeaders());
+
+        // merge headers, except those already used as `refColumns`
+        for (String fromHeader : from.getHeaders()) {
+            if (!refColumns.contains(fromHeader)) { mergedHeaders.add(fromHeader); }
+        }
+
+        return mergedHeaders;
+    }
+
+    @NotNull
+    protected String mergeRecordsWithBlank(List<String> headers, Record record, String delim) {
+        StringBuilder buffer = new StringBuilder();
+        RecordMetaData metaData = record.getMetaData();
+
+        for (int i = 0; i < headers.size(); i++) {
+            buffer.append(metaData.containsColumn(headers.get(i)) ? record.getString(i) : "").append(delim);
+        }
+
+        return StringUtils.removeEnd(buffer.toString(), delim);
+    }
+
+    @NotNull
+    protected String mergeToRecords(List<String> headers, Record record1, Record record2, String delim) {
+        StringBuilder buffer = new StringBuilder();
+        RecordMetaData metaData1 = record1.getMetaData();
+        RecordMetaData metaData2 = record2.getMetaData();
+
+        for (String header : headers) {
+            buffer.append(metaData1.containsColumn(header) ? record1.getString(header) :
+                          metaData2.containsColumn(header) ? record2.getString(header) : "")
+                  .append(delim);
+        }
+
+        return StringUtils.removeEnd(buffer.toString(), delim);
+    }
+
+    @NotNull
+    protected CsvDataType appendCompositeColumn(CsvDataType csv, List<String> columnsToCombine) {
+        if (CollectionUtils.isEmpty(columnsToCombine)) { return csv; }
+
+        String delim = csv.getDelim();
+        String recordDelim = csv.getRecordDelim();
+
+        List<String> newHeaders = new ArrayList<>(csv.getHeaders());
+        newHeaders.add(TextUtils.toString(columnsToCombine, "_"));
+
+        StringBuilder buffer = new StringBuilder();
+        buffer.append(TextUtils.toString(newHeaders, delim)).append(recordDelim);
+
+        csv.getValue().forEach(record -> {
+            List<String> compositeData = new ArrayList<>();
+            columnsToCombine.forEach(ref -> compositeData.add(record.getString(ref)));
+            buffer.append(TextUtils.toCsvLine(ArrayUtils.add(record.getValues(),
+                                                             TextUtils.toString(compositeData, "_")),
+                                              delim, recordDelim));
+        });
+
+        CsvDataType newCsv = csv.snapshot();
+        newCsv.setTextValue(buffer.toString());
+        newCsv.parse();
+        return newCsv;
+    }
+
+    @NotNull
     protected String createBlankToPortion(int expectedColumnCount, int refColumnPos, String refValue, String delim) {
         StringBuilder blank = new StringBuilder();
         for (int i = 0; i < expectedColumnCount; i++) { blank.append(i == refColumnPos ? refValue : "").append(delim); }
         return blank.toString();
     }
 
+    @NotNull
     protected String prepareMergingValues(String[] values, int ignoreColumnPosition, String delim) {
         StringBuilder recordBuffer = new StringBuilder();
         for (int k = 0; k < values.length; k++) {

@@ -120,10 +120,8 @@ public final class WebDriverUtils {
             if (StringUtils.isBlank(nextKeyStroke)) { break; }
 
             String keystrokeId = CTRL_KEY_START + nextKeyStroke + CTRL_KEY_END;
-            if (keystrokeId == null) { throw new RuntimeException("Unsupported/unknown key " + keystrokeId); }
-
             Keys controlKey = CONTROL_KEY_MAPPING.get(keystrokeId);
-            if (controlKey == null) { throw new RuntimeException("Unsuppported/unknown key " + keystrokeId); }
+            if (controlKey == null) { throw new RuntimeException("Unsupported/unknown key " + keystrokeId); }
 
             controlKeys.push(controlKey);
             actions.keyDown(controlKey);
@@ -143,7 +141,7 @@ public final class WebDriverUtils {
         return actions;
     }
 
-    public static Map<String, Keys> initControlKeyMapping() {
+    private static Map<String, Keys> initControlKeyMapping() {
         Map<String, Keys> map = new HashMap<>();
         map.put("{SHIFT}", SHIFT);
         map.put("{CONTROL}", CONTROL);
@@ -154,7 +152,7 @@ public final class WebDriverUtils {
         return map;
     }
 
-    public static Map<String, Keys> initKeyMapping() {
+    private static Map<String, Keys> initKeyMapping() {
         Map<String, Keys> map = new HashMap<>();
 
         map.put("{TAB}", TAB);

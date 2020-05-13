@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
@@ -31,6 +32,7 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.nexial.commons.utils.CollectionUtil;
 import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.TextUtils;
@@ -50,10 +52,13 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
     public TextDataType text(T data) { return super.text(data); }
 
     public ListDataType worksheets(T data) {
-        ListDataType list = new ListDataType("", ",");
+        ExecutionContext context = ExecutionThread.get();
+        String delim = context == null ? "," : context.getTextDelim();
+
+        ListDataType list = new ListDataType("", delim);
         if (data == null || CollectionUtils.isEmpty(data.getWorksheetNames())) { return list; }
 
-        list.setTextValue(TextUtils.toString(data.getWorksheetNames(), ","));
+        list.setTextValue(TextUtils.toString(data.getWorksheetNames(), delim));
         list.init();
         return list;
     }
@@ -120,7 +125,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
 
         ExcelAddress addr = toExcelAddress(start);
 
-        if (FileUtil.isFileReadable(file, 5 * 1024)) {
+        if (FileUtil.isFileReadable(file)) {
             ConsoleUtils.log("Overwriting '" + file + "' with current EXCEL content");
         } else {
             FileUtils.forceMkdirParent(new File(file));
@@ -154,7 +159,6 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
 
     public NumberDataType rowCount(T data) throws TypeConversionException {
         requireAfterRead(data, "rowCount()");
-
         return new NumberDataType(CollectionUtils.size(data.getCapturedValues()) + "");
     }
 
@@ -166,8 +170,36 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         return new NumberDataType(maxColumn[0] + "");
     }
 
-    public T writeAcross(T data, String... startAndContent)
-        throws TypeConversionException {
+    public TextDataType firstCell(T data, String column, String regex, String maxRows) throws TypeConversionException {
+        requireAfterRead(data, "firstCell()");
+
+        if (StringUtils.isBlank(regex)) { throw new IllegalArgumentException("Invalid regex: " + regex); }
+        if (!NumberUtils.isDigits(maxRows)) { throw new IllegalArgumentException("Invalid max-rows: " + maxRows); }
+
+        ExcelAddress cellAddress = data.getCurrentSheet()
+                                       .findFirstMatchingCell(column, regex, NumberUtils.toInt(maxRows));
+
+        TextDataType returnType = new TextDataType("");
+        if (cellAddress != null) { returnType.setValue(cellAddress.getAddr()); }
+        return returnType;
+    }
+
+    public T replace(T data, String search, String replace) {
+        requireAfterRead(data, "writeAcross()");
+
+        if (StringUtils.isEmpty(search)) { throw new IllegalArgumentException("search is empty/null"); }
+        String replaceWith = replace == null ? "" : replace;
+
+        data.setCapturedValues(data.getCapturedValues()
+                                   .parallelStream()
+                                   .map(row -> row.parallelStream()
+                                                  .map(cell -> cell = StringUtils.replace(cell, search, replaceWith))
+                                                  .collect(Collectors.toList()))
+                                   .collect(Collectors.toList()));
+        return data;
+    }
+
+    public T writeAcross(T data, String... startAndContent) throws TypeConversionException {
         requireAfterRead(data, "writeAcross()");
 
         if (ArrayUtils.getLength(startAndContent) < 2) {
@@ -181,6 +213,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
 
         try {
             data.getCurrentSheet().writeAcross(toExcelAddress(start), rows);
+            // data.writeAcross(start, rows);
             return data;
         } catch (IOException e) {
             throw new TypeConversionException(data.getName(), rows.get(0).toString(),
@@ -188,8 +221,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
         }
     }
 
-    public T writeDown(T data, String... startAndContent)
-        throws TypeConversionException {
+    public T writeDown(T data, String... startAndContent) throws TypeConversionException {
         requireAfterRead(data, "writeAcross()");
 
         if (ArrayUtils.getLength(startAndContent) < 2) {
@@ -204,6 +236,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
 
         try {
             data.getCurrentSheet().writeDown(toExcelAddress(start), columns);
+            // data.writeDown(start, columns);
             return data;
         } catch (IOException e) {
             throw new TypeConversionException(data.getName(), columns.get(0).toString(),
@@ -260,6 +293,7 @@ public class ExcelTransformer<T extends ExcelDataType> extends Transformer {
     protected void requireAfterRead(T data, String op) {
         if (data == null) { throw new IllegalArgumentException("data is null"); }
         if (CollectionUtils.isEmpty(data.getCapturedValues()) && data.getCurrentSheet() == null) {
+            // if (CollectionUtils.isEmpty(data.getCapturedValues()) && data.getCurrentSheetName() == null) {
             throw new IllegalArgumentException(op + " can only be performed after a valid read() operation");
         }
     }

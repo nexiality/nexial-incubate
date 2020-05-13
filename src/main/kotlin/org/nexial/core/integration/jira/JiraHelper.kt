@@ -50,7 +50,7 @@ class JiraHelper(val context: ExecutionContext, private val httpClient: AsyncWeb
         val actions = getActions(context, profile)
         actions.forEach { action ->
             when (action) {
-                "comment-summary"  -> {
+                "comment-summary" -> {
                     executionOutput.iterations.forEach { iteration ->
                         for (scenario in iteration.scenarios) {
                             processComment(profile, scenario)
@@ -64,7 +64,7 @@ class JiraHelper(val context: ExecutionContext, private val httpClient: AsyncWeb
                         }
                     }
                 }
-                "defect"           -> {
+                "defect" -> {
                     val defectData = mutableListOf<Pair<String, String>>()
                     executionOutput.iterations.forEach { iteration ->
                         for (scenario in iteration.scenarios) {
@@ -91,9 +91,8 @@ class JiraHelper(val context: ExecutionContext, private val httpClient: AsyncWeb
         }
         context.setData(JIRA_COMMENT_BODY, TemplateEngine.setJiraCommentSummary(scenario))
 
-        val commentBody = StringUtils
-            .replace(context.replaceTokens(TemplateEngine.getTemplate(profile, COMMENT_ENDPOINT)),
-                     lineSeparator, "")
+        val commentBody = StringUtils.replace(context.replaceTokens(TemplateEngine.getTemplate(profile, COMMENT_ENDPOINT)),
+                lineSeparator, "")
         features.forEach { feature ->
             val url = jiraPostCommentUrl(feature, profile)
             addComment(url!!, commentBody)
@@ -117,7 +116,7 @@ class JiraHelper(val context: ExecutionContext, private val httpClient: AsyncWeb
             // check if defects are repeated or contains in history
             // create a defect only when this condition is not met
             if (CollectionUtils.isEqualCollection(defectList, newDefects)
-                || CollectionUtils.containsAll(defectHistory.keys, newDefects)) continue
+                    || CollectionUtils.containsAll(defectHistory.keys, newDefects)) continue
             val defectKey = createDefect(projectInfo.server!!)
             CollectionUtils.addAll(defectList, newDefects)
             integrationMeta.defects.add(defectKey!!)
@@ -162,7 +161,7 @@ class JiraHelper(val context: ExecutionContext, private val httpClient: AsyncWeb
         context.setData(JIRA_LABELS, labels)
         integrationMeta.labels.addAll(labels)
         val labelsBody = StringUtils.replace(context.replaceTokens(TemplateEngine.getTemplate(profile, LABEL_ENDPOINT)),
-                                             lineSeparator, "")
+                lineSeparator, "")
         addLabels(putLabelsUrl!!, labelsBody)
 
     }

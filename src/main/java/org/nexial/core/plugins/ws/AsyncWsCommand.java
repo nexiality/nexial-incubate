@@ -18,16 +18,16 @@ package org.nexial.core.plugins.ws;
 
 import java.io.File;
 import java.io.IOException;
+import javax.validation.constraints.NotNull;
 
 import org.apache.commons.lang3.StringUtils;
 import org.nexial.commons.utils.web.URLEncodingUtils;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.StepResult;
-import org.nexial.core.utils.OutputFileUtils;
+import org.nexial.core.utils.OutputResolver;
 
 import static org.nexial.core.plugins.ws.WebServiceClient.hideAuthDetails;
 import static org.nexial.core.utils.CheckUtils.requiresNotBlank;
-import static org.nexial.core.utils.CheckUtils.requiresValidVariableName;
 
 public class AsyncWsCommand extends WsCommand {
     private AsyncWebServiceClient client;
@@ -40,30 +40,21 @@ public class AsyncWsCommand extends WsCommand {
     }
 
     @Override
-    public String getTarget() {
-        return "ws.async";
-    }
+    public String getTarget() { return "ws.async"; }
 
     @Override
     public StepResult download(String url, String queryString, String saveTo) {
         requiresNotBlank(url, "invalid url", url);
-        requiresValidVariableName(saveTo);
+        requiresValidAndNotReadOnlyVariableName(saveTo);
 
         String request;
         if (StringUtils.isBlank(queryString)) {
             request = url;
         } else {
-            // is queryString a file?
-            try {
-                queryString = OutputFileUtils.resolveContent(queryString, context, compactRequestPayload());
-                queryString = URLEncodingUtils.encodeQueryString(queryString);
-                request = url + "?" + queryString;
-            } catch (IOException e) {
-                return StepResult.fail("Unable to read input '" + queryString + "' due to " + e.getMessage());
-            }
+            @NotNull OutputResolver outputResolver = newOutputResolver(queryString, false);
+            queryString = URLEncodingUtils.encodeQueryString(outputResolver.getContent());
+            request = url + "?" + queryString;
         }
-
-        logRequest(url, queryString);
 
         try {
             client.download(url, queryString, saveTo);
@@ -74,29 +65,19 @@ public class AsyncWsCommand extends WsCommand {
     }
 
     @Override
-    public StepResult get(String url, String queryString, String output) {
-        return super.get(url, queryString, output);
-    }
+    public StepResult get(String url, String queryString, String output) { return super.get(url, queryString, output); }
 
     @Override
-    public StepResult post(String url, String body, String output) {
-        return super.post(url, body, output);
-    }
+    public StepResult post(String url, String body, String output) { return super.post(url, body, output); }
 
     @Override
-    public StepResult put(String url, String body, String output) {
-        return super.put(url, body, output);
-    }
+    public StepResult put(String url, String body, String output) { return super.put(url, body, output); }
 
     @Override
-    public StepResult patch(String url, String body, String output) {
-        return super.patch(url, body, output);
-    }
+    public StepResult patch(String url, String body, String output) { return super.patch(url, body, output); }
 
     @Override
-    public StepResult head(String url, String output) {
-        return super.head(url, output);
-    }
+    public StepResult head(String url, String output) { return super.head(url, output); }
 
     @Override
     public StepResult delete(String url, String body, String output) { return super.delete(url, body, output); }
@@ -107,21 +88,13 @@ public class AsyncWsCommand extends WsCommand {
         requiresNotBlank(output, "invalid output", output);
         File outputFile = new File(output);
 
-        // is queryString a file?
-        try {
-            queryString = OutputFileUtils.resolveContent(queryString, context, compactRequestPayload());
-            queryString = URLEncodingUtils.encodeQueryString(queryString);
-        } catch (IOException e) {
-            return StepResult.fail("Unable to read input '" + queryString + "' due to " + e.getMessage());
-        }
-
-        logRequest(url, queryString);
+        @NotNull OutputResolver outputResolver = newOutputResolver(queryString, false);
+        queryString = URLEncodingUtils.encodeQueryString(outputResolver.getContent());
 
         try {
             if (StringUtils.equals(method, "get")) { client.get(url, queryString, outputFile); }
             if (StringUtils.equals(method, "head")) { client.head(url, outputFile); }
             if (StringUtils.equals(method, "delete")) { client.delete(url, queryString, outputFile); }
-
             return StepResult.success("Successfully invoked '" + hideAuthDetails(url) + "'; output will be saved to " +
                                       output);
         } catch (IOException e) {
@@ -135,20 +108,22 @@ public class AsyncWsCommand extends WsCommand {
         requiresNotBlank(output, "invalid output", output);
         File outputFile = new File(output);
 
-        // is body a file?
-        try {
-            body = OutputFileUtils.resolveContent(body, context, compactRequestPayload());
-        } catch (IOException e) {
-            return StepResult.fail("Unable to read input '" + body + "' due to " + e.getMessage());
-        }
-
-        logRequestWithBody(url, body);
+        @NotNull OutputResolver outputResolver = newOutputResolver(body);
 
         try {
-            if (StringUtils.equals(method, "post")) { client.post(url, body, outputFile); }
-            if (StringUtils.equals(method, "patch")) { client.patch(url, body, outputFile); }
-            if (StringUtils.equals(method, "put")) { client.put(url, body, outputFile); }
-            if (StringUtils.equals(method, "delete")) { client.deleteWithPayload(url, body, outputFile); }
+            if (outputResolver.getAsBinary()) {
+                byte[] content = outputResolver.getBytes();
+                if (StringUtils.equals(method, "post")) { client.post(url, content, outputFile); }
+                if (StringUtils.equals(method, "patch")) { client.patch(url, content, outputFile); }
+                if (StringUtils.equals(method, "put")) { client.put(url, content, outputFile); }
+                if (StringUtils.equals(method, "delete")) { client.deleteWithPayload(url, content, outputFile); }
+            } else {
+                String content = outputResolver.getContent();
+                if (StringUtils.equals(method, "post")) { client.post(url, content, outputFile); }
+                if (StringUtils.equals(method, "patch")) { client.patch(url, content, outputFile); }
+                if (StringUtils.equals(method, "put")) { client.put(url, content, outputFile); }
+                if (StringUtils.equals(method, "delete")) { client.deleteWithPayload(url, content, outputFile); }
+            }
 
             return StepResult.success("Successfully invoked '" + hideAuthDetails(url) + "'");
         } catch (IOException e) {

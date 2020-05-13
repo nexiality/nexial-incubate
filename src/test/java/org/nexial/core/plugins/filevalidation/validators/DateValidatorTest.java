@@ -26,26 +26,26 @@ public class DateValidatorTest {
     public void validateDate() {
         String value = "20160229";
         String format = "yyyyMMdd";
-        if (!DateValidator.validateDate(value, format)) {
-            Assert.fail("Invalid Date '" + value + "' or invalid format '" + format + "'");
+        if (!DateValidator.validateDate(value, format)){
+            Assert.fail("Invalid Date '"+value +"' or invalid format '"+format+"'");
         }
 
         value = "022916";
         format = "MMddyy";
-        if (!DateValidator.validateDate(value, format)) {
-            Assert.fail("Invalid Date '" + value + "' or invalid format '" + format + "'");
+        if (!DateValidator.validateDate(value, format)){
+            Assert.fail("Invalid Date '"+value +"' or invalid format '"+format+"'");
         }
 
         value = "290216:022055";
         format = "ddMMyy:hhmmss";
-        if (!DateValidator.validateDate(value, format)) {
-            Assert.fail("Invalid Date '" + value + "' or invalid format '" + format + "'");
+        if (!DateValidator.validateDate(value, format)){
+            Assert.fail("Invalid Date '"+value +"' or invalid format '"+format+"'");
         }
 
         value = "290216 59-02-55";
         format = "ddMMyy mm-hh-ss";
-        if (!DateValidator.validateDate(value, format)) {
-            Assert.fail("Invalid Date '" + value + "' or invalid format '" + format + "'");
+        if (!DateValidator.validateDate(value, format)){
+            Assert.fail("Invalid Date '"+value +"' or invalid format '"+format+"'");
         }
     }
 }

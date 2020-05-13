@@ -19,7 +19,11 @@ package org.nexial.core.plugins.db;
 
 import java.io.File;
 import java.lang.reflect.InvocationTargetException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.util.Map;
+import java.util.Properties;
 import javax.sql.DataSource;
 
 import org.apache.commons.beanutils.BeanUtils;
@@ -33,19 +37,22 @@ import org.nexial.core.utils.ConsoleUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
+import static java.io.File.separator;
 import static java.sql.Connection.TRANSACTION_SERIALIZABLE;
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Rdbms.*;
 import static org.nexial.core.utils.CheckUtils.requiresNotBlank;
 import static org.nexial.core.utils.CheckUtils.requiresNotNull;
 
 public class DataAccess implements ApplicationContextAware {
     private static final String ISAM_PROP_DD = "jdbc:connx:DD";
     private static final String ISAM_PROP_GW = "GateWay";
+
     protected Map<String, String> dbTypes;
     protected ApplicationContext spring;
     protected ExecutionContext context;
-    private Map<String, ThirdPartyDriverInfo> dbJarInfo;
+    protected Map<String, ThirdPartyDriverInfo> dbJarInfo;
 
     @Override
     public void setApplicationContext(ApplicationContext ctx) throws BeansException { spring = ctx; }
@@ -97,13 +104,15 @@ public class DataAccess implements ApplicationContextAware {
         String dbType = context.getStringData(db + OPT_DB_TYPE);
         requiresNotBlank(dbType, "database '" + db + "' is not defined; unable to proceed");
 
-        String className = dbTypes.get(dbType);
+        // support user-defined JDBC Driver ClassName via <db>.JavaClassName
+        String className = dbTypes.containsKey(dbType) ?
+                           dbTypes.get(dbType) : context.getStringData(db + OPT_DB_CLASSNAME);
         requiresNotBlank(className, "no or invalid JDBC driver defined", dbType);
 
         try {
             // make sure required class/jar exists
-            Class.forName(className).newInstance();
-        } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+            Class.forName(className).getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
             String message;
             ThirdPartyDriverInfo driverInfo = dbJarInfo.get(dbType);
             if (driverInfo != null) {
@@ -123,6 +132,8 @@ public class DataAccess implements ApplicationContextAware {
         SimpleExtractionDao dao;
         if (StringUtils.equals(dbType, "isam")) {
             dao = resolveIsamDao(db);
+        } else if (StringUtils.equals(dbType, "mongodb")) {
+            dao = resolveMongoDao(db, className);
         } else {
             BasicDataSource newDs = new BasicDataSource();
             newDs.setDriverClassName(className);
@@ -140,7 +151,7 @@ public class DataAccess implements ApplicationContextAware {
             // handle auto commit (single transaction or not)
             boolean autocommit = context.getBooleanData(db + OPT_DB_AUTOCOMMIT, DEF_AUTOCOMMIT);
             newDs.setDefaultAutoCommit(autocommit);
-            newDs.setEnableAutoCommitOnReturn(autocommit);
+            newDs.setAutoCommitOnReturn(autocommit);
             if (!autocommit) { newDs.setDefaultTransactionIsolation(TRANSACTION_SERIALIZABLE); }
 
             dao = new SimpleExtractionDao();
@@ -185,5 +196,91 @@ public class DataAccess implements ApplicationContextAware {
         dao.setDataSource(newDs);
         dao.setAutoCommit(context.getBooleanData(db + OPT_DB_AUTOCOMMIT, DEF_AUTOCOMMIT));
         return dao;
+    }
+
+    protected SimpleExtractionDao resolveMongoDao(String db, String className) {
+        String url = context.getStringData(db + OPT_DB_URL);
+        url = StringUtils.prependIfMissing(url, "jdbc:");
+
+        // https://bitbucket.org/dbschema/mongodb-jdbc-driver/src/master/
+        // handle credential
+        Properties props = new Properties();
+        String username = context.getStringData(db + OPT_DB_USER);
+        String password = context.getStringData(db + OPT_DB_PASSWORD);
+        if (StringUtils.isNotBlank(username) && StringUtils.isNotBlank(password)) {
+            props.put("user", username);
+            props.put("password", password);
+        }
+
+        Map<String, String> urlOptions = TextUtils.toMap(StringUtils.substringAfter(url, "?"), "&", "=");
+
+        // special config to expand result JSON into columns
+        boolean expandDoc = context.getBooleanData(db + OPT_DB_EXPAND_DOC, false);
+        if (expandDoc) { urlOptions.put("expand", "true"); }
+
+        // additional security consideration when connecting to database... mostly for cloud/SaaS -based db
+        String trustStore = context.getStringData(OPT_DB_TRUST_STORE);
+        String trustStorePassword = context.getStringData(OPT_DB_TRUST_STORE_PWD);
+
+        // special treatment for AWS DocumentDB
+        // https://docs.aws.amazon.com/documentdb/latest/developerguide/connect_programmatically.html#connect_programmatically-tls_enabled
+        boolean isDocumentDB = context.getBooleanData(db + OPT_IS_DOCUMENTDB, false);
+        if (isDocumentDB) {
+            String jksLocation;
+            String jksPassword;
+            if (StringUtils.isNotBlank(trustStore)) {
+                jksLocation = trustStore;
+                jksPassword = trustStorePassword;
+            } else {
+                jksLocation = StringUtils.appendIfMissing(context.getProject().getNexialHome(), separator) +
+                              "bin" + separator + "rds-truststore.jks";
+                jksPassword = "nexial_mongo";
+            }
+
+            ConsoleUtils.log("detect use of DocumentDB; adding AWS JKS to trust store: " + jksLocation);
+            System.setProperty("javax.net.ssl.trustStore", jksLocation);
+            if (StringUtils.isNotBlank(jksPassword)) {
+                System.setProperty("javax.net.ssl.trustStorePassword", jksPassword);
+            }
+
+            urlOptions.put("ssl", "true");
+            urlOptions.put("sslInvalidHostNameAllowed", "true");
+        } else if (StringUtils.isNotBlank(trustStore)) {
+            ConsoleUtils.log("adding to trust store: " + trustStore);
+            System.setProperty("javax.net.ssl.trustStore", trustStore);
+
+            if (StringUtils.isNotBlank(trustStorePassword)) {
+                System.setProperty("javax.net.ssl.trustStorePassword", trustStorePassword);
+            }
+
+            urlOptions.put("ssl", "true");
+            urlOptions.put("sslInvalidHostNameAllowed", "true");
+        }
+
+        if (!urlOptions.isEmpty()) {
+            url = StringUtils.substringBefore(url, "?") + "?" + TextUtils.toString(urlOptions, "&", "=");
+        }
+
+        ConsoleUtils.log("connecting to MongoDB: " + url);
+
+        try {
+            Connection connection = DriverManager.getConnection(url, props);
+            connection.setAutoCommit(true);
+
+            SingleConnectionDataSource newDs = new SingleConnectionDataSource(connection, true);
+            newDs.setAutoCommit(connection.getAutoCommit());
+            newDs.setCatalog(connection.getCatalog());
+            newDs.setUrl(url);
+            newDs.setUsername(username);
+            newDs.setPassword(password);
+
+            MongodbJdbcExtractionDao dao = new MongodbJdbcExtractionDao();
+            dao.setDataSource(newDs);
+            dao.setExpandDoc(expandDoc);
+            dao.setAutoCommit(connection.getAutoCommit());
+            return dao;
+        } catch (SQLException e) {
+            throw new RuntimeException("Unable to set up MongoDB connection: " + e.getMessage());
+        }
     }
 }

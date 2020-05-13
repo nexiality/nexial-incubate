@@ -71,11 +71,11 @@ public class RecordConfig {
         }
     }
 
-    private RecordConfig() {}
-
-    public boolean isValid() {
+    public boolean isValid(){
         return this.fieldConfigList.stream().map(FieldConfig::getFieldname).anyMatch(this.recordIdField::equals);
     }
+
+    private RecordConfig() {}
 
     public List<FieldConfig> getFieldConfigList() {
         return fieldConfigList;
@@ -92,7 +92,6 @@ public class RecordConfig {
     public String getRecordIdField() {
         return recordIdField;
     }
-
     public String getRecordId() {
         return recordId;
     }

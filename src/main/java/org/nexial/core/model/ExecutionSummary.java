@@ -38,6 +38,7 @@ import org.nexial.core.excel.Excel.Worksheet;
 import org.nexial.core.excel.ExcelAddress;
 import org.nexial.core.excel.ExcelArea;
 import org.nexial.core.excel.ExcelConfig.*;
+import org.nexial.core.excel.ExcelStyleHelper;
 import org.nexial.core.utils.ConsoleUtils;
 import org.nexial.core.utils.ExecUtils;
 
@@ -47,13 +48,12 @@ import static java.util.Locale.US;
 import static org.apache.commons.lang3.SystemUtils.*;
 import static org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK;
 import static org.nexial.core.NexialConst.Data.*;
-import static org.nexial.core.NexialConst.RATE_FORMAT;
-import static org.nexial.core.NexialConst.TEST_START_TS;
+import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.excel.Excel.MIN_EXCEL_FILE_SIZE;
 import static org.nexial.core.excel.ExcelConfig.*;
-import static org.nexial.core.excel.ExcelConfig.StyleConfig.*;
-import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.*;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.ITERATION;
+import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.*;
+import static org.nexial.core.utils.ExecUtils.NEXIAL_MANIFEST;
 
 /**
  * serves as the summary of a test execution, which can be scoped into:
@@ -69,7 +69,6 @@ import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.ITERATION;
  */
 public class ExecutionSummary {
     protected static final int LABEL_SIZE = 10;
-    protected static final String SUMMARY_TAB_NAME = "#summary";
     protected static final String MERGE_AREA_TITLE = "A1:J1";
     protected static final double CELL_WIDTH_MULTIPLIER = 275.3;
     protected static final List<Integer> COLUMN_WIDTHS = Arrays.asList(
@@ -84,7 +83,6 @@ public class ExecutionSummary {
         (int) (CELL_WIDTH_MULTIPLIER * 10), // total fail
         (int) (CELL_WIDTH_MULTIPLIER * 10)); // success rate
     protected static final String REGEX_LINKABLE_DATA = "^(http|/[0-9A-Za-z/_]+|[A-Za-z]\\:\\\\|\\\\\\\\.+).+\\|.+$";
-    private String id;
     private String name;
     private ExecutionLevel executionLevel;
     private String scriptFile;
@@ -97,11 +95,14 @@ public class ExecutionSummary {
     private String runUser;
     private long startTime;
     private long endTime;
+    private int totalLevelPassed;
     private int totalSteps;
     private int passCount;
     private int failCount;
     private int warnCount;
     private int executed;
+    private String customHeader;
+    private String customFooter;
 
     private boolean failedFast;
     private String errorStackTrace;
@@ -125,6 +126,7 @@ public class ExecutionSummary {
     // only application to plan
     private String planName;
     private String planFile;
+    private String planDescription;
 
     public enum ExecutionLevel {EXECUTION, SCRIPT, ITERATION, SCENARIO, ACTIVITY, STEP}
 
@@ -169,13 +171,17 @@ public class ExecutionSummary {
 
     public void setPlanFile(String planFile) { this.planFile = planFile; }
 
+    public String getPlanDescription() { return planDescription; }
+
+    public void setPlanDescription(String planDescription) { this.planDescription = planDescription; }
+
     public String getRunHost() { return runHost; }
 
     public String getRunHostOs() { return runHostOs; }
 
     public String getRunUser() { return runUser; }
 
-    public String getManifest() { return ExecUtils.deriveJarManifest(); }
+    public String getManifest() { return NEXIAL_MANIFEST; }
 
     public long getStartTime() { return startTime; }
 
@@ -190,6 +196,8 @@ public class ExecutionSummary {
     public int getTotalSteps() { return totalSteps; }
 
     public void setTotalSteps(int totalSteps) { this.totalSteps = totalSteps; }
+
+    public int getTotalLevelPassed() { return totalLevelPassed; }
 
     /** when a test step is skipped, we would need to adjust the total number of execution */
     public void adjustTotalSteps(int changeBy) { this.totalSteps += changeBy; }
@@ -230,9 +238,7 @@ public class ExecutionSummary {
 
     public String getTestScriptLink() { return testScriptLink; }
 
-    public void setTestScriptLink(String testScriptLink) {
-        this.testScriptLink = testScriptLink;
-    }
+    public void setTestScriptLink(String testScriptLink) { this.testScriptLink = testScriptLink; }
 
     public String getScriptFile() { return scriptFile; }
 
@@ -263,13 +269,9 @@ public class ExecutionSummary {
         return "";
     }
 
-    public String getId() { return id; }
-
-    public void setId(String id) { this.id = id; }
-
     public String getName() { return name; }
 
-    public void setName(String name) { this.name = name; }
+    public void setName(String name) { this.name = handleWindowsChar(name); }
 
     public Map<String, String> getReferenceData() { return referenceData; }
 
@@ -283,13 +285,15 @@ public class ExecutionSummary {
 
     public ExecutionLevel getExecutionLevel() { return executionLevel; }
 
-    public void setExecutionLevel(ExecutionLevel executionLevel) {
-        this.executionLevel = executionLevel;
-        if (this.executionLevel == EXECUTION) {
-            Map<String, String> scriptRefs = EnvUtils.getSysPropsByPrefix(SCRIPT_REF_PREFIX);
-            if (MapUtils.isNotEmpty(scriptRefs)) { referenceData.putAll(scriptRefs); }
-        }
-    }
+    public void setExecutionLevel(ExecutionLevel executionLevel) { this.executionLevel = executionLevel; }
+
+    public String getCustomHeader() { return customHeader; }
+
+    public void setCustomHeader(String customHeader) { this.customHeader = customHeader; }
+
+    public String getCustomFooter() { return customFooter; }
+
+    public void setCustomFooter(String customFooter) { this.customFooter = customFooter; }
 
     public void aggregatedNestedExecutions(ExecutionContext context) {
         if (CollectionUtils.isEmpty(nestedExecutions)) { return; }
@@ -301,10 +305,11 @@ public class ExecutionSummary {
         passCount = 0;
         failCount = 0;
         warnCount = 0;
+        totalLevelPassed = 0;
 
         nestedExecutions.forEach(nested -> {
             if (startTime == 0) { startTime = nested.startTime; }
-            if (nested.startTime != 0 && nested.startTime < startTime) {startTime = nested.startTime; }
+            if (nested.startTime != 0 && nested.startTime < startTime) { startTime = nested.startTime; }
 
             if (endTime == 0) { endTime = nested.endTime; }
             if (nested.endTime != 0 && nested.endTime > endTime) { endTime = nested.endTime; }
@@ -314,7 +319,13 @@ public class ExecutionSummary {
             passCount += nested.passCount;
             failCount += nested.failCount;
             warnCount += nested.warnCount;
+            if (nested.executed == nested.passCount && nested.executed != 0) { totalLevelPassed++; }
+
+            if (nested.error != null && error == null) { error = nested.error; }
+            if (nested.errorStackTrace != null && errorStackTrace == null) { errorStackTrace = nested.errorStackTrace; }
         });
+
+        importSysProps();
 
         if (context != null) {
             failedFast = context.isFailFast();
@@ -344,11 +355,10 @@ public class ExecutionSummary {
                     return;
                 }
 
+                // export log files to cloud
                 if (MapUtils.isNotEmpty(logs)) {
-                    List<String> otherLogNames = CollectionUtil.toList(logs.keySet());
-                    for (String name : otherLogNames) {
-                        logs.put(name, otc.importLog(new File(logs.get(name)), false));
-                    }
+                    List<String> otherLogs = CollectionUtil.toList(logs.keySet());
+                    for (String name : otherLogs) { logs.put(name, otc.importLog(new File(logs.get(name)), false)); }
                 } else if (FileUtil.isFileReadable(executionLog)) {
                     executionLog = otc.importLog(new File(executionLog), false);
                 }
@@ -363,22 +373,13 @@ public class ExecutionSummary {
 
         text.append(formatLabel("Run From")).append(formatValue(runHost, runHostOs));
         text.append(formatLabel("Run User")).append(formatValue(runUser));
-        text.append(formatLabel("Time Span")).append(
-            formatValue(DateUtility.formatLongDate(startTime) + " - " + DateUtility.formatLongDate(endTime)));
+        text.append(formatLabel("Time Span")).append(formatValue(DateUtility.formatLongDate(startTime) + " - " +
+                                                                 DateUtility.formatLongDate(endTime)));
         text.append(formatLabel("Duration")).append(formatValue(DateUtility.formatStopWatchTime(endTime - startTime)));
         text.append(formatLabel("Steps")).append(formatValue(StringUtils.leftPad(totalSteps + "", 4, " ")));
         text.append(formatLabel("Executed")).append(formatStat(executed, totalSteps));
         text.append(formatLabel("PASS")).append(formatStat(passCount, totalSteps));
         text.append(formatLabel("FAIL")).append(formatStat(failCount, totalSteps));
-
-        //if (MapUtils.isNotEmpty(referenceData)) {
-        //	StringBuffer refData = new StringBuffer();
-        //	referenceData.forEach((key, value) -> refData.append(" [")
-        //	                                             .append(key).append("=")
-        //	                                             .append(referenceData.get(key))
-        //	                                             .append("]"));
-        //	text.append(formatLabel("References")).append(formatValue(refData.toString()));
-        //}
 
         return text.toString();
     }
@@ -454,13 +455,21 @@ public class ExecutionSummary {
                                                           DateUtility.formatLongDate(summary.endTime)));
         map.put("duration", ExecutionSummary.formatValue(DateUtility.formatStopWatchTime(summary.endTime -
                                                                                          summary.startTime)));
+        map.put("scenario passed", ExecutionSummary.formatValue(summary.resolveTotalScenariosPassed()));
         map.put("total steps", ExecutionSummary.formatValue(StringUtils.leftPad(summary.totalSteps + "", 4, " ")));
         map.put("executed steps", ExecutionSummary.formatStat(summary.executed, summary.totalSteps));
         map.put("passed", ExecutionSummary.formatStat(summary.passCount, summary.totalSteps));
         map.put("failed", ExecutionSummary.formatStat(summary.failCount, summary.totalSteps));
         map.put("fail-fast", summary.failedFast + "");
-        map.put("nexial version", ExecUtils.deriveJarManifest());
+        map.put("nexial version", NEXIAL_MANIFEST);
         map.put("java version", JAVA_VERSION);
+
+        if (ExecUtils.isRunningInCi()) {
+            map.put("JENKINS::build url", ExecUtils.currentCiBuildUrl());
+            map.put("JENKINS::build id", ExecUtils.currentCiBuildId());
+            map.put("JENKINS::build number", ExecUtils.currentCiBuildNumber());
+            map.put("JENKINS::build user", ExecUtils.currentCiBuildUser());
+        }
 
         // special case: log file is copied (NOT MOVED) to S3 with a special syntax here (markdown-like)
         // createCell() function will made regard to this format to create appropriate hyperlink-friendly cells
@@ -514,6 +523,35 @@ public class ExecutionSummary {
         return summary;
     }
 
+    public String resolveTotalScenariosPassed() {
+        int totalScenarios = 0;
+        int totalScenariosPassed = 0;
+
+        if (executionLevel == EXECUTION) {
+            for (ExecutionSummary nested : nestedExecutions) {
+                //  all scenarios passed in entire execution
+                for (ExecutionSummary nested1 : nested.nestedExecutions) {
+                    totalScenarios += nested1.nestedExecutions.size();
+                    totalScenariosPassed += nested1.totalLevelPassed;
+                }
+            }
+        } else if (executionLevel == SCRIPT) {
+            for (ExecutionSummary nested1 : nestedExecutions) {
+                totalScenarios += nested1.nestedExecutions.size();
+                totalScenariosPassed += nested1.totalLevelPassed;
+            }
+        }
+        return totalScenariosPassed + " / " + totalScenarios;
+    }
+
+    public boolean showPlan(ExecutionSummary executionSummary, int index) {
+        if (StringUtils.isBlank(planFile)) { return false; }
+        if (index == 0) { return true; }
+        // for concurrent script execution in plan
+        ExecutionSummary summary = executionSummary.getNestedExecutions().get(index - 1);
+        return !(StringUtils.equals(planFile, summary.planFile) && StringUtils.equals(planName, summary.planName));
+    }
+
     protected int createScenarioExecutionSummary(Worksheet sheet, ExecutionSummary summary, int rowNum) {
         float rowHeight = EXEC_SUMMARY_HEIGHT;
         createCell(sheet, "A" + rowNum, summary.getName(), STYLE_EXEC_SUMM_SCENARIO, rowHeight);
@@ -533,8 +571,14 @@ public class ExecutionSummary {
         if (MapUtils.isNotEmpty(ref)) {
             List<String> refNames = CollectionUtil.toList(ref.keySet());
             for (String name : refNames) {
+                if (StringUtils.isBlank(name)) { continue; }
+
+                String value = ref.get(name);
+                if (StringUtils.isEmpty(value)) { continue; }
+
+                // don't print empty/missing ref data
                 createCell(sheet, "B" + rowNum, name, STYLE_EXEC_SUMM_DATA_NAME, rowHeight);
-                createCell(sheet, "C" + rowNum, ref.get(name), STYLE_EXEC_SUMM_DATA_VALUE, rowHeight);
+                createCell(sheet, "C" + rowNum, value, STYLE_EXEC_SUMM_DATA_VALUE, rowHeight);
                 rowNum++;
             }
         } else {
@@ -652,20 +696,33 @@ public class ExecutionSummary {
     }
 
     protected void createTestExecutionSection(Worksheet sheet, int rowNum, String title, Map<String, String> data) {
+        // gotta make sure we don't print empty/missing ref.
+        if (MapUtils.isEmpty(data)) { return; }
+
+        List<String> names = CollectionUtil.toList(data.keySet());
+        names.forEach(name -> {
+            if (StringUtils.isBlank(name) || StringUtils.isEmpty(data.get(name))) { data.remove(name); }
+        });
+
+        if (MapUtils.isEmpty(data)) { return; }
+
         float rowHeight = EXEC_SUMMARY_HEIGHT;
         createCell(sheet, "A" + rowNum, title, STYLE_EXEC_SUMM_DATA_HEADER, rowHeight);
 
-        List<String> names = CollectionUtil.toList(data.keySet());
+        names = CollectionUtil.toList(data.keySet());
         for (int i = 0; i < names.size(); i++) {
+            int dataRow = i + rowNum;
+
             String name = names.get(i);
-            createCell(sheet, "B" + (i + rowNum), name, STYLE_EXEC_SUMM_DATA_NAME, rowHeight);
+            createCell(sheet, "B" + dataRow, name, STYLE_EXEC_SUMM_DATA_NAME, rowHeight);
 
             String value = data.get(name);
             String[] values = StringUtils.splitByWholeSeparator(value, "\n");
             for (int j = 0; j < values.length; j++) {
                 String dataValue = values[j];
-                if (StringUtils.isBlank(dataValue)) { continue; }
-                createLinkCell(sheet, (char) ('C' + j) + "" + (i + rowNum), dataValue, STYLE_EXEC_SUMM_DATA_VALUE);
+                if (StringUtils.isNotBlank(dataValue)) {
+                    createLinkCell(sheet, (char) ('C' + j) + "" + dataRow, dataValue, STYLE_EXEC_SUMM_DATA_VALUE);
+                }
             }
         }
     }
@@ -740,7 +797,7 @@ public class ExecutionSummary {
         int startColumnIdx = addr.getColumnStartIndex();
         int endColumnIndex = addr.getColumnEndIndex();
 
-        XSSFCellStyle cellStyle = StyleDecorator.generate(worksheet, styleConfig);
+        XSSFCellStyle cellStyle = ExcelStyleHelper.generate(worksheet, styleConfig);
 
         // force all merge candidate to take on the designated style first so that after merge the style will stick
         for (int i = startRowIdx; i <= endRowIdx; i++) {
@@ -773,14 +830,33 @@ public class ExecutionSummary {
 
             if (cellStyle != null) { cellMerge.setCellStyle(cellStyle); }
 
-            int mergedWidth = 0;
-            for (int j = startColumnIdx; j < endColumnIndex + 1; j++) { mergedWidth += sheet.getColumnWidth(j); }
-            int charPerLine = (int) ((mergedWidth - DEF_CHAR_WIDTH) * addr.getRowCount() /
-                                     (DEF_CHAR_WIDTH * FONT_HEIGHT_DEFAULT));
-            Excel.adjustCellHeight(worksheet, cellMerge, charPerLine);
+            Excel.adjustMergedCellHeight(worksheet, cellMerge, startColumnIdx, endColumnIndex, addr.getRowCount());
         }
 
         return cellMerge;
+    }
+
+    private void importSysProps() {
+        if (this.executionLevel == EXECUTION) {
+            Map<String, String> execRefs = new HashMap<>();
+            collectAllScriptRefs(execRefs);
+
+            // last one wins: sys props override previous script/plan referenceData
+            execRefs.putAll(EnvUtils.getSysPropsByPrefix(SCRIPT_REF_PREFIX));
+
+            // also override any execRefs of the same suffix - by design
+            execRefs.putAll(EnvUtils.getSysPropsByPrefix(EXEC_REF_PREFIX));
+
+            if (MapUtils.isNotEmpty(execRefs)) { referenceData.putAll(execRefs); }
+        }
+    }
+
+    private void collectAllScriptRefs(Map<String, String> scriptRefs) {
+        if (executionLevel == SCENARIO || executionLevel == ACTIVITY) { return; }
+
+        // last one wins: last scriptRef override previous
+        scriptRefs.putAll(referenceData);
+        nestedExecutions.forEach(nested -> nested.collectAllScriptRefs(scriptRefs));
     }
 
     private ExecutionSummary summarized(ExecutionSummary source) {

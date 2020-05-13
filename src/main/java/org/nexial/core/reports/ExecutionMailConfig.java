@@ -33,7 +33,6 @@ import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.plugins.aws.AwsSesSettings;
 import org.nexial.core.utils.ConsoleUtils;
-import org.nexial.core.utils.ExecUtils;
 
 import com.amazonaws.regions.Regions;
 
@@ -41,8 +40,10 @@ import static com.amazonaws.regions.Regions.DEFAULT_REGION;
 import static javax.naming.Context.INITIAL_CONTEXT_FACTORY;
 import static org.apache.commons.lang3.SystemUtils.USER_NAME;
 import static org.nexial.core.NexialConst.AwsSettings.*;
-import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Exec.*;
 import static org.nexial.core.NexialConst.Mailer.*;
+import static org.nexial.core.SystemVariables.getDefault;
+import static org.nexial.core.utils.ExecUtils.NEXIAL_MANIFEST;
 
 /**
  * central object to resolve and avail mail-related configuration for the purpose of sending execution-level report
@@ -67,10 +68,19 @@ public class ExecutionMailConfig {
     public static ExecutionMailConfig configure(ExecutionContext context) {
         if (self == null) {
             self = new ExecutionMailConfig();
+        }
+
+        // re-read from context.. in case there's update or new information
+        if (context != null) {
             MAILER_KEYS.forEach(key -> {
-                if (!isConfigFound(self.configurations, key) && context.hasData(key)) {
+                if (context.hasData(key)) {
                     self.configurations.put(key, context.getStringData(key));
+                } else {
+                    self.configurations.remove(key);
                 }
+                // if (!isConfigFound(self.configurations, key) && context.hasData(key)) {
+                //     self.configurations.put(key, context.getStringData(key));
+                // }
             });
         }
 
@@ -81,16 +91,21 @@ public class ExecutionMailConfig {
     public static ExecutionMailConfig get() { return self; }
 
     public boolean isReady() {
-        String enableEmail = MapUtils.getString(configurations, ENABLE_EMAIL, DEF_ENABLE_EMAIL);
+        String enableEmail = MapUtils.getString(configurations, ENABLE_EMAIL, getDefault(ENABLE_EMAIL));
         if (!BooleanUtils.toBoolean(enableEmail)) {
             ConsoleUtils.log(NOT_READY_PREFIX + ENABLE_EMAIL + "=" + enableEmail);
             return false;
         }
 
-        String mailTo = MapUtils.getString(configurations, MAIL_TO);
-        String mailTo2 = MapUtils.getString(configurations, MAIL_TO2);
-        if (StringUtils.isBlank(mailTo) && StringUtils.isBlank(mailTo2)) {
-            ConsoleUtils.log(NOT_READY_PREFIX + MAIL_TO + "=" + mailTo + ", " + MAIL_TO2 + "=" + mailTo2);
+        // String mailTo = MapUtils.getString(configurations, POST_EXEC_MAIL_TO_OLD);
+        String mailTo2 = MapUtils.getString(configurations, POST_EXEC_MAIL_TO);
+        // if (StringUtils.isBlank(mailTo) && StringUtils.isBlank(mailTo2)) {
+        //     ConsoleUtils.log(NOT_READY_PREFIX +
+        //                      POST_EXEC_MAIL_TO_OLD + "=" + mailTo + ", " + POST_EXEC_MAIL_TO + "=" + mailTo2);
+        //     return false;
+        // }
+        if (StringUtils.isBlank(mailTo2)) {
+            ConsoleUtils.log(NOT_READY_PREFIX + POST_EXEC_MAIL_TO + "=" + mailTo2);
             return false;
         }
 
@@ -161,17 +176,17 @@ public class ExecutionMailConfig {
         settings.setAssumeRoleArn(StringUtils.defaultString(configurations.get(SES_PREFIX + AWS_STS_ROLE_ARN), ""));
         settings.setAssumeRoleSession(StringUtils.defaultString(configurations.get(SES_PREFIX + AWS_STS_ROLE_SESSION),
                                                                 ""));
-        settings.setAssumeRoleDuration(NumberUtils.toInt(
-            StringUtils.defaultIfBlank(configurations.get(SES_PREFIX + AWS_STS_ROLE_DURATION),
-                                       "" + DEF_AWS_STS_ROLE_DURATION)));
+        settings.setAssumeRoleDuration(
+            NumberUtils
+                .toInt(StringUtils.defaultIfBlank(configurations.get(SES_PREFIX + AWS_STS_ROLE_DURATION), "900")));
         settings.setReplyTo(StringUtils.defaultString(configurations.get(SES_PREFIX + AWS_SES_REPLY_TO), ""));
         settings.setCc(StringUtils.defaultString(configurations.get(SES_PREFIX + AWS_SES_CC), ""));
         settings.setBcc(StringUtils.defaultString(configurations.get(SES_PREFIX + AWS_SES_BCC), ""));
         settings.setConfigurationSetName(StringUtils.defaultString(configurations.get(SES_PREFIX + AWS_SES_CONFIG_SET),
                                                                    ""));
-        settings.setXmailer(StringUtils.defaultIfBlank(
-            configurations.get(SES_PREFIX + AWS_XMAILER),
-            ExecUtils.deriveJarManifest() + "/" + USER_NAME + "@" + EnvUtils.getHostName()));
+        settings.setXmailer(
+            StringUtils.defaultIfBlank(configurations.get(SES_PREFIX + AWS_XMAILER),
+                                       NEXIAL_MANIFEST + "/" + USER_NAME + "@" + EnvUtils.getHostName()));
 
         return settings;
     }
@@ -185,11 +200,21 @@ public class ExecutionMailConfig {
 
     @Nullable
     public List<String> getRecipients() {
-        String recipients = configurations.get(MAIL_TO);
-        if (StringUtils.isBlank(recipients)) { recipients = configurations.get(MAIL_TO2); }
+        // String recipients = configurations.get(POST_EXEC_MAIL_TO_OLD);
+        // if (StringUtils.isBlank(recipients)) { recipients = configurations.get(POST_EXEC_MAIL_TO); }
+        String recipients = configurations.get(POST_EXEC_MAIL_TO);
         if (StringUtils.isBlank(recipients)) { return null; }
         return TextUtils.toList(StringUtils.replace(recipients, ";", ","), ",", true);
     }
+
+    @Nullable
+    public String getCustomMailSubject() { return configurations.get(POST_EXEC_EMAIL_SUBJECT); }
+
+    @Nullable
+    public String getCustomMailHeader() { return configurations.get(POST_EXEC_EMAIL_HEADER); }
+
+    @Nullable
+    public String getCustomMailFooter() { return configurations.get(POST_EXEC_EMAIL_FOOTER); }
 
     protected static boolean isConfigFound(Map<String, String> config, String key) {
         return StringUtils.isNotBlank(MapUtils.getString(config, key));

@@ -35,8 +35,8 @@ import org.nexial.commons.utils.TextUtils;
 import org.nexial.core.model.ExecutionSummary;
 
 import static java.io.File.separator;
-import static org.nexial.core.NexialConst.Data.FAIL_FAST;
-import static org.nexial.core.NexialConst.*;
+import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.OUTPUT_TO_CLOUD;
 import static org.nexial.core.model.ExecutionSummary.ExecutionLevel.ITERATION;
 
 public abstract class ExcelBasedTests {
@@ -83,6 +83,7 @@ public abstract class ExcelBasedTests {
         private String dataFile;
         private List<String> dataSheets;
         private String plan;
+        private String subplans;
 
         public ExcelBasedTestBuilder setScript(String script) {
             if (StringUtils.isNotBlank(plan)) { throw new RuntimeException("script mixed with plan?"); }
@@ -113,13 +114,22 @@ public abstract class ExcelBasedTests {
             if (CollectionUtils.isNotEmpty(scenarios)) { throw new RuntimeException("plan mixed with scenarios?"); }
             if (StringUtils.isNotBlank(dataFile)) { throw new RuntimeException("plan mixed with data file?"); }
             if (CollectionUtils.isNotEmpty(dataSheets)) { throw new RuntimeException("plan mixed with datasheets?"); }
+            this.setPlan(plan, new String[]{});
+            return this;
+        }
+
+        public ExcelBasedTestBuilder setPlan(String plan, String... subplans) {
             this.plan = plan;
+            this.subplans = TextUtils.toString(subplans, ",", "", "");
             return this;
         }
 
         public ExecutionSummary execute() throws Exception {
             // is plan or script?
-            if (StringUtils.isNotBlank(plan)) { return testPlanViaExcel(plan); }
+            if (StringUtils.isNotBlank(plan)) {
+                if (StringUtils.isNotBlank(subplans)) { return testSubplansViaExcel(plan, subplans); }
+                return testPlanViaExcel(plan);
+            }
 
             // script
             if (StringUtils.isBlank(script)) { throw new RuntimeException("script not specified!"); }
@@ -234,6 +244,12 @@ public abstract class ExcelBasedTests {
         }
     }
 
+    @NotNull
+    private Nexial getNexial() {
+        if (nexial == null) { nexial = new Nexial(); }
+        return nexial;
+    }
+
     protected ExecutionSummary testPlanViaExcel(String planFile) throws Exception {
         File plan = resolveFile(planResourcePath + planFile);
         if (plan == null) { Assert.fail("The required plan does not exist"); }
@@ -250,6 +266,31 @@ public abstract class ExcelBasedTests {
 
         Nexial main = getNexial();
         main.init(new String[]{"-plan", plan.getAbsolutePath()});
+
+        try {
+            return main.execute();
+        } finally {
+            if (ShutdownAdvisor.mustForcefullyTerminate()) { ShutdownAdvisor.forcefullyTerminate(); }
+        }
+    }
+
+    protected ExecutionSummary testSubplansViaExcel(String planFile, String subplans) throws Exception {
+        File plan = resolveFile(planResourcePath + planFile);
+        if (plan == null) { Assert.fail("The required plan does not exist"); }
+
+        // e.g. plan = /workspace/nexial-core.dist/build/resources/test/showcase/artifact/plan/myplan.xlsx
+        // so classesRoot should be the same as project base, which would be
+        // /workspace/nexial-core.dist/build/resources/test/showcase
+        NexialTestUtils.setupCommonProps(plan, plan.getParentFile().getParentFile().getParent());
+        System.clearProperty(FAIL_FAST);
+
+        System.out.println();
+        System.out.println();
+        System.out.println("plan = " + plan);
+        System.out.println("subplans = " + subplans);
+
+        Nexial main = getNexial();
+        main.init(new String[]{"-plan", plan.getAbsolutePath(), "-subplans", subplans});
 
         try {
             return main.execute();
@@ -332,11 +373,5 @@ public abstract class ExcelBasedTests {
             scenarios = testSummary.getNestedExecutions().get(0).getNestedExecutions().get(0).getNestedExecutions();
         }
         return scenarios;
-    }
-
-    @NotNull
-    private Nexial getNexial() {
-        if (nexial == null) { nexial = new Nexial(); }
-        return nexial;
     }
 }

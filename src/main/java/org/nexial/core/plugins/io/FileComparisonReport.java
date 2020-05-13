@@ -26,8 +26,9 @@ import java.util.Map;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.nexial.commons.utils.DateUtility;
+import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.plugins.io.ComparisonResult.ResultType;
-import org.nexial.core.utils.ExecUtils;
+import org.thymeleaf.context.Context;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -35,6 +36,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import static org.nexial.core.plugins.io.ComparisonResult.EOL;
+import static org.nexial.core.utils.ExecUtils.NEXIAL_MANIFEST;
 
 public class FileComparisonReport implements Serializable {
     private static final Map<Integer, Integer> COLUMN_SIZES = initColumnSizes();
@@ -73,6 +75,8 @@ public class FileComparisonReport implements Serializable {
         if (mismatch != null) { fileMatches.add(mismatch); }
     }
 
+    public List<ComparisonResult> getFileMatches() { return fileMatches; }
+
     public double getMatchPercent() {
         if (mismatchCount == 0) { return 1; }
         return ((double) matchCount / (double) (matchCount + mismatchCount));
@@ -81,6 +85,57 @@ public class FileComparisonReport implements Serializable {
     public double getMismatchPercent() {
         if (matchCount == 0 && mismatchCount != 0) { return 1; }
         return ((double) mismatchCount / (double) (matchCount + mismatchCount));
+    }
+
+    public List<ComparisonResult> getLineMatches() { return lineMatches; }
+
+    public String showDiffs() {
+        StringBuilder buffer = new StringBuilder();
+
+        if (CollectionUtils.isNotEmpty(lineMatches)) {
+            lineMatches.forEach(result -> {
+                ResultType type = result.getType();
+                if (type != null) {
+                    int expectedLine = result.getExpectedLine();
+                    String expected = StringUtils.defaultIfEmpty(result.getExpected(), "");
+                    int actualLine = result.getActualLine();
+                    String actual = result.getActual();
+
+                    String message;
+                    switch (type) {
+                        case MATCHED:
+                        case MISMATCH:
+                        case MISSING: {
+                            message = "[" + expected + "]";
+                            break;
+                        }
+                        case ADDED: {
+                            message = "[" + actual + "]|missing in EXPECTED";
+                            break;
+                        }
+                        default: {
+                            throw new IllegalArgumentException("Unknown diff type " + type);
+                        }
+                    }
+
+                    if (expectedLine != actualLine) { message += "|ACTUAL moved to line " + actualLine; }
+
+                    buffer.append(StringUtils.leftPad(expectedLine + "", 4))
+                          .append("|")
+                          .append(StringUtils.leftPad(type + "", 10))
+                          .append("|")
+                          .append(message)
+                          .append(EOL);
+                }
+            });
+        } else {
+            if (CollectionUtils.isNotEmpty(fileMatches)) {
+                fileMatches.forEach(result -> buffer.append(result.getMessage()).append(EOL));
+            }
+        }
+
+        // 7. output
+        return buffer.toString();
     }
 
     public String toPlainTextReport() {
@@ -162,56 +217,7 @@ public class FileComparisonReport implements Serializable {
         // 6. sign off
         buffer.append(EOL)
               .append("***** generated on ").append(rightNow()).append(EOL)
-              .append("***** powered by   ").append(ExecUtils.deriveJarManifest()).append(EOL);
-
-        // 7. output
-        return buffer.toString();
-    }
-
-    public String showDiffs() {
-        StringBuilder buffer = new StringBuilder();
-
-        if (CollectionUtils.isNotEmpty(lineMatches)) {
-            lineMatches.forEach(result -> {
-                ResultType type = result.getType();
-                if (type != null) {
-                    int expectedLine = result.getExpectedLine();
-                    String expected = StringUtils.defaultIfEmpty(result.getExpected(), "");
-                    int actualLine = result.getActualLine();
-                    String actual = result.getActual();
-
-                    String message;
-                    switch (type) {
-                        case MATCHED:
-                        case MISMATCH:
-                        case MISSING: {
-                            message = "[" + expected + "]";
-                            break;
-                        }
-                        case ADDED: {
-                            message = "[" + actual + "]|missing in EXPECTED";
-                            break;
-                        }
-                        default: {
-                            throw new IllegalArgumentException("Unknown diff type " + type);
-                        }
-                    }
-
-                    if (expectedLine != actualLine) { message += "|ACTUAL moved to line " + actualLine; }
-
-                    buffer.append(StringUtils.leftPad(expectedLine + "", 4))
-                          .append("|")
-                          .append(StringUtils.leftPad(type + "", 10))
-                          .append("|")
-                          .append(message)
-                          .append(EOL);
-                }
-            });
-        } else {
-            if (CollectionUtils.isNotEmpty(fileMatches)) {
-                fileMatches.forEach(result -> buffer.append(result.getMessage()).append(EOL));
-            }
-        }
+              .append("***** powered by   ").append(NEXIAL_MANIFEST).append(EOL);
 
         // 7. output
         return buffer.toString();
@@ -243,9 +249,17 @@ public class FileComparisonReport implements Serializable {
         }
 
         json.addProperty("generated-on", rightNow());
-        json.addProperty("powered-by", ExecUtils.deriveJarManifest());
+        json.addProperty("powered-by", NEXIAL_MANIFEST);
 
         return GSON.toJson(json);
+    }
+
+    public String toHtmlReport(ExecutionContext context) {
+        if (context == null) { return null; }
+
+        Context engineContext = new Context();
+        engineContext.setVariable("report", this);
+        return context.getTemplateEngine().process("compare", engineContext);
     }
 
     private String makeLine() {

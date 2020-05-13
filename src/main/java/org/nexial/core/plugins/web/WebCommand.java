@@ -18,21 +18,21 @@
 package org.nexial.core.plugins.web;
 
 import java.awt.*;
+import java.awt.image.*;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.Set;
-import java.util.Stack;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import javax.imageio.ImageIO;
 import javax.validation.constraints.NotNull;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.IterableUtils;
-import org.apache.commons.collections4.Predicate;
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.BooleanUtils;
@@ -41,13 +41,12 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.SystemUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.time.StopWatch;
-import org.apache.http.client.methods.HttpRequestBase;
 import org.nexial.commons.utils.CollectionUtil;
+import org.nexial.commons.utils.FileUtil;
 import org.nexial.commons.utils.RegexUtils;
 import org.nexial.commons.utils.TextUtils;
 import org.nexial.commons.utils.web.URLEncodingUtils;
-import org.nexial.core.WebProxy;
-import org.nexial.core.browsermob.ProxyHandler;
+import org.nexial.core.model.BrowserMeta;
 import org.nexial.core.model.ExecutionContext;
 import org.nexial.core.model.NexialUrlInvokedEvent;
 import org.nexial.core.model.StepResult;
@@ -61,11 +60,15 @@ import org.nexial.core.plugins.ws.Response;
 import org.nexial.core.plugins.ws.WsCommand;
 import org.nexial.core.service.EventTracker;
 import org.nexial.core.utils.ConsoleUtils;
+import org.nexial.core.utils.NativeInputHelper;
 import org.nexial.core.utils.OutputFileUtils;
+import org.nexial.core.utils.OutputResolver;
 import org.nexial.core.utils.WebDriverUtils;
-import org.openqa.selenium.*;
+import org.nexial.core.variable.Syspath;
 import org.openqa.selenium.Dimension;
+import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.Point;
+import org.openqa.selenium.*;
 import org.openqa.selenium.WebDriver.Window;
 import org.openqa.selenium.interactions.Actions;
 import org.openqa.selenium.interactions.Coordinates;
@@ -75,22 +78,29 @@ import org.openqa.selenium.support.ui.FluentWait;
 import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
-import net.lightbody.bmp.proxy.ProxyServer;
-import net.lightbody.bmp.proxy.http.RequestInterceptor;
-import net.lightbody.bmp.proxy.jetty.http.HttpMessage;
-import net.lightbody.bmp.proxy.jetty.http.HttpRequest;
+import com.google.gson.JsonObject;
+import ru.yandex.qatools.ashot.AShot;
+import ru.yandex.qatools.ashot.Screenshot;
+import ru.yandex.qatools.ashot.coordinates.WebDriverCoordsProvider;
+import ru.yandex.qatools.ashot.shooting.ShootingStrategies;
 
+import static java.awt.Image.*;
 import static java.io.File.separator;
 import static java.lang.Thread.sleep;
 import static org.apache.commons.lang3.SystemUtils.IS_OS_MAC;
 import static org.nexial.core.NexialConst.BrowserType.safari;
 import static org.nexial.core.NexialConst.*;
 import static org.nexial.core.NexialConst.Data.*;
+import static org.nexial.core.NexialConst.Project.BROWSER_META_CACHE_PATH;
+import static org.nexial.core.NexialConst.Web.*;
+import static org.nexial.core.SystemVariables.*;
 import static org.nexial.core.plugins.ws.WebServiceClient.hideAuthDetails;
 import static org.nexial.core.utils.CheckUtils.*;
+import static org.openqa.selenium.Keys.BACK_SPACE;
 import static org.openqa.selenium.Keys.TAB;
 
 public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLogExternally, RequireBrowser {
+    private static final String SUFFIX_LOCATOR = ".locator";
     protected Browser browser;
     protected WebDriver driver;
     protected JavascriptExecutor jsExecutor;
@@ -103,11 +113,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     protected CookieCommand cookie;
     protected WsCommand ws;
     protected TableHelper tableHelper;
-
     protected boolean logToBrowser;
-    protected long browserStabilityWaitMs;
-    protected long pollWaitMs;
-    protected FluentWait<WebDriver> waiter;
+    protected ClientPerformanceCollector clientPerfCollector;
 
     @Override
     public Browser getBrowser() { return browser; }
@@ -119,35 +126,27 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     public void init(ExecutionContext context) {
         super.init(context);
 
-        pollWaitMs = context.getPollWaitMs();
-
         // todo: revisit to handle proxy
-        if (context.getBooleanData(OPT_PROXY_ENABLE, false)) {
-            ProxyHandler proxy = new ProxyHandler();
-            proxy.setContext(context);
-            proxy.startProxy();
-            browser.setProxy(proxy);
-        }
+        // if (context.getBooleanData(OPT_PROXY_ENABLE, false)) {
+        //     ProxyHandler proxy = new ProxyHandler();
+        //     proxy.setContext(context);
+        //     proxy.startProxy();
+        //     browser.setProxy(proxy);
+        // }
 
-        if (!context.getBooleanData(OPT_DELAY_BROWSER, false)) { initWebDriver(); }
+        if (!context.isDelayBrowser()) { initWebDriver(); }
 
         ws = (WsCommand) context.findPlugin("ws");
         ws.init(context);
 
         locatorHelper = new LocatorHelper(this);
 
-        browserStabilityWaitMs = context.getIntData(OPT_UI_RENDER_WAIT_MS, DEF_UI_RENDER_WAIT_MS);
-        log("default browser stability wait time is " + browserStabilityWaitMs + " ms");
+        long browserStabilityWaitMs = deriveBrowserStabilityWaitMs(context);
+        if (context.isVerbose()) { log("default browser stability wait time is " + browserStabilityWaitMs + " ms"); }
 
         // todo: consider this http://seleniumhq.github.io/selenium/docs/api/javascript/module/selenium-webdriver/lib/logging.html
-        logToBrowser = !browser.isRunChrome() && context.getBooleanData(OPT_BROWSER_CONSOLE_LOG, false);
-
-        if (driver != null) {
-            waiter = new FluentWait<>(driver).withTimeout(Duration.ofMillis(browserStabilityWaitMs))
-                                             .pollingEvery(Duration.ofMillis(10))
-                                             .ignoring(NoSuchElementException.class);
-        }
-
+        logToBrowser = !browser.isRunChrome() &&
+                       context.getBooleanData(OPT_BROWSER_CONSOLE_LOG, getDefaultBool(OPT_BROWSER_CONSOLE_LOG));
         tableHelper = new TableHelper(this);
     }
 
@@ -184,7 +183,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
                                        "focused element ID is '" + actual + "'");
             }
         } catch (NoSuchElementException e) {
-            return StepResult.fail(e.getMessage());
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         }
 
         return StepResult.success("validated EXPECTED focus on locator '" + locator + "'");
@@ -202,7 +201,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
                 return StepResult.success("validated no-focus on locator '" + locator + "' as EXPECTED");
             }
         } catch (NoSuchElementException e) {
-            return StepResult.fail(e.getMessage());
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         }
 
         return StepResult.fail("element '" + expected + "' EXPECTS not to be focused but it is.");
@@ -234,7 +233,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         String script = "if (arguments[0].hasAttribute('type','checkbox') && !arguments[0].hasAttribute('checked')) {" +
                         "   arguments[0].click(); " +
                         "}";
-        return execJsOverFreshElements(locator, script, (int) pollWaitMs) ?
+        return execJsOverFreshElements(locator, script, (int) context.getPollWaitMs()) ?
                StepResult.success("CheckBox elements (" + locator + ") are checked") :
                StepResult.fail("Check FAILED on element(s) '" + locator + "'");
     }
@@ -243,7 +242,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         String script = "if (arguments[0].hasAttribute('type','checkbox') && arguments[0].hasAttribute('checked')) {" +
                         "   arguments[0].click();" +
                         "}";
-        return execJsOverFreshElements(locator, script, (int) pollWaitMs) ?
+        return execJsOverFreshElements(locator, script, (int) context.getPollWaitMs()) ?
                StepResult.success("CheckBox elements (" + locator + ") are unchecked") :
                StepResult.fail("Uncheck FAILED on element(s) '" + locator + "'");
     }
@@ -260,53 +259,103 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
             element.click();
         }
 
-        return StepResult.success("Successfully toggled " + elements.size() +
-                                  " elements matching locator '" + locator + "'");
+        return StepResult.success("Successfully toggled %s elements matching locator '%s'", elements.size(), locator);
     }
 
+    @NotNull
     public StepResult select(String locator, String text) {
         Select select = getSelectElement(locator);
-        if (StringUtils.isBlank(text)) {
-            select.deselectAll();
-            return StepResult.success("deselected ALL from '" + locator + "' since no text was provided");
+        if (StringUtils.equals(text, DROPDOWN_SELECT_ALL)) {
+            if (!select.isMultiple()) { return StepResult.fail("Unable to multi-select from a single-select element"); }
+
+            List<WebElement> options = select.getOptions();
+            if (CollectionUtils.isEmpty(options)) {
+                return StepResult.fail("Unable to multi-select as no options found in select element '%s'", locator);
+            }
+            options.forEach(option -> select.selectByVisibleText(option.getText()));
+            return StepResult.success("selected all options from multi-select '%s'", locator);
         } else {
-            select.selectByVisibleText(text);
+            try {
+                select.selectByVisibleText(text);
+            } catch (NoSuchElementException e) {
+                return StepResult.fail("Specified text '%s' not found in select element '%s'", text, locator);
+            }
             return StepResult.success("selected '" + text + "' from '" + locator + "'");
         }
     }
 
+    @NotNull
     public StepResult deselect(String locator, String text) {
-        Select select = getSelectElement(locator);
         if (StringUtils.isNotBlank(text)) {
-            select.deselectByVisibleText(text);
-            return StepResult.success("deselected '" + text + "' from '" + locator + "'");
+            Select select = getSelectElement(locator);
+            try {
+                if (StringUtils.equals(text, DROPDOWN_SELECT_ALL)) {
+                    select.deselectAll();
+                    return StepResult.success("deselected all options from '%s'", locator);
+                } else {
+                    select.deselectByVisibleText(text);
+                    return StepResult.success("deselected '%s' from '%s'", text, locator);
+                }
+            } catch (UnsupportedOperationException e) {
+                return StepResult.fail("Unable to multi-deselect from single-select element '%s'", e.getMessage());
+            } catch (NoSuchElementException e) {
+                return StepResult.fail("Unable deselect '%s':", locator, e.getMessage());
+            }
         } else {
-            return StepResult.success("NO action performed on '" + locator + "' since no text was provided");
+            return StepResult.success("NO action performed on '%s' since no text was provided", locator);
         }
     }
 
+    @NotNull
     public StepResult selectMulti(String locator, String array) {
         requires(StringUtils.isNotBlank(array), "invalid text array", array);
 
         Select select = getSelectElement(locator);
 
-        List<String> labels = TextUtils.toList(array, context.getTextDelim(), true);
-        for (String label : labels) { select.selectByVisibleText(label); }
-
-        return StepResult.success("selected '" + array + "' on widgets matching '" + locator + "'");
-    }
-
-    public StepResult selectMultiOptions(String locator) {
-        List<WebElement> elements = findElements(locator);
-        if (CollectionUtils.isEmpty(elements)) {
-            return StepResult.success("none selected since no matches found via '" + locator + "'");
+        List<String> list = paramToList(array);
+        if (CollectionUtils.isEmpty(list)) {
+            return StepResult.success("NO selection made on '%s' since no text was provided", locator);
         }
 
-        for (WebElement elem : elements) { elem.click(); }
+        if (!select.isMultiple()) {
+            select.selectByVisibleText(list.get(0));
+            return StepResult.success("selected option with text '%s' from '%s'", list.get(0), locator);
+        }
 
-        return StepResult.success("selected " + elements.size() + " widgets via '" + locator + "'");
+        list.forEach(select::selectByVisibleText);
+        return StepResult.success("selected <OPTION> from <SELECT> '%s' with text '%s'", locator, array);
     }
 
+    @NotNull
+    public StepResult selectMultiByValue(String locator, String array) {
+        requires(StringUtils.isNotBlank(array), "invalid text array", array);
+
+        Select select = getSelectElement(locator);
+
+        List<String> values = paramToList(array);
+        if (CollectionUtils.isEmpty(values)) {
+            return StepResult.success("NO selection made on '%s' since no value was provided", locator);
+        }
+
+        if (!select.isMultiple()) {
+            select.selectByValue(values.get(0));
+            return StepResult.success("selected option with value '%s' from '%s'", values.get(0), locator);
+        }
+
+        values.forEach(select::selectByValue);
+        return StepResult.success("selected <OPTION> from <SELECT> '%s' with value '%s'", locator, array);
+    }
+
+    @NotNull
+    public StepResult selectMultiOptions(String locator) {
+        logDeprecated(getTarget() + " » selectMultiOptions(locator)", getTarget() + " » selectAllOptions(locator)");
+        return selectAllOptions(locator);
+    }
+
+    @NotNull
+    public StepResult selectAllOptions(String locator) { return select(locator, DROPDOWN_SELECT_ALL); }
+
+    @NotNull
     public StepResult deselectMulti(String locator, String array) {
         requires(StringUtils.isNotBlank(array), "invalid text array", array);
 
@@ -325,6 +374,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
      * <p/>
      * <b>Note: it is possible to match more than 1 element by using {@code locator} and {@code text} alone</b>
      */
+    @NotNull
     public StepResult assertElementByText(String locator, String text) {
         requires(StringUtils.isNotBlank(locator), "invalid locator", locator);
         requires(StringUtils.isNotBlank(text), "invalid text to search by", text);
@@ -336,33 +386,121 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         for (WebElement elem : matches) {
             String actual = StringUtils.trim(elem.getText());
             if (StringUtils.equals(expected, actual)) {
-                return StepResult.success("validated locator '" + locator + "' by text '" + text + "' as EXPECTED");
+                return StepResult.success("validated locator '%s' by text '%s' as EXPECTED", locator, text);
             }
         }
 
-        return StepResult.fail("No element with text '" + text + "' can be found.");
+        return StepResult.fail("No element with text '%s' can be found.", text);
     }
 
+    @NotNull
     public StepResult assertElementNotPresent(String locator) {
         try {
             return locatorHelper.assertElementNotPresent(locator);
         } catch (NoSuchElementException | TimeoutException e) {
             // that's fine.  we expected that..
-            return StepResult.success("Element as represented by " + locator + " is not available");
+            return StepResult.success("Element '%s' is not available", locator);
         }
     }
 
+    @NotNull
     public StepResult assertElementCount(String locator, String count) {
         return locatorHelper.assertElementCount(locator, count);
     }
 
+    @NotNull
     public StepResult assertElementPresent(String locator) {
         if (isElementPresent(locator)) {
-            return StepResult.success("EXPECTED element '" + locator + "' found");
+            return StepResult.success("EXPECTED element '%s' found", locator);
         } else {
-            ConsoleUtils.log("Expected element not found at " + locator);
-            return StepResult.fail("Expected element not found at " + locator);
+            String msg = String.format("Expected element not found at '%s'", locator);
+            ConsoleUtils.log(msg);
+            return StepResult.fail(msg);
         }
+    }
+
+    /**
+     * assert multiple "element presence" via prefix. So that we can perform multiple validations in one go. For example,
+     * <pre>
+     * LoginForm.username.locator   css=#username
+     * LoginForm.password.locator   css=#password
+     * LoginForm.submit.locator     css=button.loginSubmit
+     * </pre>
+     * <p>
+     * One can invoke validation across all "LoginForm" elements, which in this case would be 3.
+     * <p>
+     * "LoginForm" is custom prefix. ".locator" is the required suffix.
+     */
+    @NotNull
+    public StepResult assertElementsPresent(String prefix) {
+        requiresNotBlank(prefix, "Invalid prefix", prefix);
+
+        Map<String, String> locators = context.getDataByPrefix(prefix);
+        if (MapUtils.isEmpty(locators)) {
+            return StepResult.fail("No data variables found via prefix '" + prefix + "'");
+        }
+
+        String runId = context.getRunId();
+        boolean allPassed = true;
+        StringBuilder logs = new StringBuilder();
+        StringBuilder errors = new StringBuilder();
+        int locatorsFound = 0;
+
+        Set<String> keys = locators.keySet();
+        for (String key : keys) {
+            if (!key.endsWith(SUFFIX_LOCATOR)) { continue; }
+
+            String name = StringUtils.substringBefore(key, SUFFIX_LOCATOR);
+            String locator = locators.get(key);
+            locatorsFound++;
+
+            boolean found = true;
+            String message = "[" + name + "] ";
+
+            try {
+                StepResult isPresent = assertElementPresent(locator);
+                if (isPresent.isSuccess()) {
+                    message += "found via '" + locator + "'";
+                    ConsoleUtils.log(runId, message);
+                } else {
+                    found = false;
+                    message += "NOT FOUND via '" + locator + "'";
+                    ConsoleUtils.error(runId, message);
+                }
+            } catch (WebDriverException e) {
+                found = false;
+                message += "NOT FOUND via '" + locator + "': " + WebDriverExceptionHelper.resolveErrorMessage(e);
+                ConsoleUtils.error(runId, message);
+            } catch (Throwable e) {
+                found = false;
+                message += "NOT FOUND via '" + locator + "': " + e.getMessage();
+                ConsoleUtils.error(runId, message);
+            }
+
+            logs.append(message).append(NL);
+            if (!found) {
+                allPassed = false;
+                errors.append(message).append(NL);
+            }
+        }
+
+        if (locatorsFound < 1) {
+            return StepResult.fail("No data variables found via prefix '" + prefix + "' contains the required " +
+                                   "'" + SUFFIX_LOCATOR + "' suffix");
+        }
+
+        String message = logs.toString();
+        String errorsFound = errors.toString();
+
+        // at least print errors.. unless verbose is true
+        if (context.isVerbose()) {
+            log(message);
+            ConsoleUtils.log(message);
+        } else if (!allPassed) {
+            log(errorsFound);
+        }
+
+        return allPassed ? StepResult.success(message) : StepResult.fail(errorsFound);
     }
 
     public StepResult saveTextSubstringAfter(String var, String locator, String delim) {
@@ -390,7 +528,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
      * <p/>
      * For example (Java code),
      * <pre>
-     * String nameValues = "@class=dijit*|text()=Save|@id=*save*";
+     * String nameValues = "@class=digit*|text()=Save|@id=*save*";
      * StepResult result = assertElementPresentByAttribs(nameValues);
      * </pre>
      * Same example (spreadsheet),<br/>
@@ -404,7 +542,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
      * <p/>
      * The above code will construct an XPATH as follows:
      * <pre>
-     * //*[ends-with(@class,'dijit') and text()='Save' and contains(@id,'save')]
+     * //*[ends-with(@class,'digit') and text()='Save' and contains(@id,'save')]
      * </pre>
      * <p/>
      * This XPATH is then used to check if the current page contains an element that would satisfy the
@@ -426,35 +564,120 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return new StepResult(waitForCondition(context.getPollWaitMs(), object -> isElementPresent(locator)));
     }
 
-    public StepResult saveValue(String var, String locator) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid variable", var);
-        context.setData(var, getValue(locator));
-        return StepResult.success("stored value of '" + locator + "' as ${" + var + "}");
+    public StepResult waitForElementsPresent(String locators) {
+        requiresNotBlank(locators, "invalid locators", locators);
+        locators = StringUtils.remove(locators, "\r");
+
+        long maxWaitMs = context.getPollWaitMs();
+        List<String> notPresent =
+            TextUtils.toList(locators, "\n", true)
+                     .stream()
+                     .filter(locator -> !waitForCondition(maxWaitMs, object -> isElementPresent(locator)))
+                     .collect(Collectors.toList());
+        if (CollectionUtils.isEmpty(notPresent)) {
+            return StepResult.success("All specified locators are present within %s ms (each)", maxWaitMs);
+        } else {
+            return StepResult.fail("Not all locators are present within %s ms (each): %s",
+                                   maxWaitMs, TextUtils.toString(notPresent, NL, "", ""));
+        }
     }
 
+    public StepResult assertElementEnabled(final String locator) {
+        WebElement element = findElement(locator);
+        if (element == null) {
+            String msg = String.format("Element not found at '%s'", locator);
+            ConsoleUtils.log(msg);
+            return StepResult.fail(msg);
+        }
+
+        try {
+            if (element.isEnabled() && element.isDisplayed()) {
+                return StepResult.success("Element '%s' found to be enabled as expected", locator);
+            } else {
+                return StepResult.fail("Element '%s' is NOT enabled", locator);
+            }
+        } catch (StaleElementReferenceException e) {
+            // oops.. it ran/went away...
+            String msg = String.format("element '%s' is not longer available or attached to this locator", locator);
+            ConsoleUtils.log(msg);
+            return StepResult.fail(msg);
+        }
+    }
+
+    public StepResult saveSelectedText(String var, String locator) { return getSelectedOptions(var, locator, true); }
+
+    public StepResult saveSelectedValue(String var, String locator) { return getSelectedOptions(var, locator, false); }
+
+    public StepResult saveValue(String var, String locator) {
+        requiresValidAndNotReadOnlyVariableName(var);
+        updateDataVariable(var, getValue(locator));
+        return StepResult.success("stored value of '%s' as ${%s}", locator, var);
+    }
+
+    public StepResult saveValues(String var, String locator) {
+        requiresValidAndNotReadOnlyVariableName(var);
+        String[] values = collectValueList(findElements(locator));
+        if (ArrayUtils.isNotEmpty(values)) {
+            context.setData(var, values);
+        } else {
+            context.removeData(var);
+        }
+
+        return StepResult.success("stored values of '%s' as ${%s}", locator, var);
+    }
+
+    /**
+     * save the value of {@code attrName} of the element matching {@code locator} to a variable named {@code var}
+     */
     public StepResult saveAttribute(String var, String locator, String attrName) {
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(locator, "invalid locator", locator);
         requiresNotBlank(attrName, "invalid attribute name", attrName);
-        requiresValidVariableName(var);
 
         WebElement element = findElement(locator);
         if (element == null) { return StepResult.fail("Element NOT found via '" + locator + "'"); }
 
         String actual = element.getAttribute(attrName);
-        if (actual == null) { ConsoleUtils.log("saving null to variable '" + var + "'"); }
+        if (actual == null) {
+            context.removeData(var);
+            return StepResult.success("the matching element does not contain attribute '" + attrName + "'");
+        } else {
+            updateDataVariable(var, actual);
+            return StepResult.success("attribute '" + attrName + "' for '" + locator + "' saved to '" + var + "'");
+        }
+    }
 
-        context.setData(var, actual);
-        return StepResult.success("attribute '" + attrName + "' for '" + locator + "' saved to '" + var + "'");
+    /**
+     * save the value of {@code attrName} of all elements matching {@code locator} to a variable named {@code var}
+     */
+    public StepResult saveAttributeList(String var, String locator, String attrName) {
+        requiresValidAndNotReadOnlyVariableName(var);
+        requiresNotBlank(locator, "invalid locator", locator);
+        requiresNotBlank(attrName, "invalid attribute name", attrName);
+
+        List<WebElement> elements = findElements(locator);
+        if (CollectionUtils.isEmpty(elements)) { return StepResult.fail("No element matched to '" + locator + "'"); }
+
+        String[] attrValues = elements.stream().map(element -> element.getAttribute(attrName)).toArray(String[]::new);
+
+        if (ArrayUtils.isEmpty(attrValues)) {
+            context.removeData(var);
+            return StepResult.success("matching elements do not contain attribute '" + attrName + "'");
+        } else {
+            context.setData(var, attrValues);
+            return StepResult.success("attribute '%s' for elements that matched '%s' saved to '%s'",
+                                      attrName, locator, var);
+        }
     }
 
     public StepResult saveCount(String var, String locator) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid variable", var);
+        requiresValidAndNotReadOnlyVariableName(var);
         context.setData(var, getElementCount(locator));
         return StepResult.success("stored matched count of '" + locator + "' as ${" + var + "}");
     }
 
     public StepResult saveTextArray(String var, String locator) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
         String[] textArray = collectTextList(locator);
         if (ArrayUtils.isNotEmpty(textArray)) {
@@ -463,23 +686,26 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
             context.removeData(var);
         }
 
-        return StepResult.success("stored content of '" + locator + "' as ${" + var + "}");
+        return StepResult.success("stored content of '" + locator + "' as '" + var + "'");
     }
 
     public StepResult saveText(String var, String locator) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid variable", var);
-        context.setData(var, getElementText(locator));
-        return StepResult.success("stored content of '" + locator + "' as ${" + var + "}");
+        requiresValidAndNotReadOnlyVariableName(var);
+        String text = getElementText(locator);
+        updateDataVariable(var, text);
+        return StepResult.success(StringUtils.isEmpty(text) ?
+                                  "no content found via locator '" + locator + "'" :
+                                  "stored content of '" + locator + "' as ${" + var + "}");
     }
 
     public StepResult saveElement(String var, String locator) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid variable", var);
+        requiresValidAndNotReadOnlyVariableName(var);
         context.setData(var, findElement(locator));
         return StepResult.success("element '" + locator + "' found and stored as ${" + var + "}");
     }
 
     public StepResult saveElements(String var, String locator) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid property", var);
+        requiresValidAndNotReadOnlyVariableName(var);
         context.setData(var, findElements(locator));
         return StepResult.success("elements '" + locator + "' found and stored as ${" + var + "}");
     }
@@ -494,7 +720,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
     }
 
-    public StepResult assertIENavtiveMode() {
+    public StepResult assertIENativeMode() {
         //ie only functionality; not for chrome,ff,safari
         if (!browser.isRunIE()) { return StepResult.success("not applicable to non-IE browser"); }
         if (isIENativeMode()) {
@@ -519,11 +745,17 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     public StepResult assertTextContains(String locator, String text) {
         requires(StringUtils.isNotBlank(text), "empty text is not allowed", text);
         String elementText = getElementText(locator);
-        if (lenientContains(elementText, text, false)) {
-            return StepResult.success("validated text '" + elementText + "' contains '" + text + "'");
-        } else {
-            return StepResult.fail("Expects \"" + text + "\" be contained in \"" + elementText + "\"");
-        }
+        return elementText == null ?
+               StepResult.fail("Invalid locator '" + locator + "'; no text found") :
+               assertContains(elementText, text);
+    }
+
+    public StepResult assertTextNotContain(String locator, String text) {
+        requires(StringUtils.isNotBlank(text), "empty text is not allowed", text);
+        String elementText = getElementText(locator);
+        return elementText == null ?
+               StepResult.fail("Invalid locator '" + locator + "'; no text found") :
+               assertNotContain(elementText, text);
     }
 
     public StepResult assertNotText(String locator, String text) {
@@ -563,8 +795,6 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         // text might contain single quote; hence use resolveContainLabelXpath()
 
-        // StepResult result = assertElementNotPresent(locatorHelper.resolveContainLabelXpath(text));
-        // if (result.failed()) {
         if (isTextPresent(text)) {
             return StepResult.fail(msgPrefix + "FOUND");
         } else {
@@ -637,17 +867,25 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
      * conventional HTML table structure. Instead, this method uses {@code headers} to represent the "header"
      * cells, the {@code rows} to represent the pattern of a "data" row and the {@code cells} as the
      * relative path of a "data" cell (hierarchically contained within a row).
-     *
+     * <p>
      * Optionally, the {@code nextPage} is used to forward to the "page" of the table data. If provided, this
      * method will forward to the next page of data AFTER the current page of table data is collected. Furthermore, this
      * method will keep forward to the next page of table data until the element represented by the
      * {@code nextPage} is either disabled or no longer visible.
-     *
+     * <p>
      * Collected table data will be saved as CSV into {@code file}. {@code headers} is optional; if it is not
      * specified, then the target {@code file} will not contain header either.
      */
     public StepResult saveDivsAsCsv(String headers, String rows, String cells, String nextPage, String file) {
         return tableHelper.saveDivsAsCsv(headers, rows, cells, nextPage, file);
+    }
+
+    public StepResult saveInfiniteDivsAsCsv(String config, String file) {
+        return tableHelper.saveInfiniteDivsAsCsv(config, file);
+    }
+
+    public StepResult saveInfiniteTableAsCsv(String config, String file) {
+        return tableHelper.saveInfiniteTableAsCsv(config, file);
     }
 
     public StepResult assertValue(String locator, String value) {
@@ -662,16 +900,17 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     public StepResult assertAttribute(String locator, String attrName, String value) {
         try {
             String actual = getAttributeValue(locator, attrName);
+            ConsoleUtils.log("Element '" + locator + "' attribute '" + attrName + "' yielded '" + actual + "'");
             if (actual == null) {
                 boolean expectsNull = context.isNullValue(value);
                 return new StepResult(expectsNull,
                                       "Attribute '" + attrName + "' of element '" + locator + "' is null/missing " +
-                                      (expectsNull ? "as EXPECTED" : " but EXPECTS " + value), null);
+                                      (expectsNull ? "as EXPECTED" : "but EXPECTS " + value), null);
             }
 
             return assertEqual(value, actual);
         } catch (NoSuchElementException e) {
-            return StepResult.fail(e.getMessage());
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         }
     }
 
@@ -683,11 +922,11 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return assertAttributePresentInternal(locator, attrName, false);
     }
 
-    public StepResult assertAttributeContains(String locator, String attrName, String contains) {
+    public StepResult assertAttributeContain(String locator, String attrName, String contains) {
         return assertAttributeContainsInternal(locator, attrName, contains, true);
     }
 
-    public StepResult assertAttributeNotContains(String locator, String attrName, String contains) {
+    public StepResult assertAttributeNotContain(String locator, String attrName, String contains) {
         return assertAttributeContainsInternal(locator, attrName, contains, false);
     }
 
@@ -720,10 +959,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     }
 
     public StepResult assertVisible(String locator) {
-        String msgPrefix = "EXPECTED visible element '" + locator + "'";
-        return isVisible(locator) ?
-               StepResult.success(msgPrefix + " found") :
-               StepResult.fail(msgPrefix + " not found");
+        String prefix = "EXPECTED visible element '" + locator + "'";
+        return isVisible(locator) ? StepResult.success(prefix + " found") : StepResult.fail(prefix + " not found");
     }
 
     public StepResult assertNotVisible(String locator) {
@@ -742,20 +979,45 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
 
         // new locator should either add "text() = ..." or concatenate the "text() = ..." clause to existing filter
-        String locatorWithText;
-        if (StringUtils.endsWith(locator, "]")) {
-            locatorWithText = StringUtils.substringBeforeLast(locator, "]") + " and ";
-        } else {
-            locatorWithText = locator + "[";
-        }
-        locatorWithText += "text() = " + locatorHelper.normalizeXpathText(label) + "]";
-
+        String locatorWithText = (StringUtils.endsWith(locator, "]") ?
+                                  StringUtils.substringBeforeLast(locator, "]") + " and " :
+                                  locator + "[") +
+                                 "text() = " + locatorHelper.normalizeXpathText(label) + "]";
         result = click(locatorWithText);
         if (result.failed()) { log("text/label for '" + label + "' not clickable at " + locator); }
         return result;
     }
 
+    public StepResult assertMultiSelect(String locator) {
+        return new StepResult(isMultiSelect(locator));
+    }
+
+    public StepResult assertSingleSelect(String locator) {
+        return new StepResult(!isMultiSelect(locator));
+    }
+
     public StepResult click(String locator) { return clickInternal(locator); }
+
+    /**
+     * click on all matching elements. Useful to check/uncheck "fake" options disguised as {@literal <div>} tags.
+     * <p>
+     * Internally used by {@link #selectMultiOptions(String)} since both are functionally equivalent.
+     */
+    public StepResult clickAll(String locator) {
+        List<WebElement> elements;
+        try {
+            elements = findElements(locator);
+            if (CollectionUtils.isEmpty(elements)) {
+                return StepResult.success("No matching element via '" + locator + "'");
+            }
+        } catch (TimeoutException e) {
+            return StepResult.fail("Unable to find element via '" + locator + "' within allotted time");
+        }
+
+        for (WebElement elem : elements) { clickInternal(elem); }
+
+        return StepResult.success("clicked " + elements.size() + " element(s) via '" + locator + "'");
+    }
 
     public StepResult clickWithKeys(String locator, String keys) {
         requiresNotBlank(locator, "locator must not be empty", locator);
@@ -788,7 +1050,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
     }
 
-    public StepResult clickByLabel(String label) { return clickByLabelAndWait(label, pollWaitMs + ""); }
+    public StepResult clickByLabel(String label) { return clickByLabelAndWait(label, context.getPollWaitMs() + ""); }
 
     public StepResult clickByLabelAndWait(String label, String waitMs) {
         String xpath = locatorHelper.resolveLabelXpath(label);
@@ -796,6 +1058,35 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         if (result.failed()) { return result; }
 
         return clickAndWait(xpath, waitMs);
+    }
+
+    public StepResult clickOffset(String locator, String x, String y) {
+        requiresPositiveNumber(x, "Invalid value for x", x);
+        requiresPositiveNumber(y, "Invalid value for y", y);
+
+        WebElement element;
+        try {
+            List<WebElement> matches = findElements(locator);
+            element = CollectionUtils.isEmpty(matches) ? null : matches.get(0);
+            if (element == null) { return StepResult.fail("No element via locator '" + locator + "'"); }
+
+            ConsoleUtils.log("clicking '" + locator + "'...");
+            highlight(element);
+
+            int offsetX = NumberUtils.toInt(x);
+            int offsetY = NumberUtils.toInt(y);
+            new Actions(driver).moveToElement(element, offsetX, offsetY).click().build().perform();
+            return StepResult.success("clicked on web element at offset (" + x + "," + y + ")");
+        } catch (TimeoutException e) {
+            return StepResult.fail("Unable to find element via locator '" + locator + "' within allotted time");
+        } catch (WebDriverException e) {
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
+        } catch (Exception e) {
+            return StepResult.fail(e.getMessage(), e);
+        } finally {
+            // could have alert text...
+            alert.preemptiveDismissAlert();
+        }
     }
 
     public StepResult doubleClickByLabel(String label) {
@@ -818,6 +1109,14 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return StepResult.success("double-clicked '" + locator + "'");
     }
 
+    public StepResult rightClick(String locator) {
+        WebElement element = toElement(locator);
+        scrollIntoView(element);
+        highlight(element);
+        new Actions(driver).moveToElement(element).contextClick(element).build().perform();
+        return StepResult.success("right-clicked on '" + locator + "'");
+    }
+
     public StepResult dismissInvalidCert() {
         wait("2000");
         if (!browser.isRunIE() && !browser.isRunFireFox()) {
@@ -828,12 +1127,14 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         String title = driver.getTitle();
         if (!StringUtils.contains(title, "Certificate Error: Navigation Blocked") &&
             !StringUtils.contains(title, "Untrusted Connection")) {
-            return StepResult.success("dismissInvalidCert(): Invalid certificat message not found " +
+            return StepResult.success("dismissInvalidCert(): Invalid certificate message not found " +
                                       browser);
         }
 
         try {
             driver.get("javascript:document.getElementById('overridelink').click();");
+        } catch (WebDriverException e) {
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         } catch (Exception e) {
             return StepResult.fail(e.getMessage());
         }
@@ -864,7 +1165,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
             driver.switchTo().window(initialWinHandle);
             waitForBrowserStability(1000);
             waitForTitle(parentTitle);
-
+        } catch (WebDriverException e) {
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         } catch (Exception e) {
             return StepResult.fail(e.getMessage());
         }
@@ -941,7 +1243,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         // dimension unit is point (or px)
         window.setSize(new Dimension(numWidth, numHeight));
 
-        return StepResult.success("browser window resized to " + width + "x" + height);
+        return StepResult.success("browser window resize to " + width + "x" + height);
     }
 
     public StepResult assertScrollbarVPresent(String locator) { return checkScrollbarV(locator, false); }
@@ -962,10 +1264,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         url = validateUrl(url);
         driver.get(url);
         waitForBrowserStability(toPositiveLong(waitMs, "waitMs"));
-        updateWinHandle();
-        resizeSafariAfterOpen();
-
-        EventTracker.INSTANCE.track(new NexialUrlInvokedEvent(browser.getBrowserType().name(), url));
+        postOpen(url);
 
         return StepResult.success("opened URL " + hideAuthDetails(url));
     }
@@ -983,11 +1282,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
                           StringUtils.substringAfter(url, "://");
         driver.get(urlBasic);
         waitForBrowserStability(context.getPollWaitMs());
-
-        updateWinHandle();
-        resizeSafariAfterOpen();
-
-        EventTracker.INSTANCE.track(new NexialUrlInvokedEvent(browser.getBrowserType().name(), url));
+        postOpen(url);
 
         return StepResult.success("opened URL " + hideAuthDetails(urlBasic));
     }
@@ -1000,7 +1295,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         driver.get("about:blank");
 
         StopWatch stopWatch = StopWatch.createStarted();
-        long maxLoadTime = context.getIntData(OPT_WEB_PAGE_LOAD_WAIT_MS, DEF_WEB_PAGE_LOAD_WAIT_MS);
+        long maxLoadTime = context.getIntData(WEB_PAGE_LOAD_WAIT_MS, getDefaultInt(WEB_PAGE_LOAD_WAIT_MS));
 
         url = validateUrl(url);
         String linkToUrl = "var a = document.createElement(\"a\");" +
@@ -1024,9 +1319,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         stopWatch.stop();
 
-        resizeSafariAfterOpen();
-
-        EventTracker.INSTANCE.track(new NexialUrlInvokedEvent(browser.getBrowserType().name(), url));
+        postOpen(url);
 
         return StepResult.success("opened URL " + hideAuthDetails(url));
     }
@@ -1054,41 +1347,48 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         requiresNotBlank(text, "invalid title text", text);
 
         ensureReady();
-        Boolean expectedTitleFound = waiter.until(ExpectedConditions.titleIs(text));
+        Boolean expectedTitleFound = newFluentWait().until(ExpectedConditions.titleIs(text));
         return new StepResult(expectedTitleFound, (expectedTitleFound ? "EXPECTED title " : "NOT ") + "found", null);
+    }
+
+    public StepResult saveTitle(String var) {
+        requiresValidVariableName(var);
+        ensureReady();
+        updateDataVariable(var, driver.getTitle());
+        return StepResult.success();
     }
 
     public StepResult selectWindow(String winId) { return selectWindowAndWait(winId, "2000"); }
 
-    public StepResult selectWindowByIndex(String index) {
-        requiresPositiveNumber(index, "index must be a number", index);
-
-        ensureReady();
-
-        Set<String> handles = driver.getWindowHandles();
-        if (CollectionUtils.isEmpty(handles)) { return StepResult.fail("No window or windows handle found"); }
-
-        int idx = NumberUtils.toInt(index);
-        String[] handleIds = handles.toArray(new String[0]);
-        if (handleIds.length <= idx) { return StepResult.fail("Window index " + index + " not found"); }
-
-        return selectWindowAndWait(handleIds[idx], "2000");
-    }
+    public StepResult selectWindowByIndex(String index) { return selectWindowByIndexAndWait(index, "2000"); }
 
     public StepResult selectWindowByIndexAndWait(String index, String waitMs) {
         requiresPositiveNumber(index, "window index must be a positive integer (zero-based");
         requiresPositiveNumber(waitMs, "waitMs must be a positive integer", waitMs);
 
-        ensureReady();
-
-        int windowIndex = Integer.parseInt(index);
-
-        Set<String> windowHandles = driver.getWindowHandles();
-        if (CollectionUtils.size(windowHandles) <= windowIndex) {
-            return StepResult.fail("Number of available window is less than " + (windowIndex + 1));
+        if (driver != null) {
+            Set<String> handles = driver.getWindowHandles();
+            ConsoleUtils.log("found " + CollectionUtils.size(handles) + " window handle(s); recalibrating again...");
         }
 
-        return selectWindowAndWait(IterableUtils.get(windowHandles, windowIndex), waitMs);
+        ensureReady();
+
+        // electron app or electron chromedriver tends to be slower... so we need to give some time
+        if (browser.isRunElectron()) { try { Thread.sleep(2000);} catch (InterruptedException e) { } }
+
+        // double check
+        Set<String> handles = driver.getWindowHandles();
+        if (CollectionUtils.isEmpty(handles)) { return StepResult.fail("No window or windows handle found"); }
+
+        int handleCount = handles.size();
+        ConsoleUtils.log("found " + handleCount + " window handle(s)...");
+
+        int idx = NumberUtils.toInt(index);
+        if (idx >= handleCount) { return StepResult.fail("Window index " + index + " not found"); }
+
+        String handle = IterableUtils.get(handles, idx);
+        ConsoleUtils.log("selecting window based on handle " + handle);
+        return selectWindowAndWait(handle, waitMs);
     }
 
     public StepResult selectWindowAndWait(String winId, String waitMs) {
@@ -1124,13 +1424,13 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
     public StepResult saveAllWindowNames(String var) {
         String names = TextUtils.toString(getAllWindowNames().toArray(new String[]{}), ",", "", "");
-        context.setData(var, names);
+        updateDataVariable(var, names);
         return StepResult.success("stored existing window names '" + names + "' as ${" + var + "}");
     }
 
     public StepResult saveAllWindowIds(String var) {
         String names = TextUtils.toString(getAllWindowIds().toArray(new String[]{}), ",", "", "");
-        context.setData(var, names);
+        updateDataVariable(var, names);
         return StepResult.success("stored existing window ID '" + names + "' as ${" + var + "}");
     }
 
@@ -1155,42 +1455,60 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     public StepResult scrollTo(String locator) { return scrollTo(locator, (Locatable) toElement(locator)); }
 
     public StepResult scrollLeft(String locator, String pixel) {
-        requires(NumberUtils.isDigits(pixel), "invalid number", pixel);
+        requiresInteger(pixel, "invalid number", pixel);
+
+        logDeprecated(getTarget() + " » scrollLeft(locator,pixel)",
+                      getTarget() + " » scrollElement(locator,xOffset,yOffset)");
 
         WebElement element = toElement(locator);
-        jsExecutor.executeScript("arguments[0].scrollLeft=" + pixel, element);
+        jsExecutor.executeScript("arguments[0].scrollBy(" + pixel + ",0)", element);
 
         return scrollTo(locator, (Locatable) element);
     }
 
     public StepResult scrollRight(String locator, String pixel) {
-        requires(NumberUtils.isDigits(pixel), "invalid number", pixel);
+        requiresInteger(pixel, "invalid number", pixel);
+
+        logDeprecated(getTarget() + " » scrollRight(locator,pixel)",
+                      getTarget() + " » scrollElement(locator,xOffset,yOffset)");
 
         WebElement element = toElement(locator);
-        jsExecutor.executeScript("arguments[0].scrollLeft=" + (NumberUtils.toInt(pixel) * -1), element);
+        jsExecutor.executeScript("arguments[0].scrollBy(" + (NumberUtils.toInt(pixel) * -1) + ",0)", element);
+
+        return scrollTo(locator, (Locatable) element);
+    }
+
+    public StepResult scrollPage(String xOffset, String yOffset) {
+        requiresInteger(xOffset, "invalid xOffset", xOffset);
+        requiresInteger(yOffset, "invalid yOffset", yOffset);
+
+        jsExecutor.executeScript("window.scrollBy(" + xOffset + "," + yOffset + ")");
+
+        return StepResult.success("current window/page scrolled by (" + xOffset + "," + yOffset + ")");
+    }
+
+    public StepResult scrollElement(String locator, String xOffset, String yOffset) {
+        requiresInteger(xOffset, "invalid xOffset", xOffset);
+        requiresInteger(yOffset, "invalid yOffset", yOffset);
+
+        WebElement element = toElement(locator);
+        jsExecutor.executeScript("arguments[0].scrollBy(" + xOffset + "," + yOffset + ")", element);
 
         return scrollTo(locator, (Locatable) element);
     }
 
     public StepResult type(String locator, String value) {
-        // WebElement element = shouldWait() ?
-        //                      findElement(locator) :
-        //                      !isElementPresent(locator) ? null : toElement(locator);
         WebElement element = findElement(locator);
-        if (element == null) {
-            String msg = "unable to complete type() since locator (" + locator + ") cannot be found.";
-            error(msg);
-            return StepResult.fail(msg);
-        }
+        if (element == null) { return StepResult.fail("Unable to type since no element matches to " + locator); }
 
-        element.clear();
+        clearValue(element);
 
         if (StringUtils.isNotEmpty(value)) {
             // was needed for Safari/Windows. We don't need this anymore
             // if (browser.isRunSafari()) { focus("//body"); }
 
             // onchange event will not fire until a different element is selected
-            if (context.getBooleanData(WEB_UNFOCUS_AFTER_TYPE, DEF_WEB_UNFOCUS_AFTER_TYPE)) {
+            if (context.getBooleanData(WEB_UNFOCUS_AFTER_TYPE, getDefaultBool(WEB_UNFOCUS_AFTER_TYPE))) {
                 // element.sendKeys();
                 new Actions(driver).moveToElement(element)
                                    .sendKeys(element, value)
@@ -1198,7 +1516,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
                                    .build()
                                    .perform();
             } else {
-                jsExecutor.executeScript("arguments[0].scrollIntoView(true);", element);
+                scrollIntoView(element);
                 element.sendKeys(value);
             }
         }
@@ -1210,20 +1528,18 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     public StepResult typeKeys(String locator, String value) {
         if (StringUtils.isNotBlank(locator)) {
             WebElement element = toElement(locator);
-            jsExecutor.executeScript("arguments[0].scrollIntoView(true);", element);
+            scrollIntoView(element);
 
-            if (StringUtils.isBlank(value)) {
-                element.clear();
-                WebDriverUtils.toSendKeyAction(driver, element, "{BACKSPACE}{TAB}").perform();
+            if (StringUtils.isEmpty(value)) {
+                clearValue(element);
                 return StepResult.success("cleared out value at '" + locator + "'");
             }
 
             element.click();
             waitFor(MIN_STABILITY_WAIT_MS);
-
             Actions actions = WebDriverUtils.toSendKeyAction(driver, element, value);
             if (actions != null) {
-                if (context.getBooleanData(WEB_UNFOCUS_AFTER_TYPE, DEF_WEB_UNFOCUS_AFTER_TYPE)) {
+                if (context.getBooleanData(WEB_UNFOCUS_AFTER_TYPE, getDefaultBool(WEB_UNFOCUS_AFTER_TYPE))) {
                     actions.sendKeys(TAB);
                 }
                 actions.build().perform();
@@ -1263,7 +1579,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         String safeUrl = hideAuthDetails(url);
 
         try {
-            context.setData(var, new String(downloadLink(sessionIdName, url)));
+            updateDataVariable(var, new String(downloadLink(sessionIdName, url)));
             return StepResult.success("saved '" + safeUrl + "' as ${" + var + "}");
         } catch (Exception e) {
             String message = "Unable to save link '" + safeUrl + "' as property '" + var + "': " + e.getMessage();
@@ -1294,13 +1610,15 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     }
 
     public StepResult saveLocation(String var) {
-        requires(StringUtils.isNotBlank(var) && !StringUtils.startsWith(var, "${"), "invalid variable", var);
+        requiresValidAndNotReadOnlyVariableName(var);
 
-        context.setData(var, driver.getCurrentUrl());
+        ensureReady();
+        updateDataVariable(var, driver.getCurrentUrl());
         return StepResult.success("stored current URL as ${" + var + "}");
     }
 
     public StepResult clearLocalStorage() {
+        ensureReady();
         jsExecutor.executeScript("window.localStorage.clear();");
         return StepResult.success("browser's local storage cleared");
     }
@@ -1308,6 +1626,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     public StepResult editLocalStorage(String key, String value) {
         requiresNotBlank(key, "local storage key must not be null");
 
+        ensureReady();
         if (StringUtils.isBlank(value)) {
             jsExecutor.executeScript("window.localStorage.removeItem('" + key + "');");
         } else {
@@ -1319,9 +1638,10 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     }
 
     public StepResult saveLocalStorage(String var, String key) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(key, "local storage key must not be null");
 
+        ensureReady();
         Object response = jsExecutor.executeScript("return window.localStorage.getItem('" + key + "')");
         context.setData(var, response);
         return StepResult.success("browser's local storage (" + key + ") stored to " + var + " as " + response);
@@ -1331,17 +1651,20 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
      * designed for JS injection / web security testing
      */
     public StepResult executeScript(String var, String script) {
-        requiresValidVariableName(var);
+        requiresValidAndNotReadOnlyVariableName(var);
         requiresNotBlank(script, "Invalid script", script);
 
         String javascript;
         try {
-            javascript = OutputFileUtils.resolveContent(script, context, false, true);
-        } catch (IOException e) {
+            // javascript = OutputFileUtils.resolveContent(script, context, false, true);
+            javascript = new OutputResolver(script, context, false, true).getContent();
+        } catch (Throwable e) {
             // can't resolve content.. then we'll leave it be
             ConsoleUtils.log("Unable to resolve JavaScript '" + script + "': " + e.getMessage() + ". Use as is...");
             javascript = script;
         }
+
+        ensureReady();
 
         Object retVal = null;
         try {
@@ -1360,19 +1683,122 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return StepResult.success("script executed");
     }
 
+    /**
+     * save the screenshot of the web element indicated by {@code locator} to {@code file}.
+     * <p>
+     * {@code ignoreLocators} are assumed to relative to {@code locator}.
+     * <p>
+     * This method assumes only the first matching element, and it will forcefully overwrite existing {@code file}.
+     */
+    // public StepResult screenshot(String file, String locator, String ignoreLocators) {
+    public StepResult screenshot(String file, String locator) {
+        requiresNotBlank(file, "invalid file", file);
+        requiresNotBlank(locator, "invalid locator", locator);
+
+        File target = new File(file);
+        target.getParentFile().mkdirs();
+
+        WebElement element = findElement(locator);
+        if (element == null) { return StepResult.fail("No web element can be found via locator '" + locator + "'"); }
+
+        AShot ashot = new AShot().shootingStrategy(ShootingStrategies.viewportPasting(100))
+                                 .coordsProvider(new WebDriverCoordsProvider());
+
+        // if (!context.isNullOrEmptyValue(ignoreLocators)) {
+        //     Point targetXY = element.getLocation();
+        //
+        //     Stream<@NotNull By> locateBy =
+        //         Arrays.stream(StringUtils.split(StringUtils.remove(ignoreLocators, "\r"), "\n"))
+        //               .map(loc -> locatorHelper.findBy(locator + loc));
+        //
+        //     Set<Coords> ignoredCoords = new HashSet<>();
+        //     locateBy.forEach(by -> {
+        //         ashot.addIgnoredElement(by);
+        //         try {
+        //             List<WebElement> ignored = newFluentWait().until(driver -> driver.findElements(by));
+        //             if (CollectionUtils.isNotEmpty(ignored)) {
+        //                 ignored.forEach(elem -> {
+        //                     Rectangle r = elem.getRect();
+        //                     if (r != null) {
+        //                         ignoredCoords.add(new Coords(r.getX() - targetXY.getX(),
+        //                                                      r.getY() - targetXY.getY(),
+        //                                                      r.getWidth(),
+        //                                                      r.getHeight()));
+        //                     }
+        //                 });
+        //             }
+        //         } catch (NoSuchElementException e) {
+        //             // ignore...
+        //         } catch (TimeoutException e) {
+        //             // also ignore..
+        //         }
+        //     });
+        //
+        //     ashot.ignoredAreas(ignoredCoords);
+        // }
+
+        Screenshot screenshot = ashot.takeScreenshot(driver, element);
+        BufferedImage image = screenshot.getImage();
+
+        // Graphics g = image.getGraphics();
+        // screenshot.getIgnoredAreas()
+        //           .forEach(coords -> g.drawImage(newBlankImage((int) coords.getWidth(), (int) coords.getHeight()),
+        //                                          (int) coords.getX(),
+        //                                          (int) coords.getY(),
+        //                                          null));
+        // g.dispose();
+
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(image, "PNG", baos);
+            FileUtils.writeByteArrayToFile(target, baos.toByteArray());
+
+            if (context.isOutputToCloud()) {
+                String cloudUrl = context.getOtc().importMedia(target, true);
+                context.setData(OPT_LAST_OUTPUT_LINK, cloudUrl);
+                context.setData(OPT_LAST_OUTPUT_PATH, StringUtils.substringBeforeLast(cloudUrl, "/"));
+                return StepResult.success("Image captured for '" + locator + "' to URL " + cloudUrl);
+            } else {
+                String link = target.getAbsolutePath();
+                context.setData(OPT_LAST_OUTPUT_LINK, link);
+                context.setData(OPT_LAST_OUTPUT_PATH, StringUtils.contains(link, "\\") ?
+                                                      StringUtils.substringBeforeLast(link, "\\") :
+                                                      StringUtils.substringBeforeLast(link, "/"));
+                return StepResult.success("Image captured for '" + locator + "' to file '" + file + "'");
+            }
+        } catch (IOException e) {
+            return StepResult.fail("Unable to write image data to file " + file + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * use UserStack API to save browser info/version as data variable
+     */
+    public StepResult saveBrowserVersion(String var) {
+        requiresValidAndNotReadOnlyVariableName(var);
+
+        if (!context.hasData(BROWSER_META)) {
+            syncBrowserMeta();
+            if (!context.hasData(BROWSER_META)) {
+                // we've tried... forget it
+                return StepResult.fail("Unable to fetch browser version; " +
+                                       "browser or underlying webdriver possibly not initialized");
+            }
+        }
+
+        BrowserMeta browserMeta = (BrowserMeta) context.getObjectData(BROWSER_META);
+        if (browserMeta != null) {
+            context.setData(var, browserMeta.browser());
+            return StepResult.success("Browser version saved to data variable '" + var + "'");
+        } else {
+            return StepResult.fail("Unable to fetch browser version; " +
+                                   "browser or underlying webdriver possibly not initialized");
+        }
+    }
+
     @Override
     public String takeScreenshot(TestStep testStep) {
         if (testStep == null) { return null; }
-
-        //if (browser == null || selenium == null || browser.isRunBrowserStack()) {
-        if (browser == null) {
-            // possibly delayBrowser turned on.. skip screenshot if selenium hasn't been initialized..
-            ConsoleUtils.log("selenium/browser not yet initialized; skip screen capturing");
-            return null;
-        }
-
-        // proceed... with caution (or not!)
-        waitForBrowserStability(browserStabilityWaitMs);
 
         String filename = generateScreenshotFilename(testStep);
         if (StringUtils.isBlank(filename)) {
@@ -1381,32 +1807,36 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
         filename = context.getProject().getScreenCaptureDir() + separator + filename;
 
+        boolean useNativeCapture = false;
+        if (browser == null ||
+            driver == null ||
+            context.getBooleanData(OPT_NATIVE_SCREENSHOT, getDefaultBool(OPT_NATIVE_SCREENSHOT))) {
+            useNativeCapture = true;
+        } else {
+            // proceed... with caution (or not!)
+            waitForBrowserStability(deriveBrowserStabilityWaitMs(context));
+            if (alert.isDialogPresent()) {
+                if (browser.isRunBrowserStack() || browser.isRunCrossBrowserTesting()) {
+                    alert.dismiss();
+                } else {
+                    useNativeCapture = true;
+                }
+            }
+        }
+
         File screenshotFile;
-        if (alert.isDialogPresent()) {
-            if (browser.isRunBrowserStack() || browser.isRunCrossBrowserTesting()) {
-                alert.dismiss();
-                screenshotFile = ScreenshotUtils.saveScreenshot(screenshot, filename);
-            } else {
-                screenshotFile = ScreenshotUtils.saveDesktopScreenshot(filename);
+        if (useNativeCapture) {
+            log("using native screen capturing approach...");
+            screenshotFile = new File(filename);
+            if (!NativeInputHelper.captureScreen(0, 0, -1, -1, screenshotFile)) {
+                error("Unable to capture screenshot via native screen capturing approach");
+                return null;
             }
         } else {
             screenshotFile = ScreenshotUtils.saveScreenshot(screenshot, filename);
         }
 
-        if (screenshotFile == null) {
-            ConsoleUtils.error("Unable to save screenshot for " + testStep);
-            return null;
-        }
-
-        if (context.isOutputToCloud()) {
-            try {
-                return context.getOtc().importMedia(screenshotFile);
-            } catch (IOException e) {
-                log(toCloudIntegrationNotReadyMessage(screenshotFile.toString()) + ": " + e.getMessage());
-            }
-        }
-
-        return screenshotFile.getAbsolutePath();
+        return postScreenshot(testStep, screenshotFile);
     }
 
     @Override
@@ -1426,9 +1856,9 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         String waitMsStr = isNumber ? (long) NumberUtils.toDouble(waitMs) + "" : context.getPollWaitMs() + "";
 
         WebElement element = toElement(locator);
-        jsExecutor.executeScript("arguments[0].scrollIntoView(true);", element);
+        scrollIntoView(element);
         highlight(element);
-        new Actions(driver).doubleClick(element).build().perform();
+        new Actions(driver).moveToElement(element).doubleClick(element).build().perform();
 
         // could have alert text...
         alert.preemptiveDismissAlert();
@@ -1456,7 +1886,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
 
         // give it time to settle down
-        wait(context.getIntData(BROWSER_POST_CLOSE_WAIT, DEF_BROWSER_POST_CLOSE_WAIT) + "");
+        wait(context.getIntConfig(getTarget(), getProfile(), BROWSER_POST_CLOSE_WAIT) + "");
 
         if (lastWindow) { return closeAll(); }
 
@@ -1483,13 +1913,11 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
     public StepResult closeAll() {
         // ensureReady();
-        browser.shutdown();
+        if (browser != null) { browser.shutdown(); }
         driver = null;
-        waiter = null;
         return StepResult.success("closed last tab/window");
     }
 
-    // todo need to test
     public StepResult mouseOver(String locator) {
         new Actions(driver).moveToElement(toElement(locator)).build().perform();
 
@@ -1531,11 +1959,164 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return StepResult.success("Drag-and-move element '" + fromLocator + "' by (" + moveX + "," + moveY + ")");
     }
 
+    public StepResult updateAttribute(String locator, String attrName, String value) {
+        requiresNotBlank(locator, "invalid locator", locator);
+        requiresNotBlank(attrName, "invalid attribute name", attrName);
+        WebElement element = findElement(locator);
+        if (element == null) { return StepResult.fail("No element via locator '" + locator + "'"); }
+
+        if (StringUtils.isEmpty(value)) {
+            jsExecutor.executeScript("arguments[0].removeAttribute(arguments[1])", element, attrName);
+        } else {
+            jsExecutor.executeScript(
+                "arguments[0].setAttribute(arguments[1], arguments[2])",
+                element,
+                attrName,
+                value);
+        }
+        return StepResult.success(attrName + " with value " + value + " updated successfully for '" + locator + "'");
+    }
+
+    /**
+     * switch to another browser whilst maintain the current browser automation. For example,
+     * <pre>
+     *     web >> open >> http://... ...
+     *     ... ...
+     *     ... ...
+     *     web >> switchBrowser >> 2nd_browser | nexial.browser=chrome,nexial.browser.windowSize=1280x1078,nexial.browser.copyCookies=true
+     *     ... ...
+     *     web >> switchBrowser >> DEFAULT
+     *     ... ...
+     *     web >> switchBrowser >> 2nd_browser
+     *     ... ...
+     * </pre>
+     * <p>
+     * once the secondary profile is established, one can switch between that and the "default" (the initial one) back
+     * and forth.
+     * <p>
+     * the "config" can contain a list of browser-related System properties, also a new one -
+     * <code>nexial.browser.copyCookies</code> - copy cookies from current browser to the next one.
+     */
+    public StepResult switchBrowser(String profile, String config) {
+        if (StringUtils.isBlank(profile)) { profile = CMD_PROFILE_DEFAULT; }
+
+        context.updateProfileConfig(getTarget(), profile, config);
+
+        return StepResult.success("switched to another browser profiled under '" + profile + "'");
+    }
+
+    public void collectClientPerfMetrics() {
+        try {
+            if (clientPerfCollector == null) {
+                synchronized (this) {
+                    clientPerfCollector = new ClientPerformanceCollector(
+                        this, new Syspath().out("fullpath") + separator + WEB_METRICS_JSON);
+                }
+            }
+            clientPerfCollector.collect();
+        } catch (IOException e) {
+            log("Error when collecting browser performance metrics: " + e.getMessage());
+        }
+    }
+
+    protected void postOpen(String url) {
+        context.setData(BROWSER_OPENED, true);
+        context.setData(CURRENT_BROWSER, browser.getBrowserType().name());
+        updateWinHandle();
+        resizeSafariAfterOpen();
+        EventTracker.track(new NexialUrlInvokedEvent(browser.getBrowserType().name(), url));
+        syncBrowserMeta();
+    }
+
+    protected void syncBrowserMeta() {
+        Object browserMeta = context.getObjectData(BROWSER_META);
+        if (browserMeta instanceof BrowserMeta) { return; }
+
+        if (jsExecutor == null || driver == null) {
+            ConsoleUtils.error("Browser or webdriver not yet initialized; cancel the fetching of browser meta...");
+            return;
+        }
+
+        String ua = Objects.toString(jsExecutor.executeScript("return navigator.userAgent;"));
+        if (StringUtils.isBlank(ua)) { return; }
+
+        browserMeta = loadBrowserMetaCache(ua);
+
+        if (browserMeta == null) {
+            // go get it
+            List<String> listKeys = TextUtils.toList(StringUtils.defaultIfBlank(
+                // first try with the rotating keys
+                context.getStringData(USERSTACK_APIKEYS, context.getStringData(USERSTACK_APIKEY)),
+                DEF_USERSTACK_APIKEYS), ",", true);
+            UserStackAPI userStackAPI = CollectionUtils.isNotEmpty(listKeys) ?
+                                        new UserStackAPI(listKeys) : new UserStackAPI();
+            browserMeta = userStackAPI.detectAsBrowserMeta(ua);
+            updateBrowserMetaCache(ua, (BrowserMeta) browserMeta);
+        }
+
+        context.setData(BROWSER_META, browserMeta);
+    }
+
+    // todo: was called from screenshot().. still need it?
+    @NotNull
+    protected static BufferedImage newBlankImage(int width, int height) {
+        BufferedImage blank = new BufferedImage(width, height, SCALE_DEFAULT);
+        Graphics2D graphics = blank.createGraphics();
+        graphics.setPaint(new Color(255, 255, 255));
+        graphics.fillRect(0, 0, width, height);
+        return blank;
+    }
+
+    protected int deriveBrowserStabilityWaitMs(ExecutionContext context) {
+        return context.getIntData(OPT_UI_RENDER_WAIT_MS, getDefaultInt(OPT_UI_RENDER_WAIT_MS));
+    }
+
+    protected void clearValue(WebElement element) {
+        if (element == null) { return; }
+
+        // prior to clearing
+        String before = element.getAttribute("value");
+
+        if (browser.isRunElectron() ||
+            context.getBooleanData(WEB_CLEAR_WITH_BACKSPACE, getDefaultBool(WEB_CLEAR_WITH_BACKSPACE))) {
+            if (StringUtils.isNotEmpty(before)) {
+                // persistently delete character.. but if app insist on "autocompleting" then we'll give up
+                String beforeBackspace;
+                String afterBackspace;
+                do {
+                    beforeBackspace = element.getAttribute("value");
+                    element.sendKeys(Keys.END);
+                    before.chars().forEach(value -> element.sendKeys(BACK_SPACE));
+                    afterBackspace = element.getAttribute("value");
+                } while (!StringUtils.equals(afterBackspace, beforeBackspace));
+            }
+        } else {
+            // try thrice to cover all bases
+            element.clear();
+            jsExecutor.executeScript("arguments[0].setAttribute(arguments[1],arguments[2]);", element, "value", "");
+            jsExecutor.executeScript("arguments[0].value = '';", element);
+        }
+
+        // after clearing
+        String after = null;
+        try {
+            after = element.getAttribute("value");
+        } catch (WebDriverException e) {
+            // hmm... something's afoot.. but we shouldn't alarm the populous...
+            ConsoleUtils.log("Unable to retrieve value from the 'value' attribute after clearing the target element");
+        }
+
+        if (StringUtils.isNotEmpty(after)) {
+            error("Unable to clear out the value of the target element. [before] " + before + ", [after] " + after);
+        }
+    }
+
     protected Point deriveDragFrom(WebElement source) {
-        String dragFrom = context.getStringData(OPT_DRAG_FROM, DEF_DRAG_FROM);
+        String defaultDragFrom = getDefault(OPT_DRAG_FROM);
+        String dragFrom = context.getStringConfig(getTarget(), getProfile(), OPT_DRAG_FROM);
         if (!OPT_DRAG_FROMS.contains(dragFrom)) {
             ConsoleUtils.error("Invalid drag-from value: " + dragFrom + ", use default instead");
-            dragFrom = DEF_DRAG_FROM;
+            dragFrom = defaultDragFrom;
         }
 
         Dimension dimension = source.getSize();
@@ -1556,16 +2137,14 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
             return new Point(dimension.getWidth() / 2, dimension.getHeight());
         }
 
-        // default
-        // if (StringUtils.equals(dragFrom,OPT_DRAG_FROM_MIDDLE)) {
+        // default - drag from middle
         return new Point(dimension.getWidth() / 2, dimension.getHeight() / 2);
-        // }
     }
 
     protected void resizeSafariAfterOpen() {
         if ((browser.isRunBrowserStack() && browser.getBrowserstackHelper().getBrowser() == safari) ||
             (browser.isRunCrossBrowserTesting() && browser.getCbtHelper().getBrowser() == safari)) {
-            if (!context.getBooleanData(SAFARI_RESIZED, DEF_SAFARI_RESIZED)) {
+            if (!context.getBooleanData(SAFARI_RESIZED, getDefaultBool(SAFARI_RESIZED))) {
                 // time to resize it now
                 browser.setWindowSizeForcefully(driver);
                 context.setData(SAFARI_RESIZED, true);
@@ -1600,12 +2179,17 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     }
 
     @NotNull
-    protected StepResult goBack(boolean wait) {
-        ensureReady();
+    protected String[] collectValueList(List<WebElement> matches) {
+        if (CollectionUtils.isEmpty(matches)) { return new String[0]; }
+        return matches.stream().map(elem -> elem.getAttribute("value")).toArray(String[]::new);
+    }
 
+    @NotNull
+    protected StepResult goBack(boolean wait) {
         StepResult failed = notSupportedForElectron();
         if (failed != null) { return failed; }
 
+        ensureReady();
         driver.navigate().back();
         if (wait) { waitForBrowserStability(context.getPollWaitMs()); }
         return StepResult.success("went back previous page");
@@ -1669,40 +2253,6 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         return true;
     }
-
-    // NO LONGER NEEDED SINCE FIREFOX DRIVER FIXED PREVIOUS ISSUE WITH MUTLI-SELECT
-    // protected StepResult jsSelect(String locator, String text) {
-    //     WebElement select = findElement(locator);
-    //
-    //     String msgPrefix = "Select '" + locator + "'";
-    //
-    //     if (select == null) { throw new NoSuchElementException(msgPrefix + " not found."); }
-    //
-    //     ConsoleUtils.log("selecting option via JavaScript because " + browser.getBrowserType() +
-    //                      " does not support native automation on SELECT");
-    //
-    //     if (StringUtils.isBlank(text)) {
-    //         String js = "var options = arguments[0].selectedOptions; " +
-    //                     "for (var i = 0; i < elements.length; i++) { elements[i].selected = false; }";
-    //         jsExecutor.executeScript(js, select);
-    //         return StepResult.success("all options are deselected from " + msgPrefix);
-    //     }
-    //
-    //     List<WebElement> options =
-    //         select.findElements(By.xpath(".//option[normalize-space(.) = " + Quotes.escape(text) + "]"));
-    //     if (CollectionUtils.isEmpty(options)) {
-    //         return StepResult.fail(msgPrefix + " does not contain OPTION '" + text + "'");
-    //     }
-    //
-    //     boolean isMultiple = BooleanUtils.toBoolean(select.getAttribute("multiple"));
-    //     String jsClickOption = "arguments[0].selected = true; arguments[1].dispatchEvent(new Event('change'));";
-    //     for (WebElement option : options) {
-    //         jsExecutor.executeScript(jsClickOption, option, select);
-    //         if (!isMultiple) { break; }
-    //     }
-    //
-    //     return StepResult.success(msgPrefix + " OPTION(s) with text '" + text + "' selected");
-    // }
 
     protected StepResult scrollTo(String locator, Locatable element) {
         try {
@@ -1788,9 +2338,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return click(submitLocator);
     }
 
-    /**
-     * INTERNAL METHOD; not for public consumption
-     */
+    /** INTERNAL METHOD; not for public consumption */
     protected StepResult assertAttributePresentInternal(String locator, String attrName, boolean expectsFound) {
         try {
             String actual = getAttributeValue(locator, attrName);
@@ -1799,7 +2347,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
                                   "Attribute '" + attrName + "' of element '" + locator + "' is " +
                                   (success ? "found as EXPECTED" : " NOT FOUND"), null);
         } catch (NoSuchElementException e) {
-            return StepResult.fail(e.getMessage());
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         }
     }
 
@@ -1810,41 +2358,39 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         String msg = "Attribute '" + attrName + "' of element '" + locator + "' ";
 
-        boolean success;
         try {
             String actual = getAttributeValue(locator, attrName);
-            if (StringUtils.isBlank(contains) && StringUtils.isBlank(actual)) {
+            if ((StringUtils.isBlank(contains) && StringUtils.isBlank(actual)) ||
+                StringUtils.equals(actual, contains)) {
                 // got a match
-                if (expectsContains) {
-                    success = true;
-                    msg += "CONTAINS blank as EXPECTED";
-                } else {
-                    success = false;
-                    msg += "CONTAINS blank, which is NOT expected";
-                }
-            } else {
-                if (StringUtils.contains(actual, contains)) {
-                    if (expectsContains) {
-                        success = true;
-                        msg += "CONTAINS '" + contains + "' as EXPECTED";
-                    } else {
-                        success = false;
-                        msg += "CONTAINS '" + contains + "', which is NOT as expected";
-                    }
+                if (expectsContains) { return StepResult.success(msg + "CONTAINS blank as EXPECTED"); }
+                return StepResult.fail(msg + "CONTAINS blank, which is NOT expected");
+            }
+
+            if (StringUtils.startsWithIgnoreCase(contains, PREFIX_REGEX)) {
+                boolean matched = RegexUtils.match(actual, StringUtils.substringAfter(contains, PREFIX_REGEX));
+                if (matched) {
+                    if (expectsContains) { return StepResult.success(msg + "CONTAINS " + contains + " as EXPECTED"); }
+                    return StepResult.fail(msg + "CONTAINS " + contains + ", which is NOT as expected");
                 } else {
                     if (expectsContains) {
-                        success = false;
-                        msg += "DOES NOT contains '" + contains + "', which is NOT as expected";
-                    } else {
-                        success = true;
-                        msg += "DOES NOT contains '" + contains + "' as EXPECTED";
+                        return StepResult.fail(msg + "DOES NOT contains " + contains + ", which is NOT as expected");
                     }
+                    return StepResult.success(msg + "DOES NOT contains " + contains + ", as EXPECTED");
                 }
             }
 
-            return new StepResult(success, msg, null);
-        } catch (NoSuchElementException e) {
-            return StepResult.fail(e.getMessage());
+            if (StringUtils.contains(actual, contains)) {
+                if (expectsContains) { return StepResult.success(msg + "CONTAINS '" + contains + "', as EXPECTED"); }
+                return StepResult.fail(msg + "CONTAINS '" + contains + "', which is NOT as expected");
+            }
+
+            if (expectsContains) {
+                return StepResult.fail(msg + "DOES NOT contains '" + contains + "', which is NOT as expected");
+            }
+            return StepResult.success(msg + "DOES NOT contains '" + contains + "', as EXPECTED");
+        } catch (WebDriverException e) {
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         }
     }
 
@@ -1895,18 +2441,11 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
     }
 
-    // todo: merge with selectMultiOptions(), which is just a form of clicks
     protected StepResult clickInternal(String locator) {
-
         WebElement element;
         try {
-            // stupid code! both findElement() and findElements() are using waiter
-            // if (shouldWait()) {
-            //     element = findElement(locator);
-            // } else {
             List<WebElement> matches = findElements(locator);
             element = CollectionUtils.isEmpty(matches) ? null : matches.get(0);
-            // }
         } catch (TimeoutException e) {
             return StepResult.fail("Unable to find element via locator '" + locator + "' within allotted time");
         }
@@ -1925,9 +2464,10 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         // Nexial configure "preference" for each browser to use JS click on not. However, we need to honor user's
         // wish NOT to use JS click if they had configured their test as such
-        boolean systemFavorJsClick = jsExecutor != null && browser.favorJSClick();
-        boolean forceJSClick = (!context.hasData(FORCE_JS_CLICK) || context.getBooleanData(FORCE_JS_CLICK)) &&
-                               systemFavorJsClick;
+        boolean forceJSClick = context.hasConfig(getTarget(), getProfile(), FORCE_JS_CLICK) ?
+                               context.getBooleanConfig(getTarget(), getProfile(), FORCE_JS_CLICK) :
+                               browser.favorJSClick();
+        if (jsExecutor == null) { forceJSClick = false; }
 
         try {
             // @id doesn't matter anymore...
@@ -1938,14 +2478,13 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
             } else {
                 // better impl. for CI
                 new Actions(driver).moveToElement(element).click(element).build().perform();
-                // element.click();
                 return StepResult.success("clicked on web element");
             }
-        } catch (StaleElementReferenceException e) {
-            return StepResult.fail(e.getMessage(), e);
+        } catch (WebDriverException e) {
+            return StepResult.fail(WebDriverExceptionHelper.resolveErrorMessage(e));
         } catch (Exception e) {
             // try again..
-            if (systemFavorJsClick) {
+            if (forceJSClick) {
                 jsClick(element);
                 return StepResult.success("second attempt click via JS event");
             }
@@ -1959,9 +2498,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
     protected void jsClick(WebElement element) {
         ConsoleUtils.log("click target via JS, @id=" + element.getAttribute("id"));
-        String clickJs = "arguments[0].scrollIntoView(true); arguments[0].click(); return true;";
-        Object retObj = jsExecutor.executeScript(clickJs, element);
-        ConsoleUtils.log("clicked -> " + retObj);
+        scrollIntoView(element);
+        ConsoleUtils.log("clicked -> " + jsExecutor.executeScript("arguments[0].click(); return true;", element));
     }
 
     protected void initWebDriver() {
@@ -1981,10 +2519,6 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         if (driver == null || currentDriver != driver) {
             driver = currentDriver;
-
-            waiter = new FluentWait<>(this.driver).withTimeout(Duration.ofMillis(context.getPollWaitMs()))
-                                                  .pollingEvery(Duration.ofMillis(10))
-                                                  .ignoring(NoSuchElementException.class);
             alert = null;
             cookie = null;
         }
@@ -1995,44 +2529,34 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
         if (alert == null) {
             alert = (AlertCommand) context.findPlugin("webalert");
+            alert.setBrowser(browser);
+            alert.driver = driver;
             alert.init(context);
         } else {
-            alert.driver = this.driver;
+            alert.setBrowser(browser);
+            alert.driver = driver;
         }
-        alert.setBrowser(browser);
 
         if (cookie == null) {
             cookie = (CookieCommand) context.findPlugin("webcookie");
+            cookie.setBrowser(browser);
+            cookie.driver = driver;
             cookie.init(context);
         } else {
+            cookie.setBrowser(browser);
             cookie.driver = this.driver;
         }
-        cookie.setBrowser(browser);
+
+        context.setData(CURRENT_BROWSER, browser.getBrowserType().name());
     }
 
     protected void ensureReady() { initWebDriver(); }
 
-    // todo: need to enable proxy capbility across nexial
-    protected void initProxy() {
-        // todo: need to decide key
-        ProxyServer proxyServer = WebProxy.getProxyServer();
-        if (context.hasData(BROWSER_LANG) && proxyServer != null) {
-            String browserLang = context.getStringData(BROWSER_LANG);
-            proxyServer.addHeader("Accept-Language", browserLang);
-            proxyServer.addRequestInterceptor((RequestInterceptor) (request, har) -> {
-                //Accept-Language: en-US,en;q=0.5
-                //request.addRequestHeader("Accept-Language", getProp(OPT_BROWSER_LANG));
-                HttpRequestBase method = request.getMethod();
-                method.removeHeaders("Accept-Language");
-                method.setHeader("Accept-Language", browserLang);
-
-                HttpRequest proxyRequest = request.getProxyRequest();
-                int oldState = proxyRequest.setState(HttpMessage.__MSG_EDITABLE);
-                proxyRequest.removeField("Accept-Language");
-                proxyRequest.setField("Accept-Language", browserLang);
-                proxyRequest.setState(oldState);
-            });
-        }
+    @NotNull
+    protected FluentWait<WebDriver> newFluentWait() {
+        return new FluentWait<>(driver).withTimeout(Duration.ofMillis(context.getPollWaitMs()))
+                                       .pollingEvery(Duration.ofMillis(10))
+                                       .ignoring(NoSuchElementException.class);
     }
 
     @NotNull
@@ -2041,6 +2565,29 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         if (element == null) { throw new NoSuchElementException("element '" + locator + "' not found."); }
         return new RegexAwareSelect(element);
     }
+
+    // todo: need to enable proxy capability across nexial
+    // protected void initProxy() {
+    //     // todo: need to decide key
+    //     ProxyServer proxyServer = WebProxy.getProxyServer();
+    //     if (context.hasData(BROWSER_LANG) && proxyServer != null) {
+    //         String browserLang = context.getStringData(BROWSER_LANG);
+    //         proxyServer.addHeader("Accept-Language", browserLang);
+    //         proxyServer.addRequestInterceptor((RequestInterceptor) (request, har) -> {
+    //             //Accept-Language: en-US,en;q=0.5
+    //             //request.addRequestHeader("Accept-Language", getProp(OPT_BROWSER_LANG));
+    //             HttpRequestBase method = request.getMethod();
+    //             method.removeHeaders("Accept-Language");
+    //             method.setHeader("Accept-Language", browserLang);
+    //
+    //             HttpRequest proxyRequest = request.getProxyRequest();
+    //             int oldState = proxyRequest.setState(HttpMessage.__MSG_EDITABLE);
+    //             proxyRequest.removeField("Accept-Language");
+    //             proxyRequest.setField("Accept-Language", browserLang);
+    //             proxyRequest.setState(oldState);
+    //         });
+    //     }
+    // }
 
     protected int getElementCount(String locator) {
         List<WebElement> elements = findElements(locator);
@@ -2053,10 +2600,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         ensureReady();
 
         By by = locatorHelper.findBy(locator);
-        boolean wait = shouldWait();
-
         try {
-            return wait ? waiter.until(driver -> driver.findElements(by)) : driver.findElements(by);
+            return shouldWait() ? newFluentWait().until(driver -> driver.findElements(by)) : driver.findElements(by);
         } catch (NoSuchElementException e) {
             return null;
         }
@@ -2066,7 +2611,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         ensureReady();
 
         By by = locatorHelper.findBy(locator);
-        WebElement target = shouldWait() ? waiter.until(driver -> driver.findElement(by)) : driver.findElement(by);
+        WebElement target = shouldWait() ?
+                            newFluentWait().until(driver -> driver.findElement(by)) : driver.findElement(by);
         if (isHighlightEnabled() && target != null && target.isDisplayed()) { highlight(target); }
         return target;
     }
@@ -2092,7 +2638,13 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         try {
             return toElement(locator).getText();
         } catch (NoSuchElementException e) {
-            ConsoleUtils.error(e.getMessage());
+            String error = StringUtils.substringBefore(e.getMessage(), "\n");
+            TestStep testStep = context.getCurrentTestStep();
+            if (testStep != null) {
+                context.getLogger().error(this, error);
+            } else {
+                context.getLogger().error(context, error);
+            }
             return null;
         }
     }
@@ -2100,6 +2652,20 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     protected boolean isTextPresent(String text) {
         ensureReady();
         return StringUtils.contains(driver.findElement(By.tagName("body")).getText(), text);
+    }
+
+    protected StepResult getSelectedOptions(String var, String locator, boolean expectsText) {
+        requiresValidAndNotReadOnlyVariableName(var);
+
+        List<WebElement> selected = getSelectElement(locator).getAllSelectedOptions();
+        String[] values = selected.stream().map(elem -> expectsText ? elem.getText() : elem.getAttribute("value"))
+                                  .toArray(String[]::new);
+        if (ArrayUtils.isNotEmpty(values)) {
+            context.setData(var, values);
+        } else {
+            context.removeData(var);
+        }
+        return StepResult.success("stored selected options of '" + locator + "' as ${" + var + "}");
     }
 
     protected String getValue(String locator) {
@@ -2151,15 +2717,16 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
     protected List<String> getAllWindowIds() {
         if (driver == null) { return new ArrayList<>(); }
-        // ensureReady();
         return CollectionUtil.toList(driver.getWindowHandles());
     }
 
     protected boolean waitForBrowserStability(long maxWait) {
+        if (browser == null || browser.isRunElectron()) { return false; }
+
         // for firefox we can't be calling driver.getPageSource() or driver.findElement() when alert dialog is present
         if (alert.preemptiveCheckAlert()) { return true; }
         if (alert.isDialogPresent()) { return false; }
-        if (!context.isPageSourceStabilityEnforced()) { return false; }
+        if (!context.getBooleanConfig(getTarget(), getProfile(), ENFORCE_PAGE_SOURCE_STABILITY)) { return false; }
 
         // force at least 1 compare
         if (maxWait < MIN_STABILITY_WAIT_MS) { maxWait = MIN_STABILITY_WAIT_MS + 1; }
@@ -2172,7 +2739,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         }
 
         int successCount = 0;
-        int speed = context.getIntData(OPT_WAIT_SPEED, BROWSER_STABILITY_COMPARE_TOLERANCE);
+        int speed = context.getIntData(OPT_WAIT_SPEED, getDefaultInt(OPT_WAIT_SPEED));
         long endTime = System.currentTimeMillis() + maxWait;
 
         try {
@@ -2221,9 +2788,6 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
     protected boolean isBrowserLoadComplete() {
         ensureReady();
-        // boolean timeoutChangesEnabled = browser.getBrowserType().isTimeoutChangesEnabled();
-        // Timeouts timeouts = driver.manage().timeouts();
-        // if (timeoutChangesEnabled) { timeouts.implicitlyWait(pollWaitMs, MILLISECONDS); }
 
         JavascriptExecutor jsExecutor = (JavascriptExecutor) this.driver;
 
@@ -2245,30 +2809,33 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return StringUtils.equals("complete", StringUtils.trim(readyState));
     }
 
-    protected boolean waitForCondition(long maxWaitMs, Predicate condition) {
-        // guaranteed at least 1 cycle of wait
-        if (maxWaitMs < DEF_SLEEP_MS) { maxWaitMs = DEF_SLEEP_MS + 1; }
+    protected boolean waitForCondition(long maxWaitMs, Function<WebDriver, Object> condition) {
+        ensureReady();
 
-        int count = 0;
+        FluentWait<WebDriver> waiter = newFluentWait();
 
-        int maxWaitCycle = (int) (maxWaitMs / DEF_SLEEP_MS);
-        for (int cycle = 0; cycle < maxWaitCycle; cycle++) {
-            try {
-                if (condition.evaluate(driver)) {
-                    count++;
-                    cycle--;
-
-                    // double twice before declaring condition met - confirm stability
-                    if (count >= 2) { return true; }
-                }
-            } catch (Exception e) {
-                log("Error while waiting for browser screen to stabilize: " + e.getMessage());
-            }
-
-            waitFor(DEF_SLEEP_MS);
+        try {
+            Object target = waiter.until(condition);
+            if (target instanceof WebElement) { highlight((WebElement) target); }
+            return target != null;
+        } catch (TimeoutException e) {
+            log("Condition not be met on the current browser within specified wait time of " + maxWaitMs + " ms");
+        } catch (WebDriverException e) {
+            log("Error while waiting for a condition to be met on the current browser: " +
+                WebDriverExceptionHelper.resolveErrorMessage(e));
+        } catch (Exception e) {
+            log("Error while waiting for browser to stabilize: " + e.getMessage());
         }
 
         return false;
+    }
+
+    protected void scrollIntoView(WebElement element) {
+        if (element == null) { return; }
+
+        if (context.getBooleanConfig(getTarget(), getProfile(), SCROLL_INTO_VIEW)) {
+            jsExecutor.executeScript(SCROLL_INTO_VIEW_JS, element);
+        }
     }
 
     protected boolean scrollTo(Locatable element) throws ElementNotVisibleException {
@@ -2349,6 +2916,7 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     }
 
     protected String validateUrl(String url) {
+        if (FileUtil.isFileReadable(url)) { url = "file://" + StringUtils.replace(url, "\\", "/"); }
         requires(RegexUtils.isExact(StringUtils.lowerCase(url), REGEX_VALID_WEB_PROTOCOL), "invalid URL", url);
         return fixURL(url);
     }
@@ -2419,25 +2987,32 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         return matched;
     }
 
-    protected void highlight(String locator) {
-        if (!isHighlightEnabled()) { return; }
-        highlight(toElement(context.replaceTokens(locator)));
-    }
+    protected void highlight(String locator) { highlight(toElement(context.replaceTokens(locator))); }
 
-    protected void highlight(WebElement we) {
+    protected void highlight(WebElement element) {
         if (!isHighlightEnabled()) { return; }
+        if (element == null) { return; }
+        // if (!element.isDisplayed()) { return; }
 
         // if we can't scroll to it, then we won't highlight it
-        if (scrollTo((Locatable) we)) {
-            int waitMs = context.hasData(HIGHLIGHT_WAIT_MS) ?
-                         context.getIntData(HIGHLIGHT_WAIT_MS) :
-                         context.getIntData(HIGHLIGHT_WAIT_MS_OLD, DEF_HIGHLIGHT_WAIT_MS);
-            String highlight = context.getStringData(HIGHLIGHT_STYLE, DEF_HIGHLIGHT_STYLE);
-            jsExecutor.executeScript("var ws = arguments[0];" +
-                                     "var oldStyle = arguments[0].getAttribute('style');" +
-                                     "ws.setAttribute('style', arguments[1]);" +
-                                     "setTimeout(function () { ws.setAttribute('style', oldStyle); }, " + waitMs + ");",
-                                     we, highlight);
+        try {
+            if (scrollTo((Locatable) element)) {
+                int waitMs = context.getIntConfig(getTarget(), getProfile(), HIGHLIGHT_WAIT_MS);
+                String highlight = context.getStringConfig(getTarget(), getProfile(), HIGHLIGHT_STYLE);
+                jsExecutor.executeScript("var ws = arguments[0];" +
+                                         "var oldStyle = arguments[0].getAttribute('style') || '';" +
+                                         "ws.setAttribute('style', arguments[1]);" +
+                                         "setTimeout(function () { ws.setAttribute('style', oldStyle); }, " +
+                                         waitMs +
+                                         ");",
+                                         element, highlight);
+            }
+        } catch (WebDriverException e) {
+            // ideally we should be able to scroll and perform highlighting... but some (misbehaving) apps
+            // might prevent either the scrolling (webdriver internally uses `scrollIntoView()` JS function) or
+            // highlighting to work properly.. might even through exception
+            // if we run into error here... just silently ignore it for now. We must proceed on with the execution!
+            if (context.isVerbose()) { ConsoleUtils.log("unable to highlight element; ignoring..."); }
         }
     }
 
@@ -2474,6 +3049,8 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
 
     // todo need to test
     protected boolean isChecked(String locator) { return toElement(locator).isSelected(); }
+
+    protected boolean isMultiSelect(String locator) { return getSelectElement(locator).isMultiple(); }
 
     // todo need to test
     protected boolean isVisible(String locator) {
@@ -2512,13 +3089,11 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
     }
 
     protected boolean isHighlightEnabled() {
-        return !browser.getBrowserType().isHeadless() &&
-               context.hasData(OPT_DEBUG_HIGHLIGHT) ?
-               context.getBooleanData(OPT_DEBUG_HIGHLIGHT) :
-               context.getBooleanData(OPT_DEBUG_HIGHLIGHT_OLD, DEF_DEBUG_HIGHLIGHT);
+        if (browser.getBrowserType().isHeadless()) { return false; }
+        return context.getBooleanConfig(getTarget(), getProfile(), OPT_DEBUG_HIGHLIGHT);
     }
 
-    protected boolean shouldWait() { return context.getBooleanData(WEB_ALWAYS_WAIT, DEF_WEB_ALWAYS_WAIT); }
+    protected boolean shouldWait() { return context.getBooleanData(WEB_ALWAYS_WAIT, getDefaultBool(WEB_ALWAYS_WAIT)); }
 
     protected StepResult saveTextSubstring(String var, String locator, String delimStart, String delimEnd) {
         List<WebElement> matches = findElements(locator);
@@ -2532,5 +3107,44 @@ public class WebCommand extends BaseCommand implements CanTakeScreenshot, CanLog
         List<String> textArray = matches.stream().map(WebElement::getText).collect(Collectors.toList());
 
         return saveSubstring(textArray, delimStart, delimEnd, var);
+    }
+
+    private Object loadBrowserMetaCache(String ua) {
+        File file = new File(BROWSER_META_CACHE_PATH);
+        if (!file.exists()) { return null; }
+
+        try {
+            JsonObject cache = GSON.fromJson(FileUtils.readFileToString(file, DEF_CHARSET), JsonObject.class);
+            if (cache.isJsonNull() || cache.size() < 1 || !cache.has(ua)) { return null; }
+
+            return BrowserMeta.toBrowserMeta(cache.getAsJsonObject(ua));
+        } catch (IOException e) {
+            ConsoleUtils.log("unable to load browser metadata cache: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private void updateBrowserMetaCache(String ua, BrowserMeta browserMeta) {
+        if (browserMeta == null || StringUtils.equals(browserMeta.getName(), "UNABLE TO DETERMINE")) { return; }
+
+        JsonObject root;
+        File file = new File(BROWSER_META_CACHE_PATH);
+        if (!file.exists() || file.length() < 5) {
+            root = new JsonObject();
+        } else {
+            try {
+                root = GSON.fromJson(FileUtils.readFileToString(file, DEF_CHARSET), JsonObject.class);
+            } catch (IOException e) {
+                ConsoleUtils.log("unable to read from '" + file + "', recreating...");
+                root = new JsonObject();
+            }
+        }
+
+        root.add(ua, BrowserMeta.fromBrowserMeta(browserMeta));
+        try {
+            FileUtils.writeStringToFile(file, GSON.toJson(root, JsonObject.class), DEF_FILE_ENCODING);
+        } catch (IOException e) {
+            ConsoleUtils.error("Unable to update browser metadata cache: " + e.getMessage());
+        }
     }
 }

@@ -19,10 +19,11 @@ package org.nexial.core.plugins.desktop;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.nexial.core.utils.NativeInputParser;
 
 public class DesktopCommandTest {
     @Test
-    public void addShortcut() throws Exception {
+    public void addShortcut() {
         String expected =
             "<[{Hello how's it going? Why don't we }]><[F2]><[CTRL-SPACE]><[CTRL-END]><[{just take this on right now!}]><[ENTER]>";
 
@@ -37,5 +38,36 @@ public class DesktopCommandTest {
         shortcuts = DesktopUtils.addShortcut(shortcuts, "w!");
         shortcuts = DesktopUtils.addShortcut(shortcuts, "[ENTER]");
         Assert.assertEquals(expected, shortcuts);
+    }
+
+    @Test
+    public void parseNativeInput() {
+
+        String parsedKeys = NativeInputParser.handleKeys("[CTRL-ENd]Name[Alt-u-o]");
+        Assert.assertEquals("{CTRL}{END}Name{ALT}uo", parsedKeys);
+
+        String parsedKeys1 = NativeInputParser.handleKeys("[CTRL-ENd]Name\n[Alt-u-o]-uo");
+        Assert.assertEquals("{CTRL}{END}Name\n{ALT}uo-uo", parsedKeys1);
+
+        String parsedKeys2 = NativeInputParser.handleKeys("[CTRL-ENd]Name\n[Alt-u-o]-[uo]");
+        Assert.assertEquals("{CTRL}{END}Name\n{ALT}uo-[uo]", parsedKeys2);
+
+        String parsedKeys3 = NativeInputParser.handleKeys("[CTRL-ENd]Name\n[Alt1-u-o]-[uo]");
+        Assert.assertEquals("{CTRL}{END}Name\n[Alt1-u-o]-[uo]", parsedKeys3);
+
+        String parsedKeys4 = NativeInputParser.handleKeys("Hello how's it going? Why don't we [F2][CTRL-SPACE]" +
+                                                          "[CTRL-END][just take - this on right now][ENTER]");
+        Assert.assertEquals("Hello how's it going? Why don't we {F2}{CTRL}{SPACE}{CTRL}{END}" +
+                            "[just take - this on right now]{ENTER}", parsedKeys4);
+
+        String parsedKeys5 = NativeInputParser.handleKeys("[F1]hello to [Mr. Johnson][ENTER][F2]");
+        Assert.assertEquals("{F1}hello to [Mr. Johnson]{ENTER}{F2}", parsedKeys5);
+
+        String parsedKeys6 = NativeInputParser.handleKeys("[Alt-Ctrl-Shift-F-F1]");
+        Assert.assertEquals("{ALT}{CTRL}{SHIFT}F{F1}", parsedKeys6);
+
+        String parsedKeys7 = NativeInputParser.handleKeys("[Alt-u-o][just take -[ this on right]" +
+                                                          " now][Alt-Ctrl-Shift-F-F1]");
+        Assert.assertEquals("{ALT}uo[just take -[ this on right] now]{ALT}{CTRL}{SHIFT}F{F1}", parsedKeys7);
     }
 }
