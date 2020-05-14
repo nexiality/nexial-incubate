@@ -30,27 +30,24 @@ import java.io.IOException
 import java.nio.charset.Charset
 
 class FileTest {
-    private var testDir: String? = null
+    private var testDir = SystemUtils.getJavaIoTmpDir().absolutePath + separator +
+                          this.javaClass.simpleName + separator
 
     @Before
     fun setUp() {
-        testDir = SystemUtils.getJavaIoTmpDir().absolutePath + separator +
-                  this.javaClass.simpleName + separator
-        if (!java.io.File(testDir!!).mkdirs()) System.err?.println("Unable to create $testDir")
+        // if (!java.io.File(testDir!!).mkdirs()) System.err?.println("Unable to create $testDir")
     }
 
     @After
     fun tearDown() {
-//        if (testDir != null) {
-//            FileUtils.deleteQuietly(java.io.File(testDir!!))
-//        }
+        FileUtils.deleteQuietly(java.io.File(testDir))
     }
 
     @Test
     @Throws(IOException::class)
     fun content() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}content${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val file = File()
@@ -71,7 +68,7 @@ class FileTest {
                       item3 + "\r\n" +
                       item4 + "\r\n" +
                       item5
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}asList${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val content = File().asList(target)
@@ -91,7 +88,7 @@ class FileTest {
         val rightNow = System.currentTimeMillis()
 
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}lastmod${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val lastmod = File().lastmod(target)
@@ -104,7 +101,7 @@ class FileTest {
     @Throws(IOException::class)
     fun size() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}size${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         Assert.assertEquals(1024, Integer.parseInt(File().size(target)).toLong())
@@ -114,8 +111,8 @@ class FileTest {
     @Throws(IOException::class)
     fun copy() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
-        val target2 = testDir + "dummy" + separator + "test2.txt"
+        val target = "${testDir}copy${separator}test1.txt"
+        val target2 = "${testDir}dummy${separator}test2.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         Assert.assertEquals(target2, File().copy(target, target2))
@@ -126,8 +123,8 @@ class FileTest {
     @Throws(IOException::class)
     fun move() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
-        val target2 = testDir + "dummy" + separator + "test2.txt"
+        val target = "${testDir}move${separator}test1.txt"
+        val target2 = "${testDir}dummy${separator}test2.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         Assert.assertEquals(target2, File().move(target, target2))
@@ -139,7 +136,7 @@ class FileTest {
     @Throws(IOException::class)
     fun delete() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}delete${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         Assert.assertEquals(target, File().delete(target))
@@ -150,7 +147,7 @@ class FileTest {
     @Throws(IOException::class)
     fun overwrite() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}overwrite${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val fixture2 = RandomStringUtils.randomAlphanumeric(1048)
@@ -163,7 +160,7 @@ class FileTest {
     @Throws(IOException::class)
     fun overwrite_new_file() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}new_file${separator}test1.txt"
 
         Assert.assertEquals(target, File().overwrite(target, fixture))
         Assert.assertTrue(FileUtil.isFileReadable(target, 1024))
@@ -174,7 +171,7 @@ class FileTest {
     @Throws(IOException::class)
     fun append() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}append${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val fixture2 = RandomStringUtils.randomAlphanumeric(1048)
@@ -188,7 +185,7 @@ class FileTest {
     @Throws(IOException::class)
     fun prepend() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}prepend${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val fixture2 = RandomStringUtils.randomAlphanumeric(1048)
@@ -202,7 +199,7 @@ class FileTest {
     @Throws(IOException::class)
     fun name() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}name${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         Assert.assertEquals("test1.txt", File().name(target))
@@ -212,10 +209,10 @@ class FileTest {
     @Throws(IOException::class)
     fun dir() {
         val fixture = RandomStringUtils.randomAlphanumeric(1024)
-        val target = testDir!! + "test1.txt"
+        val target = "${testDir}dir${separator}test1.txt"
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
-        Assert.assertEquals(StringUtils.removeEnd(testDir, separator),
+        Assert.assertEquals(StringUtils.removeEnd("${testDir}dir", separator),
                             StringUtils.removeEnd(File().dir(target), separator))
     }
 }
