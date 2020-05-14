@@ -75,8 +75,9 @@ class FileTest {
         FileUtils.writeStringToFile(java.io.File(target), fixture, Charset.forName("UTF-8"))
 
         val content = File().asList(target)
-        val list = listOf(*StringUtils.split(content, ","))
-        Assert.assertEquals(5, list.size.toLong())
+        val list = StringUtils.split(content, ",")
+        // val list = listOf(*StringUtils.split(content, ","))
+        Assert.assertEquals(5, list.size)
         Assert.assertEquals(item1, list[0])
         Assert.assertEquals(item2, list[1])
         Assert.assertEquals(item3, list[2])
