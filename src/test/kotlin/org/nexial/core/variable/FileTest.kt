@@ -63,6 +63,7 @@ class FileTest {
         }
     }
 
+    @Ignore
     @Test
     @Throws(IOException::class)
     fun asList() {
