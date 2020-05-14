@@ -36,14 +36,14 @@ class FileTest {
     fun setUp() {
         testDir = SystemUtils.getJavaIoTmpDir().absolutePath + separator +
                   this.javaClass.simpleName + separator
-        java.io.File(testDir!!).mkdirs()
+        if (!java.io.File(testDir!!).mkdirs()) System.err?.println("Unable to create $testDir")
     }
 
     @After
     fun tearDown() {
-        if (testDir != null) {
-            FileUtils.deleteQuietly(java.io.File(testDir!!))
-        }
+//        if (testDir != null) {
+//            FileUtils.deleteQuietly(java.io.File(testDir!!))
+//        }
     }
 
     @Test
