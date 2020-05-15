@@ -8,15 +8,17 @@
 #   GITHUB_PROJECT: default nexiality/nexial-core
 #   PROJECT_NAME: default nexial-core
 
-if [[ -v ${GITHUB_TOKEN} ]] ; then
+if [ -z ${GITHUB_TOKEN} ] ; then
     echo ** MISSING REQUIRED ENVIRONMENT VARIABLE
-    echo **    ${required}
+    echo **    GITHUB_TOKEN
     echo **
     echo ** UNABLE TO CONTINUE, EXITING...
     exit -1
 fi
 
 GITHUB_REPO=${GITHUB_PROJECT:-nexiality/nexial-core}
+echo target GitHub repo: ${GITHUB_REPO}
+
 NEXIAL_HOME=${WORKSPACE}
 NEXIAL_DIST_HOME=${WORKSPACE}/build/install/${PROJECT_NAME:-nexial-core}
 TARGET_VERSION=v`cat ${NEXIAL_HOME}/support/target_version.txt`
